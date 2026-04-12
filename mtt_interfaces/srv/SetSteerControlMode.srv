@@ -1,0 +1,12 @@
+# Service to configure steering control mode for odometry interpretation
+#
+# Control modes:
+# - "open_loop": steer_cmd represents angular velocity rate (-1.0 to +1.0 maps to max yaw rate)
+# - "closed_loop": steer_cmd represents articulation angle (-1.0 to +1.0 maps to max articulation angle)
+
+string control_mode    # "open_loop" or "closed_loop"
+float64 max_rate       # Maximum yaw rate (rad/s) for open_loop mode
+float64 max_angle      # Maximum articulation angle (rad) for closed_loop mode
+---
+bool success
+string message

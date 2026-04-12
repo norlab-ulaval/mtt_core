@@ -1,0 +1,4 @@
+joystick_mappings:
+  "Logitech Gamepad F310": "logitech_gamepad_310_mapper.yaml"
+  "8BitDo Ultimate Wireless": "8BitDo_ultimate_wireless.yaml"
+  "Logitech Dual Action": "logitech_dual_action.yaml"

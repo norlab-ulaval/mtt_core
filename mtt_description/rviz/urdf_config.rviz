@@ -1,0 +1,461 @@
+Panels:
+  - Class: rviz_common/Displays
+    Help Height: 138
+    Name: Displays
+    Property Tree Widget:
+      Expanded:
+        - /Global Options1
+        - /Status1
+        - /RobotModel1
+      Splitter Ratio: 0.5
+    Tree Height: 1546
+  - Class: rviz_common/Selection
+    Name: Selection
+  - Class: rviz_common/Tool Properties
+    Expanded:
+      - /2D Goal Pose1
+      - /Publish Point1
+    Name: Tool Properties
+    Splitter Ratio: 0.5886790156364441
+  - Class: rviz_common/Views
+    Expanded:
+      - /Current View1
+    Name: Views
+    Splitter Ratio: 0.5
+  - Class: rviz_common/Time
+    Experimental: false
+    Name: Time
+    SyncMode: 0
+    SyncSource: ""
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Alpha: 0.5
+      Cell Size: 1
+      Class: rviz_default_plugins/Grid
+      Color: 160; 160; 164
+      Enabled: true
+      Line Style:
+        Line Width: 0.029999999329447746
+        Value: Lines
+      Name: Grid
+      Normal Cell Count: 0
+      Offset:
+        X: 0
+        Y: 0
+        Z: 0
+      Plane: XY
+      Plane Cell Count: 10
+      Reference Frame: <Fixed Frame>
+      Value: true
+    - Alpha: 1
+      Class: rviz_default_plugins/RobotModel
+      Collision Enabled: false
+      Description File: ""
+      Description Source: Topic
+      Description Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /robot_description
+      Enabled: true
+      Links:
+        All Links Enabled: true
+        Expand Joint Details: false
+        Expand Link Details: false
+        Expand Tree: false
+        Frame_fixation_articule:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        Link Tree Style: Links in Alphabetic Order
+        MTT_remorque:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        Remorque_lien_roue_droite:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        Remorque_lien_roue_gauche:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        Rouleau_track_1:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        Rouleau_track_10:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        Rouleau_track_11:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        Rouleau_track_12:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        Rouleau_track_13:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        Rouleau_track_14:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        Rouleau_track_15:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        Rouleau_track_16:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        Rouleau_track_17:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        Rouleau_track_18:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        Rouleau_track_19:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        Rouleau_track_2:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        Rouleau_track_20:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        Rouleau_track_3:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        Rouleau_track_4:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        Rouleau_track_5:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        Rouleau_track_6:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        Rouleau_track_7:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        Rouleau_track_8:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        Rouleau_track_9:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        base_footprint:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        base_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        joint_remorque_simple:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        lidar_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        remorque_roue_BL:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        remorque_roue_BR:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        remorque_roue_FL:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        remorque_roue_FR:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+      Mass Properties:
+        Inertia: false
+        Mass: false
+      Name: RobotModel
+      TF Prefix: ""
+      Update Interval: 0
+      Value: true
+      Visual Enabled: true
+    - Class: rviz_default_plugins/TF
+      Enabled: true
+      Filter (blacklist): ""
+      Filter (whitelist): ""
+      Frame Timeout: 15
+      Frames:
+        All Enabled: true
+        Frame_fixation_articule:
+          Value: true
+        MTT_remorque:
+          Value: true
+        Remorque_lien_roue_droite:
+          Value: true
+        Remorque_lien_roue_gauche:
+          Value: true
+        Rouleau_track_1:
+          Value: true
+        Rouleau_track_10:
+          Value: true
+        Rouleau_track_11:
+          Value: true
+        Rouleau_track_12:
+          Value: true
+        Rouleau_track_13:
+          Value: true
+        Rouleau_track_14:
+          Value: true
+        Rouleau_track_15:
+          Value: true
+        Rouleau_track_16:
+          Value: true
+        Rouleau_track_17:
+          Value: true
+        Rouleau_track_18:
+          Value: true
+        Rouleau_track_19:
+          Value: true
+        Rouleau_track_2:
+          Value: true
+        Rouleau_track_20:
+          Value: true
+        Rouleau_track_3:
+          Value: true
+        Rouleau_track_4:
+          Value: true
+        Rouleau_track_5:
+          Value: true
+        Rouleau_track_6:
+          Value: true
+        Rouleau_track_7:
+          Value: true
+        Rouleau_track_8:
+          Value: true
+        Rouleau_track_9:
+          Value: true
+        base_footprint:
+          Value: true
+        base_link:
+          Value: true
+        joint_remorque_simple:
+          Value: true
+        lidar_link:
+          Value: true
+        map:
+          Value: true
+        odom:
+          Value: true
+        remorque_roue_BL:
+          Value: true
+        remorque_roue_BR:
+          Value: true
+        remorque_roue_FL:
+          Value: true
+        remorque_roue_FR:
+          Value: true
+      Marker Scale: 1
+      Name: TF
+      Show Arrows: true
+      Show Axes: true
+      Show Names: false
+      Tree:
+        map:
+          odom:
+            base_footprint:
+              base_link:
+                Frame_fixation_articule:
+                  joint_remorque_simple:
+                    MTT_remorque:
+                      Remorque_lien_roue_droite:
+                        remorque_roue_BR:
+                          {}
+                        remorque_roue_FR:
+                          {}
+                      Remorque_lien_roue_gauche:
+                        remorque_roue_BL:
+                          {}
+                        remorque_roue_FL:
+                          {}
+                Rouleau_track_1:
+                  {}
+                Rouleau_track_10:
+                  {}
+                Rouleau_track_11:
+                  {}
+                Rouleau_track_12:
+                  {}
+                Rouleau_track_13:
+                  {}
+                Rouleau_track_14:
+                  {}
+                Rouleau_track_15:
+                  {}
+                Rouleau_track_16:
+                  {}
+                Rouleau_track_17:
+                  {}
+                Rouleau_track_18:
+                  {}
+                Rouleau_track_19:
+                  {}
+                Rouleau_track_2:
+                  {}
+                Rouleau_track_20:
+                  {}
+                Rouleau_track_3:
+                  {}
+                Rouleau_track_4:
+                  {}
+                Rouleau_track_5:
+                  {}
+                Rouleau_track_6:
+                  {}
+                Rouleau_track_7:
+                  {}
+                Rouleau_track_8:
+                  {}
+                Rouleau_track_9:
+                  {}
+                lidar_link:
+                  {}
+      Update Interval: 0
+      Value: true
+  Enabled: true
+  Global Options:
+    Background Color: 48; 48; 48
+    Fixed Frame: odom
+    Frame Rate: 30
+  Name: root
+  Tools:
+    - Class: rviz_default_plugins/Interact
+      Hide Inactive Objects: true
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+    - Class: rviz_default_plugins/FocusCamera
+    - Class: rviz_default_plugins/Measure
+      Line color: 128; 128; 0
+    - Class: rviz_default_plugins/SetInitialPose
+      Covariance x: 0.25
+      Covariance y: 0.25
+      Covariance yaw: 0.06853891909122467
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /initialpose
+    - Class: rviz_default_plugins/SetGoal
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /goal_pose
+    - Class: rviz_default_plugins/PublishPoint
+      Single click: true
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /clicked_point
+  Transformation:
+    Current:
+      Class: rviz_default_plugins/TF
+  Value: true
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Distance: 11.520598411560059
+      Enable Stereo Rendering:
+        Stereo Eye Separation: 0.05999999865889549
+        Stereo Focal Distance: 1
+        Swap Stereo Eyes: false
+        Value: false
+      Focal Point:
+        X: 0
+        Y: 0
+        Z: 0
+      Focal Shape Fixed Size: true
+      Focal Shape Size: 0.05000000074505806
+      Invert Z Axis: false
+      Name: Current View
+      Near Clip Distance: 0.009999999776482582
+      Pitch: 1.544796347618103
+      Target Frame: <Fixed Frame>
+      Value: Orbit (rviz)
+      Yaw: 1.5603972673416138
+    Saved: ~
+Window Geometry:
+  Displays:
+    collapsed: false
+  Height: 2032
+  Hide Left Dock: false
+  Hide Right Dock: false
+  QMainWindow State: 000000ff00000000fd0000000400000000000001f7000006f8fc0200000008fb0000001200530065006c0065006300740069006f006e00000001e10000009b000000ab00fffffffb0000001e0054006f006f006c002000500072006f007000650072007400690065007302000001ed000001df00000185000000a3fb000000120056006900650077007300200054006f006f02000001df000002110000018500000122fb000000200054006f006f006c002000500072006f0070006500720074006900650073003203000002880000011d000002210000017afb000000100044006900730070006c0061007900730100000069000006f80000017800fffffffb0000002000730065006c0065006300740069006f006e00200062007500660066006500720200000138000000aa0000023a00000294fb00000014005700690064006500530074006500720065006f02000000e6000000d2000003ee0000030bfb0000000c004b0069006e0065006300740200000186000001060000030c00000261000000010000015f000006f8fc0200000003fb0000001e0054006f006f006c002000500072006f00700065007200740069006500730100000041000000780000000000000000fb0000000a005600690065007700730100000069000006f80000012300fffffffb0000001200530065006c0065006300740069006f006e010000025a000000b200000000000000000000000200000490000000a9fc0100000001fb0000000a00560069006500770073030000004e00000080000002e1000001970000000300000e740000005afc0100000002fb0000000800540069006d0065010000000000000e740000046000fffffffb0000000800540069006d0065010000000000000450000000000000000000000b06000006f800000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
+  Selection:
+    collapsed: false
+  Time:
+    collapsed: false
+  Tool Properties:
+    collapsed: false
+  Views:
+    collapsed: false
+  Width: 3700
+  X: 140
+  Y: 54

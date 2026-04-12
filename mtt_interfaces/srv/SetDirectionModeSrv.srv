@@ -1,0 +1,3 @@
+uint8 direction_mode
+---
+bool success

@@ -1,0 +1,3 @@
+uint8 vehicule_type
+---
+bool success

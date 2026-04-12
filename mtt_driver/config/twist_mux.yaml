@@ -1,0 +1,16 @@
+twist_mux:
+  ros__parameters:
+    # use_stamped: true
+    topics:
+      controller:
+        topic: controller/cmd_vel
+        timeout: 0.5
+        priority: 15
+      teleop:
+        topic: cmd_vel/teleop
+        timeout: 0.5
+        priority: 10
+      nav_cmd:
+        topic: cmd_vel/nav
+        timeout: 1.0
+        priority: 5

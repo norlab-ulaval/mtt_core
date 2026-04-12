@@ -1,0 +1,50 @@
+# MTT-154 Controller Configuration
+
+# default_controller:
+#   axes:
+#     left_vertical: 1      Forward/backward motion
+#     right_horizontal: 3   Steering
+#     brake_trigger: 5      Brake control (right trigger)
+#     dpad_vertical: 7      Winch control
+#   buttons:
+#     dead_man_switch: 5    Right shoulder button (R1)
+
+default_controller:
+  axes:
+    left_vertical: 1
+    right_horizontal: 3
+    brake_trigger: 5
+    dpad_vertical: 7
+  buttons:
+    dead_man_switch: 5
+
+xbox_controller:
+  axes:
+    left_vertical: 1
+    right_horizontal: 3
+    brake_trigger: 5
+    dpad_vertical: 7
+  buttons:
+    dead_man_switch: 5
+
+ps4_controller:
+  axes:
+    left_vertical: 1
+    right_horizontal: 3
+    brake_trigger: 5
+    dpad_vertical: 7
+  buttons:
+    dead_man_switch: 5
+
+can_interface: "vcan0"
+can_id: 0x001
+can_node_id: 0x001  # Legacy key kept for backward compatibility with older configs.
+can_bitrate: 250000
+
+max_throttle: 230
+max_brake: 255
+max_steer: 255
+control_loop_rate: 0.05
+
+deadzone: 0.15
+axis_scale_factor: 1.0

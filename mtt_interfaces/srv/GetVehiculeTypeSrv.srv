@@ -1,0 +1,6 @@
+# MTT-154 Get Vehicle Type Service
+# Retrieves the current vehicle/driving mode
+
+---
+uint8 vehicule_type   # Current mode (0=SINGLE_TRAILER, 1=DUAL_DIFFERENTIAL, 2=DUAL_SERPENTINE)
+string type_name      # Human-readable mode name

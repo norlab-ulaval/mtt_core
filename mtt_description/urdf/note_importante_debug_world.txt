@@ -1,0 +1,6 @@
+regarder ce que ca fait
+
+    <bounce>
+        <restitution_coefficient>0.01</restitution_coefficient>
+        <threshold>5</threshold>
+    </bounce>

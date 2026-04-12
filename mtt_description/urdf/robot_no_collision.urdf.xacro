@@ -1,0 +1,1461 @@
+<?xml version="1.0"?>
+<robot name="onshape"  xmlns:xacro="https://www.ros.org/wiki/xacro">
+
+    <xacro:macro name="default_transmission" params="joint_name">
+        <transmission name="transmission_${joint_name}">
+            <plugin>transmission_interface/SimpleTransmission</plugin>
+            <actuator name="actuator_${joint_name}" role="actuator_${joint_name}"/>
+            <joint name="${joint_name}" role="${joint_name}">
+                <mechanical_reduction>1.0</mechanical_reduction>
+            </joint>
+        </transmission>
+    </xacro:macro>
+
+    <link name="base_footprint"/>
+
+    <link name="base_link">
+    <visual>
+    <origin xyz="-0.0034808381178577409154 -0.051022168970358453 0.49330103716210749187" rpy="0 -0 ${pi}" />
+    <geometry>
+    <mesh filename="file://$(find mtt_description)/meshes/visual/m500_ra-02_r02.stl"/>
+    </geometry>
+    <material name="m500_ra-02_r02_material">
+    <color rgba="0.98039215686274505668 0.71372549019607844922 0.0039215686274509803377 1.0"/>
+    </material>
+    </visual>
+    <inertial>
+    <origin xyz="-0.077915421490291292272 -0.045505372990426798396 0.20037964466672920638" rpy="0 0 0"/>
+    <mass value="150" />
+    <inertia ixx="11.048" ixy="0"  ixz="0" iyy="58.2688" iyz="0" izz="63.68" />
+    </inertial>
+    </link>
+
+   <joint name="base_joint" type="fixed">
+    <parent link="base_footprint"/>
+    <child link="base_link"/>
+    <origin xyz="0 0 -0.1" rpy="0 0 0"/>
+    </joint>
+
+
+    <link name="Rouleau_track_1">
+    <visual>
+    <origin xyz="0 0 -0.2619375000000000453" rpy="-1.570796326794896558 -7.703719777547410742e-33 0" />
+    <geometry>
+    <mesh filename="file://$(find mtt_description)/meshes/visual/rouleaufaketrack_525po.stl"/>
+    </geometry>
+    <material name="rouleaufaketrack_525po_material">
+    <color rgba="0.50588235294117644969 0.53333333333333332593 0.54901960784313730279 1.0"/>
+    </material>
+    </visual>
+    <inertial>
+    <origin xyz="-9.082983389429123799e-12 -8.2227341536032504615e-12 -0.26193750000873389228" rpy="0 0 0"/>
+    <mass value="1.0" />
+    <inertia ixx="0.0254" ixy="0"  ixz="0" iyy="0.0254" iyz="0" izz="8.890e-3" />
+    </inertial>
+    </link>
+
+    <joint name="1_continuous" type="continuous">
+    <origin xyz="0.7014675763219452298 -0.30260966897135904707 0.29942602155526376606" rpy="1.570796326794896558 -0 -7.5633943552588769595e-16" />
+    <parent link="base_link" />
+    <child link="Rouleau_track_1" />
+    <axis xyz="0 0 1"/>
+    <limit effort="-1" velocity="20" />
+    <physics>
+    <simbody></simbody>
+    <ode>
+    <implicit_string_damper>True</implicit_string_damper>
+    <fudge_factor>1</fudge_factor>
+    </ode>
+    <suspension>
+    </suspension>
+    </physics>
+    </joint>
+
+    <link name="Rouleau_track_2">
+    <visual>
+    <origin xyz="0 0 -0.2619375000000000453" rpy="-1.570796326794896558 -7.703719777547410742e-33 0" />
+    <geometry>
+    <mesh filename="file://$(find mtt_description)/meshes/visual/rouleaufaketrack_525po.stl"/>
+    </geometry>
+    <material name="rouleaufaketrack_525po_material">
+    <color rgba="0.50588235294117644969 0.53333333333333332593 0.54901960784313730279 1.0"/>
+    </material>
+    </visual>
+    <inertial>
+    <origin xyz="-9.082983389429123799e-12 -8.2227341536032504615e-12 -0.26193750000873389228" rpy="0 0 0"/>
+    <mass value="1.0" />
+    <inertia ixx="0.0254" ixy="0"  ixz="0" iyy="0.0254" iyz="0" izz="8.890e-3" />
+    </inertial>
+    </link>
+
+
+    <joint name="2_continuous" type="continuous">
+    <origin xyz="0.63021293776953013488 -0.30260966897135899156 0.24925922731169392055" rpy="1.570796326794896558 -0 -7.5633943552588769595e-16" />
+    <parent link="base_link" />
+    <child link="Rouleau_track_2" />
+    <axis xyz="0 0 1"/>
+    <limit effort="-1" velocity="20" />
+    <physics>
+    <simbody></simbody>
+    <ode>
+    <implicit_string_damper>True</implicit_string_damper>
+    <fudge_factor>1</fudge_factor>
+    </ode>
+    <suspension>
+    </suspension>
+    </physics>
+    </joint>
+
+    <link name="Rouleau_track_3">
+    <visual>
+    <origin xyz="0 0 -0.2619375000000000453" rpy="-1.570796326794896558 -2.9274135154685984966e-32 0" />
+    <geometry>
+    <mesh filename="file://$(find mtt_description)/meshes/visual/rouleaufaketrack_525po.stl"/>
+    </geometry>
+    <material name="rouleaufaketrack_525po_material">
+    <color rgba="0.50588235294117644969 0.53333333333333332593 0.54901960784313730279 1.0"/>
+    </material>
+    </visual>
+    <inertial>
+    <origin xyz="-9.082983389429123799e-12 -8.2227341536032504615e-12 -0.26193750000873389228" rpy="0 0 0"/>
+    <mass value="1.0" />
+    <inertia ixx="0.0254" ixy="0"  ixz="0" iyy="0.0254" iyz="0" izz="8.890e-3" />
+    </inertial>
+    </link>
+
+    <joint name="3_continuous" type="continuous">
+    <origin xyz="0.55767703136521962204 -0.30260966897135893605 0.20171053820694723191" rpy="1.570796326794896558 -0 -7.5633943552588769595e-16" />
+    <parent link="base_link" />
+    <child link="Rouleau_track_3" />
+    <axis xyz="0 0 1"/>
+    <limit effort="-1" velocity="20" />
+    <physics>
+    <simbody></simbody>
+    <ode>
+    <implicit_string_damper>True</implicit_string_damper>
+    <fudge_factor>1</fudge_factor>
+    </ode>
+    <suspension>
+    </suspension>
+    </physics>
+    </joint>
+
+    <link name="Rouleau_track_4">
+    <visual>
+    <origin xyz="0 0 -0.2619375000000000453" rpy="-1.570796326794896558 -2.9274135154685984966e-32 0" />
+    <geometry>
+    <mesh filename="file://$(find mtt_description)/meshes/visual/rouleaufaketrack_525po.stl"/>
+    </geometry>
+    <material name="rouleaufaketrack_525po_material">
+    <color rgba="0.50588235294117644969 0.53333333333333332593 0.54901960784313730279 1.0"/>
+    </material>
+    </visual>
+    <inertial>
+    <origin xyz="-9.082983389429123799e-12 -8.2227341536032504615e-12 -0.26193750000873389228" rpy="0 0 0"/>
+    <mass value="1.0" />
+    <inertia ixx="0.0254" ixy="0"  ixz="0" iyy="0.0254" iyz="0" izz="8.890e-3" />
+    </inertial>
+    </link>
+
+    <joint name="4_continuous" type="continuous">
+    <origin xyz="0.47434412390430480411 -0.30260966897135888054 0.17622412429685807567" rpy="1.570796326794896558 -0 -7.5633943552588769595e-16" />
+    <parent link="base_link" />
+    <child link="Rouleau_track_4" />
+    <axis xyz="0 0 1"/>
+    <limit effort="-1" velocity="20" />
+    <physics>
+    <simbody></simbody>
+    <ode>
+    <implicit_string_damper>True</implicit_string_damper>
+    <fudge_factor>1</fudge_factor>
+    </ode>
+    <suspension>
+    </suspension>
+    </physics>
+    </joint>
+
+    <link name="Rouleau_track_5">
+    <visual>
+    <origin xyz="0 0 -0.2619375000000000453" rpy="-1.570796326794896558 -2.9274135154685984966e-32 0" />
+    <geometry>
+    <mesh filename="file://$(find mtt_description)/meshes/visual/rouleaufaketrack_525po.stl"/>
+    </geometry>
+    <material name="rouleaufaketrack_525po_material">
+    <color rgba="0.50588235294117644969 0.53333333333333332593 0.54901960784313730279 1.0"/>
+    </material>
+    </visual>
+    <inertial>
+    <origin xyz="-9.082983389429123799e-12 -8.2227341536032504615e-12 -0.26193750000873389228" rpy="0 0 0"/>
+    <mass value="1.0" />
+    <inertia ixx="0.0254" ixy="0"  ixz="0" iyy="0.0254" iyz="0" izz="8.890e-3" />
+    </inertial>
+    </link>
+
+    <joint name="5_continuous" type="continuous">
+    <origin xyz="0.39101121644338021621 -0.30260966897135876952 0.15073771038676886391" rpy="1.570796326794896558 -0 -7.5633943552588769595e-16" />
+    <parent link="base_link" />
+    <child link="Rouleau_track_5" />
+    <axis xyz="0 0 1"/>
+    <limit effort="-1" velocity="20" />
+    <physics>
+    <simbody></simbody>
+    <ode>
+    <implicit_string_damper>True</implicit_string_damper>
+    <fudge_factor>1</fudge_factor>
+    </ode>
+    <suspension>
+    </suspension>
+    </physics>
+    </joint>
+
+    <link name="Rouleau_track_6">
+    <visual>
+    <origin xyz="0 0 -0.2619375000000000453" rpy="-1.570796326794896558 -2.9274135154685984966e-32 0" />
+    <geometry>
+    <mesh filename="file://$(find mtt_description)/meshes/visual/rouleaufaketrack_525po.stl"/>
+    </geometry>
+    <material name="rouleaufaketrack_525po_material">
+    <color rgba="0.50588235294117644969 0.53333333333333332593 0.54901960784313730279 1.0"/>
+    </material>
+    </visual>
+    <inertial>
+    <origin xyz="-9.082983389429123799e-12 -8.2227341536032504615e-12 -0.26193750000873389228" rpy="0 0 0"/>
+    <mass value="1.0" />
+    <inertia ixx="0.0254" ixy="0"  ixz="0" iyy="0.0254" iyz="0" izz="8.890e-3" />
+    </inertial>
+    </link>
+
+    <joint name="6_continuous" type="continuous">
+    <origin xyz="0.30589785624702453548 -0.30260966897135871401 0.13716525069048957075" rpy="1.570796326794896558 -0 -7.5633943552588769595e-16" />
+    <parent link="base_link" />
+    <child link="Rouleau_track_6" />
+    <axis xyz="0 0 1"/>
+    <limit effort="-1" velocity="20" />
+    <physics>
+    <simbody></simbody>
+    <ode>
+    <implicit_string_damper>True</implicit_string_damper>
+    <fudge_factor>1</fudge_factor>
+    </ode>
+    <suspension>
+    </suspension>
+    </physics>
+    </joint>
+
+    <link name="Rouleau_track_7">
+    <visual>
+    <origin xyz="5.5511151231257827021e-17 0 -0.2619375000000000453" rpy="-1.570796326794896558 -2.9274135154685984966e-32 0" />
+    <geometry>
+    <mesh filename="file://$(find mtt_description)/meshes/visual/rouleaufaketrack_525po.stl"/>
+    </geometry>
+    <material name="rouleaufaketrack_525po_material">
+    <color rgba="0.50588235294117644969 0.53333333333333332593 0.54901960784313730279 1.0"/>
+    </material>
+    </visual>
+    <inertial>
+    <origin xyz="-9.0829278782778925411e-12 -8.2227341536032504615e-12 -0.26193750000873389228" rpy="0 0 0"/>
+    <mass value="1.0" />
+    <inertia ixx="0.0254" ixy="0"  ixz="0" iyy="0.0254" iyz="0" izz="8.890e-3" />
+    </inertial>
+    </link>
+
+    <joint name="7_continuous" type="continuous">
+    <origin xyz="0.21875469438405417688 -0.3026096689713586585 0.13717527124629197433" rpy="1.570796326794896558 -0 -7.5633943552588769595e-16" />
+    <parent link="base_link" />
+    <child link="Rouleau_track_7" />
+    <axis xyz="0 0 1"/>
+    <limit effort="-1" velocity="20" />
+    <physics>
+    <simbody></simbody>
+    <ode>
+    <implicit_string_damper>True</implicit_string_damper>
+    <fudge_factor>1</fudge_factor>
+    </ode>
+    <suspension>
+    </suspension>
+    </physics>
+    </joint>
+
+    <link name="Rouleau_track_8">
+    <visual>
+    <origin xyz="5.5511151231257827021e-17 0 -0.2619375000000000453" rpy="-1.570796326794896558 -2.9274135154685984966e-32 0" />
+    <geometry>
+    <mesh filename="file://$(find mtt_description)/meshes/visual/rouleaufaketrack_525po.stl"/>
+    </geometry>
+    <material name="rouleaufaketrack_525po_material">
+    <color rgba="0.50588235294117644969 0.53333333333333332593 0.54901960784313730279 1.0"/>
+    </material>
+    </visual>
+    <inertial>
+    <origin xyz="-9.0829278782778925411e-12 -8.2227341536032504615e-12 -0.26193750000873389228" rpy="0 0 0"/>
+    <mass value="1.0" />
+    <inertia ixx="0.0254" ixy="0"  ixz="0" iyy="0.0254" iyz="0" izz="8.890e-3" />
+    </inertial>
+    </link>
+
+    <joint name="8_continuous" type="continuous">
+    <origin xyz="0.13161153252108562239 -0.3026096689713586585 0.13718529180209448892" rpy="1.570796326794896558 -0 -7.5633943552588769595e-16" />
+    <parent link="base_link" />
+    <child link="Rouleau_track_8" />
+    <axis xyz="0 0 1"/>
+    <limit effort="-1" velocity="20" />
+    <physics>
+    <simbody></simbody>
+    <ode>
+    <implicit_string_damper>True</implicit_string_damper>
+    <fudge_factor>1</fudge_factor>
+    </ode>
+    <suspension>
+    </suspension>
+    </physics>
+    </joint>
+
+    <link name="Rouleau_track_9">
+    <visual>
+    <origin xyz="5.5511151231257827021e-17 0 -0.2619375000000000453" rpy="-1.570796326794896558 -2.9274135154685984966e-32 0" />
+    <geometry>
+    <mesh filename="file://$(find mtt_description)/meshes/visual/rouleaufaketrack_525po.stl"/>
+    </geometry>
+    <material name="rouleaufaketrack_525po_material">
+    <color rgba="0.50588235294117644969 0.53333333333333332593 0.54901960784313730279 1.0"/>
+    </material>
+    </visual>
+    <inertial>
+    <origin xyz="-9.0829278782778925411e-12 -8.2227341536032504615e-12 -0.26193750000873389228" rpy="0 0 0"/>
+    <mass value="1.0" />
+    <inertia ixx="0.0254" ixy="0"  ixz="0" iyy="0.0254" iyz="0" izz="8.890e-3" />
+    </inertial>
+    </link>
+
+    <joint name="9_continuous" type="continuous">
+    <origin xyz="0.044468370658119274474 -0.30260966897135854747 0.13719531235789694801" rpy="1.570796326794896558 -0 -7.5633943552588769595e-16" />
+    <parent link="base_link" />
+    <child link="Rouleau_track_9" />
+    <axis xyz="0 0 1"/>
+    <limit effort="-1" velocity="20" />
+    <physics>
+    <simbody></simbody>
+    <ode>
+    <implicit_string_damper>True</implicit_string_damper>
+    <fudge_factor>1</fudge_factor>
+    </ode>
+    <suspension>
+    </suspension>
+    </physics>
+    </joint>
+
+    <link name="Rouleau_track_10">
+    <visual>
+    <origin xyz="-2.7755575615628913511e-17 0 -0.2619375000000000453" rpy="-1.570796326794896558 -2.9274135154685984966e-32 0" />
+    <geometry>
+    <mesh filename="file://$(find mtt_description)/meshes/visual/rouleaufaketrack_525po.stl"/>
+    </geometry>
+    <material name="rouleaufaketrack_525po_material">
+    <color rgba="0.50588235294117644969 0.53333333333333332593 0.54901960784313730279 1.0"/>
+    </material>
+    </visual>
+    <inertial>
+    <origin xyz="-9.0830111450047394279e-12 -8.2227341536032504615e-12 -0.26193750000873389228" rpy="0 0 0"/>
+    <mass value="1.0" />
+    <inertia ixx="0.0254" ixy="0"  ixz="0" iyy="0.0254" iyz="0" izz="8.890e-3" />
+    </inertial>
+    </link>
+
+    <joint name="10_continuous" type="continuous">
+    <origin xyz="-0.042674791204848093462 -0.30260966897135843645 0.13720533291369940709" rpy="1.570796326794896558 -0 -7.5633943552588769595e-16" />
+    <parent link="base_link" />
+    <child link="Rouleau_track_10" />
+    <axis xyz="0 0 1"/>
+    <limit effort="-1" velocity="20" />
+    <physics>
+    <simbody></simbody>
+    <ode>
+    <implicit_string_damper>True</implicit_string_damper>
+    <fudge_factor>1</fudge_factor>
+    </ode>
+    <suspension>
+    </suspension>
+    </physics>
+    </joint>
+
+    <link name="Rouleau_track_11">
+    <visual>
+    <origin xyz="-2.7755575615628913511e-17 0 -0.2619375000000000453" rpy="-1.570796326794896558 -2.9274135154685984966e-32 0" />
+    <geometry>
+    <mesh filename="file://$(find mtt_description)/meshes/visual/rouleaufaketrack_525po.stl"/>
+    </geometry>
+    <material name="rouleaufaketrack_525po_material">
+    <color rgba="0.50588235294117644969 0.53333333333333332593 0.54901960784313730279 1.0"/>
+    </material>
+    </visual>
+    <inertial>
+    <origin xyz="-9.0830111450047394279e-12 -8.2227341536032504615e-12 -0.26193750000873389228" rpy="0 0 0"/>
+    <mass value="1.0" />
+    <inertia ixx="0.0254" ixy="0"  ixz="0" iyy="0.0254" iyz="0" izz="8.890e-3" />
+    </inertial>
+    </link>
+
+    <joint name="11_continuous" type="continuous">
+    <origin xyz="-0.12981795306781560018 -0.30260966897135843645 0.13721535346950286538" rpy="1.570796326794896558 -0 -7.5633943552588769595e-16" />
+    <parent link="base_link" />
+    <child link="Rouleau_track_11" />
+    <axis xyz="0 0 1"/>
+    <limit effort="-1" velocity="20" />
+    <physics>
+    <simbody></simbody>
+    <ode>
+    <implicit_string_damper>True</implicit_string_damper>
+    <fudge_factor>1</fudge_factor>
+    </ode>
+    <suspension>
+    </suspension>
+    </physics>
+    </joint>
+
+    <link name="Rouleau_track_12">
+    <visual>
+    <origin xyz="0 0 -0.2619375000000000453" rpy="-1.570796326794896558 -2.9274135154685984966e-32 0" />
+    <geometry>
+    <mesh filename="file://$(find mtt_description)/meshes/visual/rouleaufaketrack_525po.stl"/>
+    </geometry>
+    <material name="rouleaufaketrack_525po_material">
+    <color rgba="0.50588235294117644969 0.53333333333333332593 0.54901960784313730279 1.0"/>
+    </material>
+    </visual>
+    <inertial>
+    <origin xyz="-9.082983389429123799e-12 -8.2227341536032504615e-12 -0.26193750000873389228" rpy="0 0 0"/>
+    <mass value="1.0" />
+    <inertia ixx="0.0254" ixy="0"  ixz="0" iyy="0.0254" iyz="0" izz="8.890e-3" />
+    </inertial>
+    </link>
+
+    <joint name="12_continuous" type="continuous">
+    <origin xyz="-0.21696111493078301669 -0.30260966897135832543 0.13722537402530532447" rpy="1.570796326794896558 -0 -7.5633943552588769595e-16" />
+    <parent link="base_link" />
+    <child link="Rouleau_track_12" />
+    <axis xyz="0 0 1"/>
+    <limit effort="-1" velocity="20" />
+    <physics>
+    <simbody></simbody>
+    <ode>
+    <implicit_string_damper>True</implicit_string_damper>
+    <fudge_factor>1</fudge_factor>
+    </ode>
+    <suspension>
+    </suspension>
+    </physics>
+    </joint>
+
+    <link name="Rouleau_track_13">
+    <visual>
+    <origin xyz="0 0 -0.26193750000000010081" rpy="-1.570796326794896558 -2.9274135154685984966e-32 0" />
+    <geometry>
+    <mesh filename="file://$(find mtt_description)/meshes/visual/rouleaufaketrack_525po.stl"/>
+    </geometry>
+    <material name="rouleaufaketrack_525po_material">
+    <color rgba="0.50588235294117644969 0.53333333333333332593 0.54901960784313730279 1.0"/>
+    </material>
+    </visual>
+    <inertial>
+    <origin xyz="-9.082983389429123799e-12 -8.2227341536032504615e-12 -0.26193750000873394779" rpy="0 0 0"/>
+    <mass value="1.0" />
+    <inertia ixx="0.0254" ixy="0"  ixz="0" iyy="0.0254" iyz="0" izz="8.890e-3" />
+    </inertial>
+    </link>
+
+    <joint name="13_continuous" type="continuous">
+    <origin xyz="-0.30410427679375034993 -0.30260966897135821441 0.13723539458110778355" rpy="1.570796326794896558 -0 -7.5633943552588769595e-16" />
+    <parent link="base_link" />
+    <child link="Rouleau_track_13" />
+    <axis xyz="0 0 1"/>
+    <limit effort="-1" velocity="20" />
+    <physics>
+    <simbody></simbody>
+    <ode>
+    <implicit_string_damper>True</implicit_string_damper>
+    <fudge_factor>1</fudge_factor>
+    </ode>
+    <suspension>
+    </suspension>
+    </physics>
+    </joint>
+
+    <link name="Rouleau_track_14">
+    <visual>
+    <origin xyz="-2.7755575615628913511e-17 0 -0.2619375000000000453" rpy="-1.570796326794896558 -2.9274135154685984966e-32 0" />
+    <geometry>
+    <mesh filename="file://$(find mtt_description)/meshes/visual/rouleaufaketrack_525po.stl"/>
+    </geometry>
+    <material name="rouleaufaketrack_525po_material">
+    <color rgba="0.50588235294117644969 0.53333333333333332593 0.54901960784313730279 1.0"/>
+    </material>
+    </visual>
+    <inertial>
+    <origin xyz="-9.0830111450047394279e-12 -8.2227341536032504615e-12 -0.26193750000873389228" rpy="0 0 0"/>
+    <mass value="1.0" />
+    <inertia ixx="0.0254" ixy="0"  ixz="0" iyy="0.0254" iyz="0" izz="8.890e-3" />
+    </inertial>
+    </link>
+
+    <joint name="14_continuous" type="continuous">
+    <origin xyz="-0.39124743865671768317 -0.30260966897135821441 0.13724541513691029815" rpy="1.570796326794896558 -0 -7.5633943552588769595e-16" />
+    <parent link="base_link" />
+    <child link="Rouleau_track_14" />
+    <axis xyz="0 0 1"/>
+    <limit effort="-1" velocity="20" />
+    <physics>
+    <simbody></simbody>
+    <ode>
+    <implicit_string_damper>True</implicit_string_damper>
+    <fudge_factor>1</fudge_factor>
+    </ode>
+    <suspension>
+    </suspension>
+    </physics>
+    </joint>
+
+    <link name="Rouleau_track_15">
+    <visual>
+    <origin xyz="-2.7755575615628913511e-17 0 -0.2619375000000000453" rpy="-1.570796326794896558 -2.9274135154685984966e-32 0" />
+    <geometry>
+    <mesh filename="file://$(find mtt_description)/meshes/visual/rouleaufaketrack_525po.stl"/>
+    </geometry>
+    <material name="rouleaufaketrack_525po_material">
+    <color rgba="0.50588235294117644969 0.53333333333333332593 0.54901960784313730279 1.0"/>
+    </material>
+    </visual>
+    <inertial>
+    <origin xyz="-9.0830111450047394279e-12 -8.2227341536032504615e-12 -0.26193750000873389228" rpy="0 0 0"/>
+    <mass value="1.0" />
+    <inertia ixx="0.0254" ixy="0"  ixz="0" iyy="0.0254" iyz="0" izz="8.890e-3" />
+    </inertial>
+    </link>
+
+    <joint name="15_continuous" type="continuous">
+    <origin xyz="-0.47839060051968412823 -0.30260966897135821441 0.13725543569271270172" rpy="1.570796326794896558 -0 -7.5633943552588769595e-16" />
+    <parent link="base_link" />
+    <child link="Rouleau_track_15" />
+    <axis xyz="0 0 1"/>
+    <limit effort="-1" velocity="20" />
+    <physics>
+    <simbody></simbody>
+    <ode>
+    <implicit_string_damper>True</implicit_string_damper>
+    <fudge_factor>1</fudge_factor>
+    </ode>
+    <suspension>
+    </suspension>
+    </physics>
+    </joint>
+
+    <link name="Rouleau_track_16">
+    <visual>
+    <origin xyz="5.5511151231257827021e-17 0 -0.2619375000000000453" rpy="-1.570796326794896558 -2.9274135154685984966e-32 0" />
+    <geometry>
+    <mesh filename="file://$(find mtt_description)/meshes/visual/rouleaufaketrack_525po.stl"/>
+    </geometry>
+    <material name="rouleaufaketrack_525po_material">
+    <color rgba="0.50588235294117644969 0.53333333333333332593 0.54901960784313730279 1.0"/>
+    </material>
+    </visual>
+    <inertial>
+    <origin xyz="-9.0829278782778925411e-12 -8.2227341536032504615e-12 -0.26193750000873389228" rpy="0 0 0"/>
+    <mass value="1.0" />
+    <inertia ixx="0.0254" ixy="0"  ixz="0" iyy="0.0254" iyz="0" izz="8.890e-3" />
+    </inertial>
+    </link>
+
+    <joint name="16_continuous" type="continuous">
+    <origin xyz="-0.56553376238265151699 -0.30260966897135799236 0.13726545624851521632" rpy="1.570796326794896558 -0 -7.5633943552588769595e-16" />
+    <parent link="base_link" />
+    <child link="Rouleau_track_16" />
+    <axis xyz="0 0 1"/>
+    <limit effort="-1" velocity="20" />
+    <physics>
+    <simbody></simbody>
+    <ode>
+    <implicit_string_damper>True</implicit_string_damper>
+    <fudge_factor>1</fudge_factor>
+    </ode>
+    <suspension>
+    </suspension>
+    </physics>
+    </joint>
+
+    <link name="Rouleau_track_17">
+    <visual>
+    <origin xyz="5.5511151231257827021e-17 0 -0.2619375000000000453" rpy="-1.570796326794896558 -2.9274135154685984966e-32 0" />
+    <geometry>
+    <mesh filename="file://$(find mtt_description)/meshes/visual/rouleaufaketrack_525po.stl"/>
+    </geometry>
+    <material name="rouleaufaketrack_525po_material">
+    <color rgba="0.50588235294117644969 0.53333333333333332593 0.54901960784313730279 1.0"/>
+    </material>
+    </visual>
+    <inertial>
+    <origin xyz="-9.0829278782778925411e-12 -8.2227341536032504615e-12 -0.26193750000873389228" rpy="0 0 0"/>
+    <mass value="1.0" />
+    <inertia ixx="0.0254" ixy="0"  ixz="0" iyy="0.0254" iyz="0" izz="8.890e-3" />
+    </inertial>
+    </link>
+
+    <joint name="17_continuous" type="continuous">
+    <origin xyz="-0.65267692424561885023 -0.30260966897135799236 0.13727547680431761989" rpy="1.570796326794896558 -0 -7.5633943552588769595e-16" />
+    <parent link="base_link" />
+    <child link="Rouleau_track_17" />
+    <axis xyz="0 0 1"/>
+    <limit effort="-1" velocity="20" />
+    <physics>
+    <simbody></simbody>
+    <ode>
+    <implicit_string_damper>True</implicit_string_damper>
+    <fudge_factor>1</fudge_factor>
+    </ode>
+    <suspension>
+    </suspension>
+    </physics>
+    </joint>
+
+    <link name="Rouleau_track_18">
+    <visual>
+    <origin xyz="5.5511151231257827021e-17 0 -0.26193750000000010081" rpy="-1.570796326794896558 -2.9274135154685984966e-32 0" />
+    <geometry>
+    <mesh filename="file://$(find mtt_description)/meshes/visual/rouleaufaketrack_525po.stl"/>
+    </geometry>
+    <material name="rouleaufaketrack_525po_material">
+    <color rgba="0.50588235294117644969 0.53333333333333332593 0.54901960784313730279 1.0"/>
+    </material>
+    </visual>
+    <inertial>
+    <origin xyz="-9.0829278782778925411e-12 -8.2227341536032504615e-12 -0.26193750000873394779" rpy="0 0 0"/>
+    <mass value="1.0" />
+    <inertia ixx="0.0254" ixy="0"  ixz="0" iyy="0.0254" iyz="0" izz="8.890e-3" />
+    </inertial>
+    </link>
+
+    <joint name="18_continuous" type="continuous">
+    <origin xyz="-0.73982008610858640552 -0.30260966897135788134 0.13728549736012013449" rpy="1.570796326794896558 -0 -7.5633943552588769595e-16" />
+    <parent link="base_link" />
+    <child link="Rouleau_track_18" />
+    <axis xyz="0 0 1"/>
+    <limit effort="-1" velocity="20" />
+    <physics>
+    <simbody></simbody>
+    <ode>
+    <implicit_string_damper>True</implicit_string_damper>
+    <fudge_factor>1</fudge_factor>
+    </ode>
+    <suspension>
+    </suspension>
+    </physics>
+    </joint>
+
+    <link name="Rouleau_track_19">
+    <visual>
+    <origin xyz="0 0 -0.2619375000000000453" rpy="-1.570796326794896558 -2.9274135154685984966e-32 0" />
+    <geometry>
+    <mesh filename="file://$(find mtt_description)/meshes/visual/rouleaufaketrack_525po.stl"/>
+    </geometry>
+    <material name="rouleaufaketrack_525po_material">
+    <color rgba="0.50588235294117644969 0.53333333333333332593 0.54901960784313730279 1.0"/>
+    </material>
+    </visual>
+    <inertial>
+    <origin xyz="-9.082983389429123799e-12 -8.2227341536032504615e-12 -0.26193750000873389228" rpy="0 0 0"/>
+    <mass value="1.0" />
+    <inertia ixx="0.0254" ixy="0"  ixz="0" iyy="0.0254" iyz="0" izz="8.890e-3" />
+    </inertial>
+    </link>
+
+    <joint name="19_continuous" type="continuous">
+    <origin xyz="-0.82595460894701899779 -0.30260966897135777032 0.14666682073043030288" rpy="1.570796326794896558 -0 -7.5633943552588769595e-16" />
+    <parent link="base_link" />
+    <child link="Rouleau_track_19" />
+    <axis xyz="0 0 1"/>
+    <limit effort="-1" velocity="20" />
+    <physics>
+    <simbody></simbody>
+    <ode>
+    <implicit_string_damper>True</implicit_string_damper>
+    <fudge_factor>1</fudge_factor>
+    </ode>
+    <suspension>
+    </suspension>
+    </physics>
+    </joint>
+
+    <link name="Rouleau_track_20">
+    <visual>
+    <origin xyz="0 -1.3877787807814456755e-17 -0.2619375000000000453" rpy="-1.570796326794896558 1.0785207688568652149e-32 0" />
+    <geometry>
+    <mesh filename="file://$(find mtt_description)/meshes/visual/rouleaufaketrack_525po.stl"/>
+    </geometry>
+    <material name="rouleaufaketrack_525po_material">
+    <color rgba="0.50588235294117644969 0.53333333333333332593 0.54901960784313730279 1.0"/>
+    </material>
+    </visual>
+    <inertial>
+    <origin xyz="-9.082983389429123799e-12 -8.2227480313910582759e-12 -0.26193750000873389228" rpy="0 0 0"/>
+    <mass value="1.0" />
+    <inertia ixx="0.0254" ixy="0"  ixz="0" iyy="0.0254" iyz="0" izz="8.890e-3" />
+    </inertial>
+    </link>
+
+    <joint name="20_continuous" type="continuous">
+    <origin xyz="-0.91110403062049183376 -0.30260966897135777032 0.16520075578373016878" rpy="1.570796326794896558 -0 -7.5633943552588769595e-16" />
+    <parent link="base_link" />
+    <child link="Rouleau_track_20" />
+    <axis xyz="0 0 1"/>
+    <limit effort="-1" velocity="20" />
+    <physics>
+    <simbody></simbody>
+    <ode>
+    <implicit_string_damper>True</implicit_string_damper>
+    <fudge_factor>1</fudge_factor>
+    </ode>
+    <suspension>
+    </suspension>
+    </physics>
+    </joint>
+
+    <link name="Frame_fixation_articule">
+    <visual>
+    <origin xyz="0 0 -0.26352500000102996314" rpy="1.570796326794896558 2.9274135154685984966e-32 0" />
+    <geometry>
+    <mesh filename="file://$(find mtt_description)/meshes/visual/m500_fa-f-01_r00.stl"/>
+    </geometry>
+    <material name="m500_fa-f-01_r00_material">
+    <color rgba="0.98039215686274505668 0.71372549019607844922 0.0039215686274509803377 1.0"/>
+    </material>
+    </visual>
+    <inertial>
+    <origin xyz="-3.9892756405493079145e-11 -1.1475286443859219259e-10 -0.26817516801928165115" rpy="0 0 0"/>
+    <mass value="4.2856980941026048271" />
+    <inertia ixx="0.15081833822080548124" ixy="-3.1493952847483546326e-14"  ixz="-2.7291301433546465536e-09" iyy="0.14291517499876990605" iyz="4.1782617806359028221e-10" izz="0.0087729760408515339992" />
+    </inertial>
+    </link>
+
+    <link name="joint_remorque_simple">
+    <visual>
+    <origin xyz="0 0 -0.11429999999970297253" rpy="3.141592653589793116 1.0947644252537633367e-47 2.4651903288156618919e-32" />
+    <geometry>
+    <mesh filename="file://$(find mtt_description)/meshes/visual/joint_remorque_simple.stl"/>
+    </geometry>
+    <material name="joint_remorque_simple_material">
+    <color rgba="0.50588235294117644969 0.53333333333333332593 0.54901960784313730279 1.0"/>
+    </material>
+    </visual>
+    <inertial>
+    <origin xyz="-0.066649078397283970099 -1.3264048723360915067e-08 -0.057149999999851569532" rpy="0 0 0"/>
+    <mass value="2.4244944218593222907" />
+    <inertia ixx="0.0045362397987309356281" ixy="2.7180197249639030826e-09"  ixz="2.2800525023181053727e-41" iyy="0.0080855686635830838899" iyz="-9.2489917741012919164e-10" izz="0.0077799714228289117493" />
+    </inertial>
+    </link>
+
+    <link name="MTT_remorque">
+    <visual>
+    <origin xyz="0 0 0" rpy="-1.570796326794896558 -2.9274135154686072548e-32 0" />
+    <geometry>
+    <mesh filename="file://$(find mtt_description)/meshes/visual/remorquegrise_corps.stl"/>
+    </geometry>
+    <material name="remorquegrise_corps_material">
+    <color rgba="0.50588235294117644969 0.53333333333333332593 0.54901960784313730279 1.0"/>
+    </material>
+    </visual>
+    <inertial>
+    <origin xyz="-1.3754218481959806043e-07 0.0034236501170869263963 -1.2492342427482756584" rpy="0 0 0"/>
+    <mass value="75" />
+    <inertia ixx="19.61" ixy="1.9694375352015794851e-06"  ixz="3.4143802835478518731e-05" iyy="22.119" iyz="0.08948044734924905097" izz="4.369" />
+    </inertial>
+    </link>
+
+    <link name="Remorque_lien_roue_gauche">
+    <visual>
+    <origin xyz="-0.4699000000010151723 -0.014477999967073801324 -0.025400000000000005906" rpy="0 2.9274135154685984966e-32 0" />
+    <geometry>
+    <mesh filename="file://$(find mtt_description)/meshes/visual/remorquebarrelienroues.stl"/>
+    </geometry>
+    <material name="remorquebarrelienroues_material">
+    <color rgba="0.50588235294117644969 0.53333333333333332593 0.54901960784313730279 1.0"/>
+    </material>
+    </visual>
+    <inertial>
+    <origin xyz="-2.2204460492503130808e-16 -1.7347234759768070944e-18 -0.011962764931897929346" rpy="0 0 0"/>
+    <mass value="1.0" />
+    <inertia ixx="0.0015481614309977712648" ixy="0"  ixz="3.398701470065399431e-33" iyy="0.11698078969574195185" iyz="0" izz="0.11764728620809132564" />
+    </inertial>
+    </link>
+
+    <link name="remorque_roue_FL">
+    <visual>
+    <origin xyz="0 -3.3306690738754696213e-16 0" rpy="0 2.9274135154685984966e-32 0" />
+    <geometry>
+    <mesh filename="file://$(find mtt_description)/meshes/visual/remorqueroue.stl"/>
+    </geometry>
+    <material name="remorqueroue_material">
+    <color rgba="0.50588235294117644969 0.53333333333333332593 0.54901960784313730279 1.0"/>
+    </material>
+    </visual>
+    <inertial>
+    <origin xyz="-5.5159452104843917813e-18 -3.3329708142992708841e-16 -0.012700000000000008157" rpy="0 0 0"/>
+    <mass value="1.0" />
+    <inertia ixx="0.0149" ixy="0"  ixz="1.3743513466638252754e-32" iyy="0.0149" iyz="0" izz="0.029595" />
+    </inertial>
+    </link>
+
+    <joint name="frontleft_wheel" type="continuous">
+    <origin xyz="0.24129999999999984794 0 0.050800000000000039568" rpy="0 2.9274135154685984966e-32 0" />
+    <parent link="Remorque_lien_roue_gauche" />
+    <child link="remorque_roue_FL" />
+    <axis xyz="0 0 1"/>
+    <limit effort="-1" velocity="20" />
+    <physics>
+    <simbody></simbody>
+    <ode>
+    <implicit_string_damper>True</implicit_string_damper>
+    <fudge_factor>1</fudge_factor>
+    </ode>
+    <suspension>
+    </suspension>
+    </physics>
+    </joint>
+
+    <link name="remorque_roue_BL">
+    <visual>
+    <origin xyz="0 -3.3306690738754696213e-16 0" rpy="0 2.9274135154685984966e-32 0" />
+    <geometry>
+    <mesh filename="file://$(find mtt_description)/meshes/visual/remorqueroue.stl"/>
+    </geometry>
+    <material name="remorqueroue_material">
+    <color rgba="0.50588235294117644969 0.53333333333333332593 0.54901960784313730279 1.0"/>
+    </material>
+    </visual>
+    <inertial>
+    <origin xyz="-5.5159452104843917813e-18 -3.3329708142992708841e-16 -0.012700000000000008157" rpy="0 0 0"/>
+    <mass value="1.0" />
+    <inertia ixx="0.0149" ixy="0"  ixz="1.3743513466638252754e-32" iyy="0.0149" iyz="0" izz="0.029595" />
+    </inertial>
+    </link>
+
+    <joint name="backleft_wheel" type="continuous">
+    <origin xyz="-0.24129999999999984794 0 0.050799999999999984057" rpy="0 2.9274135154685984966e-32 0" />
+    <parent link="Remorque_lien_roue_gauche" />
+    <child link="remorque_roue_BL" />
+    <axis xyz="0 0 1"/>
+    <limit effort="-1" velocity="20" />
+    <physics>
+    <simbody></simbody>
+    <ode>
+    <implicit_string_damper>True</implicit_string_damper>
+    <fudge_factor>1</fudge_factor>
+    </ode>
+    <suspension>
+    </suspension>
+    </physics>
+    </joint>
+
+    <joint name="Remorque_lien_roue_gauche_joint" type="revolute">
+    <origin xyz="0.2793999999999999817 -0.13792199999999998905 -1.2699999999999995737" rpy="-3.141592653589793116 -1.570796326794896558 0" />
+    <parent link="MTT_remorque" />
+    <child link="Remorque_lien_roue_gauche" />
+    <axis xyz="0 0 1"/>
+    <limit effort="-1" velocity="20" lower="-0.52359877559829881566" upper="0.52359877559829881566"/>
+    </joint>
+
+    <link name="Remorque_lien_roue_droite">
+    <visual>
+    <origin xyz="-0.4699000000010151723 -0.014477999967073801324 -0.025400000000000033662" rpy="0 -2.9274135154685984966e-32 0" />
+    <geometry>
+    <mesh filename="file://$(find mtt_description)/meshes/visual/remorquebarrelienroues.stl"/>
+    </geometry>
+    <material name="remorquebarrelienroues_material">
+    <color rgba="0.50588235294117644969 0.53333333333333332593 0.54901960784313730279 1.0"/>
+    </material>
+    </visual>
+    <inertial>
+    <origin xyz="-2.2204460492503130808e-16 -1.7347234759768070944e-18 -0.011962764931897957102" rpy="0 0 0"/>
+    <mass value="1.0" />
+    <inertia ixx="0.0015481614309977712648" ixy="0"  ixz="-3.398701470065399431e-33" iyy="0.11698078969574195185" iyz="0" izz="0.11764728620809132564" />
+    </inertial>
+    </link>
+
+    <link name="remorque_roue_FR">
+    <visual>
+    <origin xyz="0 -3.3306690738754696213e-16 5.5511151231257827021e-17" rpy="0 -2.9274135154685984966e-32 0" />
+    <geometry>
+    <mesh filename="file://$(find mtt_description)/meshes/visual/remorqueroue.stl"/>
+    </geometry>
+    <material name="remorqueroue_material">
+    <color rgba="0.50588235294117644969 0.53333333333333332593 0.54901960784313730279 1.0"/>
+    </material>
+    </visual>
+    <inertial>
+    <origin xyz="-5.5159452104843917813e-18 -3.3329708142992708841e-16 -0.012699999999999952646" rpy="0 0 0"/>
+    <mass value="1.0" />
+    <inertia ixx="0.0149" ixy="0"  ixz="-1.3743513466638252754e-32" iyy="0.0149" iyz="0" izz="0.029595" />
+    </inertial>
+    </link>
+
+    <joint name="frontright_wheel" type="continuous">
+    <origin xyz="0.24129999999999984794 -1.1102230246251565404e-16 0.050799999999999956302" rpy="0 -2.9274135154685984966e-32 0" />
+    <parent link="Remorque_lien_roue_droite" />
+    <child link="remorque_roue_FR" />
+    <axis xyz="0 0 1"/>
+    <limit effort="-1" velocity="20" />
+    <physics>
+    <simbody></simbody>
+    <ode>
+    <implicit_string_damper>True</implicit_string_damper>
+    <fudge_factor>1</fudge_factor>
+    </ode>
+    <suspension>
+    </suspension>
+    </physics>
+    </joint>
+
+    <link name="remorque_roue_BR">
+    <visual>
+    <origin xyz="0 -3.3306690738754696213e-16 0" rpy="0 -2.9274135154685984966e-32 0" />
+    <geometry>
+    <mesh filename="file://$(find mtt_description)/meshes/visual/remorqueroue.stl"/>
+    </geometry>
+    <material name="remorqueroue_material">
+    <color rgba="0.50588235294117644969 0.53333333333333332593 0.54901960784313730279 1.0"/>
+    </material>
+    </visual>
+    <inertial>
+    <origin xyz="-5.5159452104843917813e-18 -3.3329708142992708841e-16 -0.012700000000000008157" rpy="0 0 0"/>
+    <mass value="1.0" />
+    <inertia ixx="0.0149" ixy="0"  ixz="-1.3743513466638252754e-32" iyy="0.0149" iyz="0" izz="0.029595" />
+    </inertial>
+    </link>
+
+    <joint name="backright_wheel" type="continuous">
+    <origin xyz="-0.24130000000000029203 0 0.050799999999999845279" rpy="0 -2.9274135154685984966e-32 0" />
+    <parent link="Remorque_lien_roue_droite" />
+    <child link="remorque_roue_BR" />
+    <axis xyz="0 0 1"/>
+    <limit effort="-1" velocity="20" />
+    <physics>
+    <simbody></simbody>
+    <ode>
+    <implicit_string_damper>True</implicit_string_damper>
+    <fudge_factor>1</fudge_factor>
+    </ode>
+    <suspension>
+    </suspension>
+    </physics>
+    </joint>
+
+    <joint name="Remorque_lien_roue_droite_joint" type="revolute">
+    <origin xyz="-0.27940000000000003721 -0.13792199999999998905 -1.2700000000000000178" rpy="-0 -1.570796326794896558 0" />
+    <parent link="MTT_remorque" />
+    <child link="Remorque_lien_roue_droite" />
+    <axis xyz="0 0 1"/>
+    <limit effort="-1" velocity="20" lower="-0.52359877559829881566" upper="0.52359877559829881566"/>
+    <physics>
+    <simbody></simbody>
+    <ode>
+    <implicit_string_damper>True</implicit_string_damper>
+    <fudge_factor>1</fudge_factor>
+    </ode>
+    <suspension>
+    </suspension>
+    </physics>
+    </joint>
+
+    <joint name="roll" type="revolute">
+    <origin xyz="0 -1.1102230246251565404e-16 -0.057149999999851597288" rpy="-1.570796326794896558 -1.8488927466117469663e-32 -1.570796326794896558" />
+    <parent link="joint_remorque_simple" />
+    <child link="MTT_remorque" />
+    <axis xyz="0 0 1"/>
+    <limit effort="-1" velocity="20" lower="-1.570796326794896558" upper="1.570796326794896558"/>
+    <physics>
+    <simbody></simbody>
+    <ode>
+    <implicit_string_damper>True</implicit_string_damper>
+    <fudge_factor>1</fudge_factor>
+    </ode>
+    <suspension>
+    </suspension>
+    </physics>
+    </joint>
+
+    <joint name="yaw" type="revolute">
+    <origin xyz="3.9990233346998138586e-13 0.057149999999500017411 -0.26352500000202994102" rpy="-1.570796326794896558 2.9274135154685984966e-32 0" />
+    <parent link="Frame_fixation_articule" />
+    <child link="joint_remorque_simple" />
+    <axis xyz="0 0 1"/>
+    <limit effort="1000000000.0" velocity="20" lower="-1.0471975511965976313" upper="1.0471975511965976313"/>
+    <physics>
+    <simbody></simbody>
+    <ode>
+    <implicit_string_damper>True</implicit_string_damper>
+    <fudge_factor>1</fudge_factor>
+    </ode>
+    <suspension>
+    </suspension>
+    </physics>
+    </joint>
+   
+    <joint name="pitch" type="revolute">
+    <origin xyz="-1.0511878376018575221 0.21250283103064232515 0.35775105114691785335" rpy="-1.570796326794896558 -0 -7.5633943552588769595e-16" />
+    <parent link="base_link" />
+    <child link="Frame_fixation_articule" />
+    <axis xyz="0 0 1"/>
+    <limit effort="-1" velocity="20" lower="-1.570796326794896558" upper="1.570796326794896558"/>
+    <physics>
+    <simbody></simbody>
+    <ode>
+    <implicit_string_damper>True</implicit_string_damper>
+    <fudge_factor>1</fudge_factor>
+    </ode>
+    <suspension>
+    </suspension>
+    </physics>
+    </joint>
+
+    <ros2_control name="RobotController" type="system">
+
+        <hardware>
+          <plugin>gz_ros2_control/GazeboSimSystem</plugin>
+        </hardware>
+
+        <joint name="1_continuous">
+            <command_interface name="velocity"/>
+            <state_interface name="position"/>
+            <state_interface name="velocity"/>
+        </joint> 
+        
+        <joint name="2_continuous">
+
+            <command_interface name="velocity">
+                <param name="min">-10</param>
+                <param name="max">10</param>
+            </command_interface>
+            <state_interface name="position"/>
+            <state_interface name="velocity"/>
+        </joint> 
+            
+        <joint name="3_continuous">
+            <command_interface name="velocity">
+                <param name="min">-10</param>
+                <param name="max">10</param>
+            </command_interface>
+            <state_interface name="position"/>
+            <state_interface name="velocity"/>
+        </joint> 
+            
+        
+        <joint name="4_continuous">
+            <command_interface name="velocity">
+                <param name="min">-10</param>
+                <param name="max">10</param>
+            </command_interface>
+            <state_interface name="position"/>
+            <state_interface name="velocity"/>
+        </joint> 
+            
+        <joint name="5_continuous">
+            <command_interface name="velocity">
+                <param name="min">-10</param>
+                <param name="max">10</param>
+            </command_interface>
+            <state_interface name="position"/>
+            <state_interface name="velocity"/>
+        </joint> 
+            
+        <joint name="6_continuous">
+            <command_interface name="velocity">
+                <param name="min">-10</param>
+                <param name="max">10</param>
+            </command_interface>
+            <state_interface name="position"/>
+            <state_interface name="velocity"/>
+        </joint> 
+            
+        <joint name="7_continuous">
+            <command_interface name="velocity">
+                <param name="min">-10</param>
+                <param name="max">10</param>
+            </command_interface>
+            <state_interface name="position"/>
+            <state_interface name="velocity"/>
+        </joint> 
+            
+        <joint name="8_continuous">
+            <command_interface name="velocity">
+                <param name="min">-10</param>
+                <param name="max">10</param>
+            </command_interface>
+            <state_interface name="position"/>
+            <state_interface name="velocity"/>
+        </joint> 
+            
+        <joint name="9_continuous">
+            <command_interface name="velocity">
+                <param name="min">-10</param>
+                <param name="max">10</param>
+            </command_interface>
+            <state_interface name="position"/>
+            <state_interface name="velocity"/>
+        </joint> 
+            
+        <joint name="10_continuous">
+            <command_interface name="velocity">
+                <param name="min">-10</param>
+                <param name="max">10</param>
+            </command_interface>
+            <state_interface name="position"/>
+            <state_interface name="velocity"/>
+        </joint> 
+            
+        <joint name="11_continuous">
+            <command_interface name="velocity">
+                <param name="min">-10</param>
+                <param name="max">10</param>
+            </command_interface>
+            <state_interface name="position"/>
+            <state_interface name="velocity"/>
+        </joint> 
+            
+        <joint name="12_continuous">
+            <command_interface name="velocity">
+                <param name="min">-10</param>
+                <param name="max">10</param>
+            </command_interface>
+            <state_interface name="position"/>
+            <state_interface name="velocity"/>
+        </joint> 
+            
+        <joint name="13_continuous">
+            <command_interface name="velocity">
+                <param name="min">-10</param>
+                <param name="max">10</param>
+            </command_interface>
+            <state_interface name="position"/>
+            <state_interface name="velocity"/>
+        </joint> 
+            
+        <joint name="14_continuous">
+            <command_interface name="velocity">
+                <param name="min">-10</param>
+                <param name="max">10</param>
+            </command_interface>
+            <state_interface name="position"/>
+            <state_interface name="velocity"/>
+        </joint> 
+            
+        <joint name="15_continuous">
+            <command_interface name="velocity">
+                <param name="min">-10</param>
+                <param name="max">10</param>
+            </command_interface>
+            <state_interface name="position"/>
+            <state_interface name="velocity"/>
+        </joint> 
+            
+        <joint name="16_continuous">
+            <command_interface name="velocity">
+                <param name="min">-10</param>
+                <param name="max">10</param>
+            </command_interface>
+            <state_interface name="position"/>
+            <state_interface name="velocity"/>
+        </joint> 
+            
+        <joint name="17_continuous">
+            <command_interface name="velocity">
+                <param name="min">-10</param>
+                <param name="max">10</param>
+            </command_interface>
+            <state_interface name="position"/>
+            <state_interface name="velocity"/>
+        </joint> 
+            
+        <joint name="18_continuous">
+            <command_interface name="velocity">
+                <param name="min">-10</param>
+                <param name="max">10</param>
+            </command_interface>
+            <state_interface name="position"/>
+            <state_interface name="velocity"/>
+        </joint> 
+            
+        <joint name="19_continuous">
+            <command_interface name="velocity">
+                <param name="min">-10</param>
+                <param name="max">10</param>
+            </command_interface>
+            <state_interface name="position"/>
+            <state_interface name="velocity"/>
+        </joint> 
+            
+        <joint name="20_continuous">
+            <command_interface name="velocity">
+                <param name="min">-10</param>
+                <param name="max">10</param>
+            </command_interface>
+            <state_interface name="position"/>
+            <state_interface name="velocity"/>
+        </joint> 
+
+        <joint name="yaw">
+            <command_interface name="velocity"/>
+            <state_interface name="position"/>
+            <state_interface name="velocity"/>
+        </joint> 
+            
+    </ros2_control>
+
+    <xacro:default_transmission joint_name="1_continuous"/>
+    <xacro:default_transmission joint_name="2_continuous"/>
+    <xacro:default_transmission joint_name="3_continuous"/>
+    <xacro:default_transmission joint_name="4_continuous"/>
+    <xacro:default_transmission joint_name="5_continuous"/>
+    <xacro:default_transmission joint_name="6_continuous"/>
+    <xacro:default_transmission joint_name="7_continuous"/>
+    <xacro:default_transmission joint_name="8_continuous"/>
+    <xacro:default_transmission joint_name="9_continuous"/>
+    <xacro:default_transmission joint_name="10_continuous"/>
+    <xacro:default_transmission joint_name="11_continuous"/>
+    <xacro:default_transmission joint_name="12_continuous"/>
+    <xacro:default_transmission joint_name="13_continuous"/>
+    <xacro:default_transmission joint_name="14_continuous"/>
+    <xacro:default_transmission joint_name="15_continuous"/>
+    <xacro:default_transmission joint_name="16_continuous"/>
+    <xacro:default_transmission joint_name="17_continuous"/>
+    <xacro:default_transmission joint_name="18_continuous"/>
+    <xacro:default_transmission joint_name="19_continuous"/>
+    <xacro:default_transmission joint_name="20_continuous"/>
+    <xacro:default_transmission joint_name="yaw"/>
+
+    <gazebo reference="base_link">
+        <material>Gazebo/Orange</material>
+    </gazebo>
+
+    <gazebo reference="Frame_fixation_articule">
+        <material>Gazebo/Blue</material>
+    </gazebo>
+
+    <gazebo reference="joint_remorque_simple">
+        <material>Gazebo/Black</material>
+    </gazebo>
+
+    <gazebo reference="MTT_remorque">
+        <material>Gazebo/Orange</material>
+    </gazebo>
+
+    
+<!-- LiDAR Link -->
+<link name="lidar_link">
+  <pose>0 0 0.2 0 0 0</pose>
+
+  <visual>
+    <geometry>
+      <cylinder length="0.05" radius="0.02"/>
+    </geometry>
+    <material name="green">
+      <color rgba="0 1 0 1"/>
+    </material>
+  </visual>
+
+
+  <inertial>
+    <mass value="0.1"/>
+    <inertia ixx="0.0001" ixy="0.0" ixz="0.0"
+             iyy="0.0001" iyz="0.0"
+             izz="0.0001"/>
+  </inertial>
+</link>
+
+<!-- Physical pencil mark reference point -->
+<link name="reference_point">
+  <visual>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <geometry>
+      <sphere radius="0.005"/>
+    </geometry>
+    <material name="mark_material">
+      <color rgba="1.0 0.0 0.0 1.0"/>
+    </material>
+  </visual>
+</link>
+
+<joint name="reference_point_joint" type="fixed">
+  <parent link="base_link"/>
+  <child link="reference_point"/>
+  <origin xyz="-0.7174808381178577409 0.21597831029643155 0.52330103716210749187" rpy="0 0 0"/>
+</joint>
+
+<!-- Center LiDAR -->
+<link name="center_lidar_link">
+  <visual>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <geometry>
+      <cylinder radius="0.05" length="0.1"/>
+    </geometry>
+    <material name="lidar_material">
+      <color rgba="0.2 0.2 0.2 1.0"/>
+    </material>
+  </visual>
+  <inertial>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <mass value="0.1"/>
+    <inertia ixx="0.0001" ixy="0.0" ixz="0.0"
+             iyy="0.0001" iyz="0.0"
+             izz="0.0001"/>
+  </inertial>
+</link>
+
+<joint name="center_lidar_joint" type="fixed">
+  <parent link="reference_point"/>
+  <child link="center_lidar_link"/>
+  <origin xyz="0.62 -0.266 0.355" rpy="0 0 ${pi/2}"/>
+</joint>
+
+<!-- Front LiDAR -->
+<link name="front_lidar_link">
+  <visual>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <geometry>
+      <cylinder radius="0.05" length="0.1"/>
+    </geometry>
+    <material name="lidar_material">
+      <color rgba="0.2 0.2 0.2 1.0"/>
+    </material>
+  </visual>
+  <inertial>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <mass value="0.1"/>
+    <inertia ixx="0.0001" ixy="0.0" ixz="0.0"
+             iyy="0.0001" iyz="0.0"
+             izz="0.0001"/>
+  </inertial>
+</link>
+
+<joint name="front_lidar_joint" type="fixed">
+  <parent link="reference_point"/>
+  <child link="front_lidar_link"/>
+  <origin xyz="1.24 -0.266 0.3302" rpy="0 0 0"/>
+</joint>
+
+<!-- Rear LiDAR -->
+<link name="rear_lidar_link">
+  <visual>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <geometry>
+      <cylinder radius="0.05" length="0.1"/>
+    </geometry>
+    <material name="lidar_material">
+      <color rgba="0.2 0.2 0.2 1.0"/>
+    </material>
+  </visual>
+  <inertial>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <mass value="0.1"/>
+    <inertia ixx="0.0001" ixy="0.0" ixz="0.0"
+             iyy="0.0001" iyz="0.0"
+             izz="0.0001"/>
+  </inertial>
+</link>
+
+<joint name="rear_lidar_joint" type="fixed">
+  <parent link="reference_point"/>
+  <child link="rear_lidar_link"/>
+  <origin xyz="0.01 -0.266 0.3302" rpy="0 0 0"/>
+</joint>
+
+<!-- Legacy LiDAR (kept for compatibility) -->
+<joint name="lidar_joint" type="fixed">
+  <parent link="base_link"/>
+  <child link="lidar_link"/>
+  <origin xyz="0 0 0.8" rpy="0 0 0"/>
+</joint>
+
+<gazebo>
+    <plugin filename="gz_ros2_control-system" name="gz_ros2_control::GazeboSimROS2ControlPlugin"> 
+    <parameters> $(find mtt_bringup)/config/control_config.yaml</parameters>
+</plugin>
+</gazebo>
+
+<!-- Gazebo sensor plugin for Center LiDAR -->
+<gazebo reference="center_lidar_link">
+  <sensor name="center_lidar" type="gpu_lidar">
+    <gz_frame_id>center_lidar_link</gz_frame_id>
+    <pose>0 0 0 0 0 0</pose>
+    <update_rate>10</update_rate>
+    <ray>
+      <scan>
+        <horizontal>
+          <samples>360</samples>
+          <resolution>1.0</resolution>
+          <min_angle>-3.14</min_angle>
+          <max_angle>3.14</max_angle>
+        </horizontal>
+      </scan>
+      <range>
+        <min>0.1</min>
+        <max>30.0</max>
+      </range>
+    </ray>
+  </sensor>
+</gazebo>
+
+<!-- Gazebo sensor plugin for Front LiDAR -->
+<gazebo reference="front_lidar_link">
+  <sensor name="front_lidar" type="gpu_lidar">
+    <gz_frame_id>front_lidar_link</gz_frame_id>
+    <pose>0 0 0 0 0 0</pose>
+    <update_rate>10</update_rate>
+    <ray>
+      <scan>
+        <horizontal>
+          <samples>360</samples>
+          <resolution>1.0</resolution>
+          <min_angle>-3.14</min_angle>
+          <max_angle>3.14</max_angle>
+        </horizontal>
+      </scan>
+      <range>
+        <min>0.1</min>
+        <max>30.0</max>
+      </range>
+    </ray>
+  </sensor>
+</gazebo>
+
+<!-- Gazebo sensor plugin for Rear LiDAR -->
+<gazebo reference="rear_lidar_link">
+  <sensor name="rear_lidar" type="gpu_lidar">
+    <gz_frame_id>rear_lidar_link</gz_frame_id>
+    <pose>0 0 0 0 0 0</pose>
+    <update_rate>10</update_rate>
+    <ray>
+      <scan>
+        <horizontal>
+          <samples>360</samples>
+          <resolution>1.0</resolution>
+          <min_angle>-3.14</min_angle>
+          <max_angle>3.14</max_angle>
+        </horizontal>
+      </scan>
+      <range>
+        <min>0.1</min>
+        <max>30.0</max>
+      </range>
+    </ray>
+  </sensor>
+</gazebo>
+
+
+<gazebo>
+  <plugin
+    filename="gz-sim-pose-publisher-system"
+    name="gz::sim::systems::PosePublisher">
+  <publish_model_pose>true</publish_model_pose>
+</plugin>
+
+</gazebo>
+
+</robot>

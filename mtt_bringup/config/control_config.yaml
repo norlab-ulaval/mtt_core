@@ -1,0 +1,51 @@
+controller_manager:
+  ros__parameters:
+    update_rate: 1000
+    use_sim_time: true
+
+    wheel_group_controller:
+      type: velocity_controllers/JointGroupVelocityController
+    yaw_controller:
+      type: velocity_controllers/JointGroupVelocityController
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+
+wheel_group_controller:
+  ros__parameters:
+    joints:
+      - 1_continuous
+      - 2_continuous
+      - 3_continuous
+      - 4_continuous
+      - 5_continuous
+      - 6_continuous
+      - 7_continuous
+      - 8_continuous
+      - 9_continuous
+      - 10_continuous
+      - 11_continuous
+      - 12_continuous
+      - 13_continuous
+      - 14_continuous
+      - 15_continuous
+      - 16_continuous
+      - 17_continuous
+      - 18_continuous
+      - 19_continuous
+      - 20_continuous
+    
+    command_interfaces:
+      - velocity
+    state_interfaces:
+      - position
+      - velocity
+
+yaw_controller:
+  ros__parameters:
+    joints:
+      - yaw   
+    command_interfaces:
+      - velocity
+    state_interfaces:
+      - position
+      - velocity

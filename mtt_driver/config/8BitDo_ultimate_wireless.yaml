@@ -1,0 +1,11 @@
+mtt_teleop_joy:
+  axis:
+    linear_speed: 4
+    rotation_speed: 3
+    brake: 5
+    winch: 7
+  buttons:
+    deadman: 5
+    winch_safety: 3
+    light_toggle: 2
+    safety: 6
