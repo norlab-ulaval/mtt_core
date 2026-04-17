@@ -11,10 +11,11 @@ This launch file starts the complete MTT composable architecture including:
 
 import os
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, ExecuteProcess, GroupAction
+from launch.actions import DeclareLaunchArgument, ExecuteProcess, GroupAction, OpaqueFunction
 from launch.substitutions import LaunchConfiguration, Command, PythonExpression
 from launch.conditions import IfCondition
-from launch_ros.actions import Node, PushROSNamespace
+from launch_ros.actions import Node, PushROSNamespace, ComposableNodeContainer
+from launch_ros.descriptions import ComposableNode
 from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
 
@@ -26,14 +27,15 @@ def generate_launch_description():
     use_namespace = LaunchConfiguration('use_namespace')
 
     # --- real CAN bring-up (with bitrate) ---
+    # All commands end with || true so a failure (e.g. sudo not available in the
+    # container, or interface already up) never causes the launch to shut down.
     setup_real_can_process = ExecuteProcess(
         cmd=[
             'bash', '-c',
-            # uses launch args via env-style expansion by passing them into the shell
             'IFACE="$(echo $CAN_IFACE)"; RATE="$(echo $CAN_RATE)"; '
             'sudo ip link set "$IFACE" down 2>/dev/null || true; '
-            'sudo ip link set "$IFACE" up type can bitrate "$RATE"; '
-            'echo "[can] ${IFACE} UP @ ${RATE} bps."'
+            'sudo ip link set "$IFACE" up type can bitrate "$RATE" 2>/dev/null || true; '
+            'echo "[can] ${IFACE} bring-up attempted @ ${RATE} bps (errors are non-fatal)."'
         ],
         additional_env={
             'CAN_IFACE': LaunchConfiguration('can_interface'),
@@ -139,7 +141,27 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'odometry_broadcast_tf',
             default_value='true',
-            description='Whether mtt_odometry_manager should publish odom->base TF'
+            description='Whether mtt_odometry_node should publish odom->base TF'
+        ),
+        DeclareLaunchArgument(
+            'max_articulation_deg',
+            default_value='60.0',
+            description='Maximum articulation angle (degrees). Matches URDF yaw joint ±60°.'
+        ),
+        DeclareLaunchArgument(
+            'max_linear_speed_ms',
+            default_value='0.6',
+            description='Maximum linear speed fed to the drive controller (m/s).'
+        ),
+        DeclareLaunchArgument(
+            'throttle_deadband',
+            default_value='0.05',
+            description='Normalized throttle deadband (0–1). Tune to remove mechanical slop.'
+        ),
+        DeclareLaunchArgument(
+            'steer_deadband',
+            default_value='0.05',
+            description='Normalized steering deadband (0–1). Tune to remove mechanical slop.'
         ),
         DeclareLaunchArgument(
             'use_rviz',
@@ -180,47 +202,63 @@ def generate_launch_description():
 
         GroupAction(actions=[
             PushROSNamespace(condition=IfCondition(use_namespace), namespace=robot_namespace),
-            Node(
-                package='mtt_driver',
-                executable='mtt_ros_wrapper',
-                name='mtt_ros_wrapper',
-                parameters=[{
-                    'can_interface': LaunchConfiguration('can_interface'),
-                    'can_id': ParameterValue(LaunchConfiguration('can_id'), value_type=int),
-                    'driver_log_level': LaunchConfiguration('driver_log_level'),
-                    'control_frequency_hz': LaunchConfiguration('control_frequency_hz'),
-                    'can_frame_frequency_hz': LaunchConfiguration('can_frame_frequency_hz'),
-                    'telemetry_timeout_seconds': LaunchConfiguration('telemetry_timeout_seconds'),
-                    'command_timeout_seconds': LaunchConfiguration('command_timeout_seconds'),
-                    'base_frame': LaunchConfiguration('base_frame'),
-                }],
-                output='screen',
-                emulate_tty=True,
-                respawn=True,
-                respawn_delay=2.0
-            ),
 
-
-            Node(
-                package='mtt_driver',
-                executable='mtt_odometry_manager',
-                name='mtt_odometry_manager',
-                arguments=['--ros-args', '--log-level', LaunchConfiguration('driver_log_level')],
-                parameters=[{
-                    'base_frame': LaunchConfiguration('base_frame'),
-                    'odom_frame': LaunchConfiguration('odom_frame'),
-                    'cmd_vel_topic': 'cmd_vel',
-                    'broadcast_tf': LaunchConfiguration('odometry_broadcast_tf'),
-                    'steer_control_mode': 'closed_loop',
-                    'pivot_turn_enabled': False,
-                    'min_turn_speed_ms': 0.05,
-                    'yaw_slip_factor': 0.6,
-                }],
-                output='screen',
-                emulate_tty=True,
-                respawn=True,
-                respawn_delay=2.0
-            ),
+            # ── MTT Core: MultiThreaded composable container ────────────
+            # We use an OpaqueFunction to conditionally exclude the CAN node in simulation
+            OpaqueFunction(function=lambda context: [
+                ComposableNodeContainer(
+                    name='mtt_core_container',
+                    namespace='',
+                    package='rclcpp_components',
+                    executable='component_container_mt',
+                    composable_node_descriptions=(
+                        [
+                            ComposableNode(
+                                package='mtt_driver',
+                                plugin='mtt::MttCanNode',
+                                name='mtt_can_node',
+                                parameters=[{
+                                    'can_interface': LaunchConfiguration('can_interface'),
+                                    'can_id': ParameterValue(LaunchConfiguration('can_id'), value_type=int),
+                                    'control_frequency_hz': LaunchConfiguration('control_frequency_hz'),
+                                    'can_frame_frequency_hz': LaunchConfiguration('can_frame_frequency_hz'),
+                                    'max_linear_speed_ms': LaunchConfiguration('max_linear_speed_ms'),
+                                    'telemetry_timeout_ms': ParameterValue(
+                                        PythonExpression(['1000.0 * ', LaunchConfiguration('telemetry_timeout_seconds')]),
+                                        value_type=float,
+                                    ),
+                                    'command_timeout_seconds': LaunchConfiguration('command_timeout_seconds'),
+                                    'base_frame': LaunchConfiguration('base_frame'),
+                                    'throttle_deadband': LaunchConfiguration('throttle_deadband'),
+                                    'steer_deadband': LaunchConfiguration('steer_deadband'),
+                                }],
+                                extra_arguments=[{'use_intra_process_comms': True}],
+                            )
+                        ]
+                        if LaunchConfiguration('use_sim_time').perform(context).lower() != 'true'
+                        else []
+                    ) + [
+                        ComposableNode(
+                            package='mtt_driver',
+                            plugin='mtt::MttOdometryNode',
+                            name='mtt_odometry_node',
+                            parameters=[{
+                                'base_frame': LaunchConfiguration('base_frame'),
+                                'odom_frame': LaunchConfiguration('odom_frame'),
+                                'broadcast_tf': LaunchConfiguration('odometry_broadcast_tf'),
+                                'steer_control_mode': 'closed_loop',
+                                'pivot_turn_enabled': False,
+                                'min_turn_speed_ms': 0.05,
+                                'yaw_slip_factor': 0.6,
+                                'max_articulation_deg': LaunchConfiguration('max_articulation_deg'),
+                            }],
+                            extra_arguments=[{'use_intra_process_comms': True}],
+                        )
+                    ],
+                    output='screen',
+                    emulate_tty=True,
+                )
+            ]),
 
             Node(
                 package='twist_mux',
@@ -261,45 +299,45 @@ def generate_launch_description():
         #     respawn=True
         # ),
             Node(
-                package='joy',
-                executable='joy_node',
+                package='joy_linux',
+                executable='joy_linux_node',
                 name='joy_node',
                 parameters=[{
                     'deadzone': 0.15,
-
+                    'device_name': '/dev/input/js0',
+                    'autorepeat_rate': 20.0,
                 }],
                 output='screen',
                 condition=IfCondition(LaunchConfiguration('enable_joystick')),
                 respawn=True
             ),
 
-        # # 6.5) Teleop command smoother (decays to zero on input inactivity)
-        # Node(
-        #     package='mtt_driver',
-        #     executable='teleop_cmd_smoother',
-        #     name='teleop_cmd_smoother',
-        #     parameters=[{
-        #         'input_topic': 'cmd_vel/teleop',
-        #         'output_topic': 'cmd_vel/teleop_smoothed',
-        #         'input_timeout': 0.5,
-        #         'rate_hz': 50.0,
-        #     }],
-        #     output='screen',
-        #     condition=IfCondition(LaunchConfiguration('enable_teleop')),
-        #     respawn=True
-        # ),
+        # 6.5) Teleop command smoother — rate-limits acceleration and decays on timeout
+        #      Edit config/teleop_smoother.yaml to tune max_accel_linear/angular.
+            Node(
+                package='mtt_driver',
+                executable='teleop_cmd_smoother_node_exe',
+                name='teleop_cmd_smoother_node',
+                parameters=[os.path.join(
+                    FindPackageShare(package='mtt_driver').find('mtt_driver'),
+                    'config', 'teleop_smoother.yaml')],
+                output='screen',
+                respawn=True,
+                respawn_delay=2.0,
+            ),
 
         # 7) Teleop
             Node(
                 package='mtt_driver',
                 executable='mtt_teleop_joy',
                 name='mtt_teleop_joy_node',
+                parameters=[os.path.join(
+                    FindPackageShare(package='mtt_driver').find('mtt_driver'),
+                    'config', 'mtt_teleop_joy.yaml')],
                 remappings=[('cmd_vel_raw', 'cmd_vel/teleop')],
                 output='screen',
                 condition=IfCondition(LaunchConfiguration('enable_teleop')),
                 respawn=True
             ),
         ]),
-
-    
     ])

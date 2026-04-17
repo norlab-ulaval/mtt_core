@@ -15,6 +15,7 @@ from launch.actions import (
 from launch.conditions import IfCondition
 from ament_index_python.packages import get_package_share_directory
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 from launch.event_handlers import OnShutdown, OnProcessExit
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PythonExpression
@@ -184,7 +185,11 @@ def generate_launch_description():
 
     urdf = os.path.join(mtt_description_dir, 'urdf', 'robot.urdf.xacro')
 
-    robot_description = xacro.process_file(urdf).toxml()
+    robot_description_content = xacro.process_file(urdf).toxml()
+    # Wrapping in ParameterValue with value_type=str is required when the
+    # URDF XML contains characters that ROS2's YAML parser would misinterpret
+    # (colons, angle brackets, quotes, etc.)
+    robot_description = ParameterValue(robot_description_content, value_type=str)
 
 
 
@@ -267,7 +272,7 @@ def generate_launch_description():
     
     remove_temp_sdf_file = RegisterEventHandler(event_handler=OnShutdown(
         on_shutdown=[
-            OpaqueFunction(function=lambda _: os.remove(world_sdf))
+            OpaqueFunction(function=lambda _: os.remove(world_sdf) if os.path.exists(world_sdf) else None)
         ]))
 
     gazebo_client = IncludeLaunchDescription(
@@ -299,20 +304,23 @@ def generate_launch_description():
     
 
 
-    bringup_cmd = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(os.path.join(mtt_bringup_dir, 'launch', 'mtt_bringup.launch.py')),
+    live_robot_cmd = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(os.path.join(get_package_share_directory('norlab_robot'), 'launch', 'live_robot.launch.py')),
+        launch_arguments={
+            'use_sim_time': use_sim_time,
+            'enable_sensors': 'false',
+            'enable_localization': 'false',
+        }.items(),
+    )
+
+    mtt_controller_cmd = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(os.path.join(mtt_bringup_dir, 'launch', 'mtt_controller.launch.py')),
         launch_arguments={
             'namespace': namespace,
             'use_namespace': use_namespace,
-            'slam': slam,
-            'map': map_yaml_file,
             'use_sim_time': use_sim_time,
-            'params_file': params_file,
-            'autostart': autostart,
-            'use_composition': use_composition,
-            'use_respawn': use_respawn,
         }.items(),
-    )    
+    )
 
     ld = LaunchDescription()
     ld.add_action(declare_log_level_cmd)
@@ -360,15 +368,15 @@ def generate_launch_description():
     ld.add_action(gazebo_server)
     ld.add_action(gazebo_client)
 
-    # Add the actions to launch all of the navigation nodes
-    ld.add_action(start_robot_state_publisher_cmd)
+    # Robot state publisher is now handled by live_robot.launch.py
 
     # no longer necessary
     # ld.add_action(joint_state_publisher_node)
     # ld.add_action(rviz_cmd)
 
 
-    ld.add_action(bringup_cmd)
+    ld.add_action(live_robot_cmd)
+    ld.add_action(mtt_controller_cmd)
 
     return ld
     

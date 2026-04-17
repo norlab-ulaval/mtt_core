@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
 
+import os
+
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, GroupAction
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node, PushROSNamespace
+from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description():
     robot_namespace = LaunchConfiguration("robot_namespace")
     use_namespace = LaunchConfiguration("use_namespace")
+    driver_share = FindPackageShare("mtt_driver").find("mtt_driver")
 
     return LaunchDescription([
         DeclareLaunchArgument(
@@ -34,12 +38,12 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "max_linear_speed",
-            default_value="0.3",
+            default_value="0.6",
             description="Maximum operator linear speed in m/s.",
         ),
         DeclareLaunchArgument(
             "max_angular_speed",
-            default_value="0.3",
+            default_value="0.6",
             description="Maximum operator angular speed in rad/s.",
         ),
         GroupAction(actions=[
@@ -51,6 +55,7 @@ def generate_launch_description():
                 parameters=[{
                     "deadzone": LaunchConfiguration("deadzone"),
                     "device_name": LaunchConfiguration("joy_device"),
+                    "autorepeat_rate": 20.0,  # resend at 20 Hz when stationary — prevents twist_mux timeout (0.5 s)
                 }],
                 output="screen",
             ),
@@ -58,10 +63,13 @@ def generate_launch_description():
                 package="mtt_driver",
                 executable="mtt_teleop_joy",
                 name="mtt_operator_teleop",
-                parameters=[{
-                    "max_linear_speed": LaunchConfiguration("max_linear_speed"),
-                    "max_angular_speed": LaunchConfiguration("max_angular_speed"),
-                }],
+                parameters=[
+                    os.path.join(driver_share, "config", "mtt_teleop_joy.yaml"),
+                    {
+                        "max_linear_speed": LaunchConfiguration("max_linear_speed"),
+                        "max_angular_speed": LaunchConfiguration("max_angular_speed"),
+                    },
+                ],
                 remappings=[("cmd_vel_raw", "cmd_vel/teleop")],
                 output="screen",
             ),

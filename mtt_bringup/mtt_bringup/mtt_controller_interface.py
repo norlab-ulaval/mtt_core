@@ -3,7 +3,6 @@ import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import TwistStamped
 from std_msgs.msg import Float64MultiArray
-from mtt_driver.mtt_vehicle_params import get_mtt_params
 
 class MttControllerInterface(Node):
 
@@ -12,6 +11,7 @@ class MttControllerInterface(Node):
         self.declare_parameter("cmd_vel_topic", "cmd_vel")
         self.declare_parameter("wheel_command_topic", "wheel_group_controller/commands")
         self.declare_parameter("yaw_command_topic", "yaw_controller/commands")
+        self.declare_parameter("gear_ratio", 1.0)
 
         cmd_vel_topic = self.get_parameter("cmd_vel_topic").value
         wheel_command_topic = self.get_parameter("wheel_command_topic").value
@@ -21,8 +21,7 @@ class MttControllerInterface(Node):
         self.yaw_publisher = self.create_publisher(Float64MultiArray, yaw_command_topic, 10)
         self.subscription = self.create_subscription(TwistStamped, cmd_vel_topic, self.cmd_vel_callback, 10)
 
-        self.mtt_params = get_mtt_params()
-        self.gear_ratio = self.mtt_params.mechanical_gear_ratio
+        self.gear_ratio = self.get_parameter("gear_ratio").value
 
 
     def cmd_vel_callback(self, cmd_vel_msg: TwistStamped):

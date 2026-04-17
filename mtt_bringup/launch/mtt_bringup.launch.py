@@ -212,8 +212,14 @@ def generate_launch_description():
         # PythonLaunchDescriptionSource(os.path.join(mtt_driver_launch_dir, 'mtt_driver_simulation.launch.py'))
         launch_arguments={
             'can_interface': "vcan0",
+            # In simulation, mtt_simulation.launch.py already starts robot_state_publisher.
+            # Disabling here avoids two concurrent publishers on /robot_description.
+            'publish_description': 'false',
+            # RViz is handled by the dedicated rviz service in the simulation compose.
+            'use_rviz': 'false',
         }.items(),
     )
+
     # Create the launch description and populate
     ld = LaunchDescription()
 

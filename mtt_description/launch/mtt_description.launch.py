@@ -3,8 +3,10 @@ from launch.actions import DeclareLaunchArgument, GroupAction
 from launch.substitutions import Command, LaunchConfiguration
 from launch.conditions import IfCondition
 from launch_ros.actions import Node, PushROSNamespace
+from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
 import os
+
 
 
 def generate_launch_description():
@@ -46,7 +48,12 @@ def generate_launch_description():
                 package='robot_state_publisher',
                 executable='robot_state_publisher',
                 parameters=[{
-                    'robot_description': Command(['xacro ', urdf_path])
+                    # ParameterValue with value_type=str prevents ROS2 Jazzy from
+                    # trying to parse the xacro XML output as YAML (which fails).
+                    'robot_description': ParameterValue(
+                        Command(['xacro ', urdf_path]),
+                        value_type=str
+                    )
                 }]
             ),
 

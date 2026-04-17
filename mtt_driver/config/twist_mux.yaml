@@ -1,13 +1,13 @@
 twist_mux:
   ros__parameters:
-    # use_stamped: true
+    use_stamped: true   # both mtt_can_node and teleop use TwistStamped
     topics:
       controller:
         topic: controller/cmd_vel
         timeout: 0.5
         priority: 15
       teleop:
-        topic: cmd_vel/teleop
+        topic: cmd_vel/teleop   # direct from teleop node — smoother bypassed for instant response
         timeout: 0.5
         priority: 10
       nav_cmd:

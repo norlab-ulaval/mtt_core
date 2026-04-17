@@ -1,0 +1,20 @@
+/**:
+  ros__parameters:
+    max_linear_speed: 0.6
+    max_angular_speed: 1.0
+
+    # Xbox-like defaults
+    deadman_button_index: 5   # RB
+    light_button_index: 2     # X
+
+    linear_axis_index: 1      # left stick vertical
+    angular_axis_index: 3     # right stick horizontal
+    brake_axis_index: 5       # RT trigger axis
+
+    invert_linear_axis: true
+    invert_angular_axis: false
+    enable_brake_axis: true
+
+    # Fallback when brake axis is absent on a given joystick mapping.
+    # 1.0 keeps brake at 0 after conversion to [0,1].
+    brake_axis_default: 1.0

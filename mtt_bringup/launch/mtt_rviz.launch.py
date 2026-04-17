@@ -38,6 +38,11 @@ def generate_launch_description():
 
     log_level = LaunchConfiguration("log_level")
 
+    declare_log_level_cmd = DeclareLaunchArgument(
+        "log_level",
+        default_value="warn",
+        description="Logging verbosity level (debug, info, warn, error, fatal)",
+    )
 
     # Declare the launch arguments
     declare_namespace_cmd = DeclareLaunchArgument(
@@ -122,8 +127,7 @@ def generate_launch_description():
     # Create the launch description and populate
     ld = LaunchDescription()
 
-    # ld.add_action(declare_log_level_cmd)
-
+    ld.add_action(declare_log_level_cmd)
 
     # Declare the launch options
     ld.add_action(declare_namespace_cmd)

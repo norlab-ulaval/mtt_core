@@ -7,8 +7,10 @@ from launch.actions import (
 )
 
 import launch_ros
+from launch_ros.parameter_descriptions import ParameterValue
 import os
 import xacro
+
 
 def generate_launch_description():
     rvizRelativePath = "config/config.rviz"
@@ -34,11 +36,12 @@ def generate_launch_description():
     # here, for verification, print the xacro model path 
     print(xacroModelPath)
 
-    # get the robot description from the xacro model file 
-    robot_desc = xacro.process_file(xacroModelPath).toxml()
+    # get the robot description from the xacro model file
+    robot_desc_content = xacro.process_file(xacroModelPath).toxml()
 
-    # define a parameter with the robot xacro description 
-    robot_description = {'robot_description': robot_desc}
+    # ParameterValue prevents ROS2 from trying to YAML-parse the XML string
+    robot_description = {'robot_description': ParameterValue(robot_desc_content, value_type=str)}
+
 
     # Declare arguments 
     declared_arguments = [] 

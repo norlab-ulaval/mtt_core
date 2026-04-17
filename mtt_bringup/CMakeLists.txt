@@ -13,12 +13,19 @@ find_package(rclcpp REQUIRED)
 ament_python_install_package(${PROJECT_NAME})
 
 
+# Install config (data files — copied once, rarely edited)
 install(
-  DIRECTORY
-  launch
-  config
+  DIRECTORY config
   DESTINATION share/${PROJECT_NAME}/
 )
+
+# Install launch files as PROGRAMS → colcon --symlink-install creates symlinks,
+# so edits in src/ are immediately visible without recompiling.
+file(GLOB_RECURSE LAUNCH_FILES RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} "launch/*.py")
+install(PROGRAMS ${LAUNCH_FILES}
+  DESTINATION share/${PROJECT_NAME}/launch
+)
+
 
 
 install(PROGRAMS
