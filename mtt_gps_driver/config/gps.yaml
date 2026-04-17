@@ -1,0 +1,22 @@
+# NOT USED — legacy file, wrong node names. gps.launch.py loads gps_serial.yaml or gps_tcp.yaml.
+# Emlid Reach RS dual antenna GPS configuration
+gps:
+  ros__parameters:
+    # Left antenna (port side)
+    left_host: "192.168.2.123"   # enx8e32b3216cea — Reach RS rover
+    left_port: 5001
+    left_frame_id: "gps_left_link"
+
+    # Right antenna (starboard side / base)
+    right_host: "192.168.2.237"  # enx1a1b6901411d — Reach RS base
+    right_port: 5001
+    right_frame_id: "gps_right_link"
+
+    # Dual antenna heading
+    baseline_m: 1.1             # Distance between antennas (meters)
+    max_age_s: 0.5              # Max time delta between left/right fixes
+    min_fix_quality: 1          # 1=GPS, 4=RTK Fix
+    output_frame_id: "base_link"
+
+    # Reconnection
+    reconnect_interval_s: 3.0

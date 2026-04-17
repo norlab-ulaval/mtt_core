@@ -1,0 +1,35 @@
+# GPS configuration — TCP mode
+#
+# NOTE: TCP output ports are currently CLOSED on both receivers.
+#       Use serial mode (gps_serial.yaml) until TCP is enabled in ReachView3.
+#       To enable: ReachView3 → Base/Rover settings → NMEA output → TCP → port
+#
+# Hardware confirmed:
+#   gps_left  (Reach+) : 192.168.2.59   — TCP port to configure: e.g. 9001
+#   gps_right (Reach)  : 192.168.2.241  — TCP port to configure: e.g. 9696
+#
+# Keys must use the fully-qualified node name (/<namespace>/<name>) so that
+# ROS2 parameter loading matches the node launched in its namespace.
+
+/gps_left/reach_driver_left:
+  ros__parameters:
+    connection_type: "tcp"
+    host: "192.168.2.59"
+    port: 9001
+    frame_id: "gps_left_link"
+    reconnect_interval_s: 3.0
+
+/gps_right/reach_driver_right:
+  ros__parameters:
+    connection_type: "tcp"
+    host: "192.168.2.241"
+    port: 9696
+    frame_id: "gps_right_link"
+    reconnect_interval_s: 3.0
+
+/dual_antenna_heading:
+  ros__parameters:
+    baseline_m: 1.1
+    max_age_s: 0.5
+    min_fix_quality: 1
+    output_frame_id: "base_link"

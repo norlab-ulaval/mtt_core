@@ -1,0 +1,37 @@
+# ISAM2 Factor Graph localization configuration for MTT
+localization:
+  ros__parameters:
+    # Sensor enabling (modulaire — toggle each source on/off)
+    use_imu_primary: true
+    use_track_odom: true
+    use_gps: true
+    use_gps_heading: true
+    use_lidar_odom: true
+    use_visual_odom: false     # Enable when ZED VIO is available
+
+    # ISAM2 tuning
+    isam2_relinearize_threshold: 0.1
+    isam2_relinearize_skip: 10
+
+    # IMU noise (XSens MTi-100 specs)
+    imu_accel_noise: 0.01      # m/s²/√Hz
+    imu_gyro_noise: 0.0001     # rad/s/√Hz
+    imu_accel_walk: 0.0001     # m/s³/√Hz
+    imu_gyro_walk: 0.000001    # rad/s²/√Hz
+
+    # Track odometry noise (single chenille, high slip)
+    odom_linear_noise: 0.15    # m/s — loose because tracked vehicle slips
+    odom_angular_noise: 0.10   # rad/s — yaw slip is significant
+
+    # GPS noise (adapts at runtime for RTK Fix/Float)
+    gps_position_noise_xy: 1.0   # meters (SPP mode baseline)
+    gps_position_noise_z: 2.0    # meters
+    gps_heading_noise: 0.05      # radians (~3° for 1.1m baseline)
+
+    # Frame IDs
+    map_frame: "map"
+    odom_frame: "odom"
+    base_frame: "base_link"
+
+    # Output rate (Hz)
+    publish_rate: 50.0

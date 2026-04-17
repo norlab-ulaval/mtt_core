@@ -1,0 +1,39 @@
+# GPS configuration — USB Serial mode (DEFAULT)
+#
+# Hardware confirmed:
+#   gps_right → /dev/ttyACM0  (Emlid Reach,   IP 192.168.2.241)
+#   gps_left  → /dev/ttyACM1  (Emlid Reach+,  IP 192.168.2.59)
+#
+# ttyACM device order can change at reboot if both are plugged in simultaneously.
+# For stable names, run scripts/setup_udev_reach_rs.sh to create:
+#   /dev/reach_right  →  ttyACM0 (by USB serial ID)
+#   /dev/reach_left   →  ttyACM1 (by USB serial ID)
+# Then change serial_port values below back to /dev/reach_right / /dev/reach_left.
+#
+# Baud rate: 115200 — must match the NMEA output setting in ReachView3.
+#
+# Keys must use the fully-qualified node name (/<namespace>/<name>) so that
+# ROS2 parameter loading matches the node launched in its namespace.
+
+/gps_left/reach_driver_left:
+  ros__parameters:
+    connection_type: "serial"
+    serial_port: "/dev/ttyACM1"
+    baud_rate: 115200
+    frame_id: "gps_left_link"
+    reconnect_interval_s: 3.0
+
+/gps_right/reach_driver_right:
+  ros__parameters:
+    connection_type: "serial"
+    serial_port: "/dev/ttyACM0"
+    baud_rate: 115200
+    frame_id: "gps_right_link"
+    reconnect_interval_s: 3.0
+
+/dual_antenna_heading:
+  ros__parameters:
+    baseline_m: 1.1
+    max_age_s: 0.5
+    min_fix_quality: 1
+    output_frame_id: "base_link"
