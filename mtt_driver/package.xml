@@ -13,6 +13,7 @@
   <!-- C++ core ROS deps -->
   <depend>rclcpp</depend>
   <depend>rclcpp_components</depend>
+  <depend>rclpy</depend>
   <depend>std_msgs</depend>
   <depend>geometry_msgs</depend>
   <depend>nav_msgs</depend>
@@ -27,9 +28,7 @@
   <!-- Component deps -->
   <exec_depend>joy_linux</exec_depend>
   <exec_depend>joy</exec_depend>
-
-  <!-- Navigation / twist mux -->
-  <depend>twist_mux</depend>
+  <exec_depend>mtt_control</exec_depend>
 
   <!-- Test dependencies -->
   <test_depend>ament_lint_auto</test_depend>

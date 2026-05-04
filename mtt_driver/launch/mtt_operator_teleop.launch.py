@@ -3,19 +3,18 @@
 import os
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, GroupAction
-from launch.conditions import IfCondition
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
-from launch_ros.actions import Node, PushROSNamespace
 from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description():
-    robot_namespace = LaunchConfiguration("robot_namespace")
-    use_namespace = LaunchConfiguration("use_namespace")
-    driver_share = FindPackageShare("mtt_driver").find("mtt_driver")
+    control_share = FindPackageShare("mtt_control").find("mtt_control")
+    control_launch = os.path.join(control_share, "launch", "mtt_operator_control.launch.py")
+    control_params = os.path.join(control_share, "config", "control_defaults.yaml")
 
-    return LaunchDescription([
+    arguments = [
         DeclareLaunchArgument(
             "robot_namespace",
             default_value="",
@@ -32,46 +31,26 @@ def generate_launch_description():
             description="Joystick device on the operator computer.",
         ),
         DeclareLaunchArgument(
-            "deadzone",
+            "joy_deadzone",
             default_value="0.15",
             description="Joystick deadzone for joy_linux.",
         ),
         DeclareLaunchArgument(
-            "max_linear_speed",
-            default_value="0.6",
-            description="Maximum operator linear speed in m/s.",
+            "control_params_file",
+            default_value=control_params,
+            description="Operator control parameter file.",
         ),
-        DeclareLaunchArgument(
-            "max_angular_speed",
-            default_value="0.6",
-            description="Maximum operator angular speed in rad/s.",
-        ),
-        GroupAction(actions=[
-            PushROSNamespace(condition=IfCondition(use_namespace), namespace=robot_namespace),
-            Node(
-                package="joy_linux",
-                executable="joy_linux_node",
-                name="joy_node",
-                parameters=[{
-                    "deadzone": LaunchConfiguration("deadzone"),
-                    "device_name": LaunchConfiguration("joy_device"),
-                    "autorepeat_rate": 20.0,  # resend at 20 Hz when stationary — prevents twist_mux timeout (0.5 s)
-                }],
-                output="screen",
-            ),
-            Node(
-                package="mtt_driver",
-                executable="mtt_teleop_joy",
-                name="mtt_operator_teleop",
-                parameters=[
-                    os.path.join(driver_share, "config", "mtt_teleop_joy.yaml"),
-                    {
-                        "max_linear_speed": LaunchConfiguration("max_linear_speed"),
-                        "max_angular_speed": LaunchConfiguration("max_angular_speed"),
-                    },
-                ],
-                remappings=[("cmd_vel_raw", "cmd_vel/teleop")],
-                output="screen",
-            ),
-        ]),
-    ])
+    ]
+
+    include = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(control_launch),
+        launch_arguments={
+            "robot_namespace": LaunchConfiguration("robot_namespace"),
+            "use_namespace": LaunchConfiguration("use_namespace"),
+            "joy_device": LaunchConfiguration("joy_device"),
+            "joy_deadzone": LaunchConfiguration("joy_deadzone"),
+            "control_params_file": LaunchConfiguration("control_params_file"),
+        }.items(),
+    )
+
+    return LaunchDescription(arguments + [include])
