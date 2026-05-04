@@ -64,14 +64,19 @@ class MttPathFollower(Node):
         self._callback_group = ReentrantCallbackGroup()
         self._state_lock = threading.Lock()
         self._goal_lock = threading.Lock()
+        self._local_plan_lock = threading.Lock()
         self._odom_msg: Optional[Odometry] = None
         self._odom_received_time: Optional[float] = None
+        self._local_plan_msg: Optional[Path] = None
+        self._local_plan_received_time: Optional[float] = None
         self._active_goal = False
 
         self.declare_parameter("action_name", "/follow_path")
         self.declare_parameter("odom_topic", "/mapping/icp_odom")
         self.declare_parameter("cmd_vel_topic", "controller/cmd_vel")
         self.declare_parameter("control_rate_hz", 20.0)
+        self.declare_parameter("local_plan_topic", "/local_plan")
+        self.declare_parameter("local_plan_timeout_s", 0.5)
         self.declare_parameter("default_speed_ms", 0.60)
         self.declare_parameter("max_speed_ms", 0.80)
         self.declare_parameter("min_speed_ms", 0.25)
@@ -95,6 +100,8 @@ class MttPathFollower(Node):
         self._action_name = str(self.get_parameter("action_name").value)
         self._odom_topic = str(self.get_parameter("odom_topic").value)
         self._cmd_vel_topic = str(self.get_parameter("cmd_vel_topic").value)
+        self._local_plan_topic = str(self.get_parameter("local_plan_topic").value)
+        self._local_plan_timeout_s = float(self.get_parameter("local_plan_timeout_s").value)
         self._control_rate_hz = float(self.get_parameter("control_rate_hz").value)
         self._default_speed_ms = float(self.get_parameter("default_speed_ms").value)
         self._max_speed_ms = float(self.get_parameter("max_speed_ms").value)
@@ -134,6 +141,13 @@ class MttPathFollower(Node):
             20,
             callback_group=self._callback_group,
         )
+        self._local_plan_sub = self.create_subscription(
+            Path,
+            self._local_plan_topic,
+            self._local_plan_callback,
+            10,
+            callback_group=self._callback_group,
+        )
         self._cmd_pub = self.create_publisher(TwistStamped, self._cmd_vel_topic, 20)
         self._reference_path_pub = self.create_publisher(Path, "~/reference_path", transient_qos)
         self._target_pose_pub = self.create_publisher(PoseStamped, "~/target_pose", 20)
@@ -162,6 +176,21 @@ class MttPathFollower(Node):
         with self._state_lock:
             self._odom_msg = msg
             self._odom_received_time = time.monotonic()
+
+    def _local_plan_callback(self, msg: Path) -> None:
+        with self._local_plan_lock:
+            self._local_plan_msg = msg
+            self._local_plan_received_time = time.monotonic()
+
+    def _get_fresh_local_plan(self) -> Optional[Path]:
+        with self._local_plan_lock:
+            local_plan = self._local_plan_msg
+            received_time = self._local_plan_received_time
+        if local_plan is None or received_time is None:
+            return None
+        if time.monotonic() - received_time > self._local_plan_timeout_s:
+            return None
+        return local_plan
 
     def _goal_callback(self, goal_request: FollowPath.Goal) -> GoalResponse:
         with self._goal_lock:
