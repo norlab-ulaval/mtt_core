@@ -69,6 +69,7 @@ class MttPathFollower(Node):
         self._odom_received_time: Optional[float] = None
         self._local_plan_msg: Optional[Path] = None
         self._local_plan_received_time: Optional[float] = None
+        self._local_plan_received = False
         self._active_goal = False
 
         self.declare_parameter("action_name", "/follow_path")

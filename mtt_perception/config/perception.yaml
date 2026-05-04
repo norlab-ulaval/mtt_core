@@ -14,38 +14,30 @@
 #                = no clear axis → noisy angle). Start at 2.0, raise if needed.
 trailer_detector_node:
   ros__parameters:
-    # merged_points_filtered is already in base_link frame → PCA XY directly
-    # gives the articulation angle without any frame transform issues.
-    # The cloud is recorded in the bag so no cloud_merger needed for replay.
-    lidar_topic: "/merged_points_filtered"
+    lidar_topic: "/rsairy_ns/points"
 
-    # ROI in base_link (x=forward, y=left, z=up).
-    # Hitch yaw joint at [-1.051, -0.051, 0.301].
-    # Timon extends ~1.5m beyond hitch at the articulation angle (±60° → ±1.3m Y).
-    # Self-filter already removed chassis (x > -0.90), so x=-0.85 is safe.
-    roi_x_min: -2.20
-    roi_x_max: -0.85
-    roi_y_min: -1.40
-    roi_y_max:  1.40
-    roi_z_min:  0.05   # remove ground (ground ≈ -0.05 m in base_link)
-    roi_z_max:  1.10
+    # ROI verified in CloudCompare (rsairy frame) + margin
+    roi_x_min: -0.40
+    roi_x_max: -0.15
+    roi_y_min: -0.40
+    roi_y_max:  0.15
+    roi_z_min:  0.40
+    roi_z_max:  1.20
 
-    # Voxel downsampling
-    voxel_size:   0.05
+    voxel_size:   0.02
     enable_voxel: true
 
-    # Detection thresholds
-    min_points:    15
-    pca_ratio_min: 2.0   # tune up if noisy frames slip through
+    min_points:    10
+    pca_ratio_min: 2.0
 
-    # Hitch pivot position in base_link (from URDF yaw joint origin).
-    # The PCA axis is flipped so it points FROM hitch TOWARD the trailer.
-    hitch_x: -1.051
-    hitch_y: -0.051
+    # Hitch position in rsairy frame — (0,0) = sensor origin, good default.
+    # Axis is flipped so it points FROM hitch TOWARD the trailer.
+    hitch_x: 0.0
+    hitch_y: 0.0
 
-    # At zero articulation the timon points along -X in base_link → atan2(0,-1) = π.
-    # articulation_angle = normalize(yaw_pca - π)  →  0 when straight.
-    reference_yaw: 3.14159265
+    # Subtract from PCA yaw to get angle relative to MTT.
+    # Set to the raw PCA angle observed at zero articulation.
+    reference_yaw: 0.0
 
 # ── Dual-LiDAR merger ────────────────────────────────────────────────────────
 cloud_merger_node:
