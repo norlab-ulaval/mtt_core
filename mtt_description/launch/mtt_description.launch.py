@@ -18,6 +18,7 @@ def generate_launch_description():
     use_namespace = LaunchConfiguration('use_namespace')
     use_rviz = LaunchConfiguration('use_rviz')
     use_joint_state_gui = LaunchConfiguration('use_joint_state_gui')
+    use_sim_time = LaunchConfiguration('use_sim_time')
 
     return LaunchDescription([
         DeclareLaunchArgument(
@@ -40,6 +41,11 @@ def generate_launch_description():
             default_value='true',
             description='Launch the joint_state_publisher_gui for interactive joint inspection.'
         ),
+        DeclareLaunchArgument(
+            'use_sim_time',
+            default_value='false',
+            description='Use simulation or bag replay clock.'
+        ),
 
         GroupAction([
             PushROSNamespace(condition=IfCondition(use_namespace), namespace=robot_namespace),
@@ -53,13 +59,15 @@ def generate_launch_description():
                     'robot_description': ParameterValue(
                         Command(['xacro ', urdf_path]),
                         value_type=str
-                    )
+                    ),
+                    'use_sim_time': use_sim_time,
                 }]
             ),
 
             Node(
                 package='joint_state_publisher_gui',
                 executable='joint_state_publisher_gui',
+                parameters=[{'use_sim_time': use_sim_time}],
                 condition=IfCondition(use_joint_state_gui)
             ),
 
@@ -67,6 +75,7 @@ def generate_launch_description():
                 package='rviz2',
                 executable='rviz2',
                 arguments=['-d', rviz_config_path],
+                parameters=[{'use_sim_time': use_sim_time}],
                 output='screen',
                 condition=IfCondition(use_rviz)
             ),

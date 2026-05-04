@@ -1124,6 +1124,46 @@
   <origin xyz="0.62 -0.266 0.355" rpy="0 0 ${pi/2}"/>
 </joint>
 
+<link name="hesai_lidar"/>
+
+<joint name="hesai_lidar_joint" type="fixed">
+  <parent link="center_lidar_link"/>
+  <child link="hesai_lidar"/>
+  <origin xyz="0 0 0" rpy="0 0 0"/>
+</joint>
+
+<link name="imu_link"/>
+
+<joint name="imu_joint" type="fixed">
+  <parent link="hesai_lidar"/>
+  <child link="imu_link"/>
+  <origin xyz="0.0 0.0 0.061" rpy="3.141596 0 0"/>
+</joint>
+
+<link name="mti10_imu_link_right"/>
+
+<joint name="mti10_imu_joint_right" type="fixed">
+  <parent link="hesai_lidar"/>
+  <child link="mti10_imu_link_right"/>
+  <origin xyz="-0.295 -0.030 -0.785" rpy="0 1.570796 0"/>
+</joint>
+
+<link name="mti10_imu_link_left"/>
+
+<joint name="mti10_imu_joint_left" type="fixed">
+  <parent link="hesai_lidar"/>
+  <child link="mti10_imu_link_left"/>
+  <origin xyz="0.295 -0.030 -0.785" rpy="0 1.570796 3.141596"/>
+</joint>
+
+<link name="zed_camera_link"/>
+
+<joint name="zed2i_mount_joint" type="fixed">
+  <parent link="hesai_lidar"/>
+  <child link="zed_camera_link"/>
+  <origin xyz="0.0 -0.47 -0.1627" rpy="0.0 0.0 -1.57079"/>
+</joint>
+
 <!-- Front LiDAR -->
 <link name="front_lidar_link">
   <visual>
@@ -1174,6 +1214,22 @@
   <parent link="reference_point"/>
   <child link="rear_lidar_link"/>
   <origin xyz="0.01 -0.266 0.3302" rpy="0 0 0"/>
+</joint>
+
+<link name="rsairy"/>
+
+<joint name="rsairy_mount_joint" type="fixed">
+  <parent link="hesai_lidar"/>
+  <child link="rsairy"/>
+  <origin xyz="0.125 0.86 0.0" rpy="0.0 -1.91986 -1.5707"/>
+</joint>
+
+<link name="oak"/>
+
+<joint name="oak_mount_joint" type="fixed">
+  <parent link="rsairy"/>
+  <child link="oak"/>
+  <origin xyz="0.05 0.0 0.0" rpy="0.0 -1.57079 0.0"/>
 </joint>
 
 <!-- Legacy LiDAR (kept for compatibility) -->

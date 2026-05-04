@@ -1187,6 +1187,53 @@
   <origin xyz="0.62 -0.266 0.355" rpy="0 0 ${pi/2}"/>
 </joint>
 
+<!-- Hesai driver compatibility frame.
+     Keep the same center LiDAR alias as the real robot so point clouds,
+     mapping, and TF consumers see one consistent tree in sim and live runs. -->
+<link name="hesai_lidar"/>
+
+<joint name="hesai_lidar_joint" type="fixed">
+  <parent link="center_lidar_link"/>
+  <child link="hesai_lidar"/>
+  <origin xyz="0 0 0" rpy="0 0 0"/>
+</joint>
+
+<!-- Runtime sensor mounts mirrored from the live robot description.
+     These frames do not drive Gazebo sensors directly, but keeping them in the
+     simulation model makes the TF tree match the real platform more closely. -->
+
+<link name="imu_link"/>
+
+<joint name="imu_joint" type="fixed">
+  <parent link="hesai_lidar"/>
+  <child link="imu_link"/>
+  <origin xyz="0.0 0.0 0.061" rpy="3.141596 0 0"/>
+</joint>
+
+<link name="mti10_imu_link_right"/>
+
+<joint name="mti10_imu_joint_right" type="fixed">
+  <parent link="hesai_lidar"/>
+  <child link="mti10_imu_link_right"/>
+  <origin xyz="-0.295 -0.030 -0.785" rpy="0 1.570796 0"/>
+</joint>
+
+<link name="mti10_imu_link_left"/>
+
+<joint name="mti10_imu_joint_left" type="fixed">
+  <parent link="hesai_lidar"/>
+  <child link="mti10_imu_link_left"/>
+  <origin xyz="0.295 -0.030 -0.785" rpy="0 1.570796 3.141596"/>
+</joint>
+
+<link name="zed_camera_link"/>
+
+<joint name="zed2i_mount_joint" type="fixed">
+  <parent link="hesai_lidar"/>
+  <child link="zed_camera_link"/>
+  <origin xyz="0.0 -0.47 -0.1627" rpy="0.0 0.0 -1.57079"/>
+</joint>
+
 <!-- Front LiDAR -->
 <link name="front_lidar_link">
   <visual>
@@ -1239,11 +1286,74 @@
   <origin xyz="0.01 -0.266 0.3302" rpy="0 0 0"/>
 </joint>
 
+<!-- RoboSense RS Bpearl runtime frame mirrored from the live stack. -->
+<link name="rsairy"/>
+
+<joint name="rsairy_mount_joint" type="fixed">
+  <parent link="hesai_lidar"/>
+  <child link="rsairy"/>
+  <origin xyz="0.060281 0.850474 -0.020308" rpy="3.115775 -1.215034 1.582805"/>
+</joint>
+
+<!-- OAK-D base mount mirrored from the live stack. -->
+<link name="oak"/>
+
+<joint name="oak_mount_joint" type="fixed">
+  <parent link="rsairy"/>
+  <child link="oak"/>
+  <origin xyz="0.049811 0.002056 -0.012516" rpy="-2.504975 -1.569137 2.507449"/>
+</joint>
+
 <!-- Legacy LiDAR (kept for compatibility) -->
 <joint name="lidar_joint" type="fixed">
   <parent link="base_link"/>
   <child link="lidar_link"/>
   <origin xyz="0 0 0.8" rpy="0 0 0"/>
+</joint>
+
+<!-- GPS Rover Antenna (single rover setup used on the live platform). -->
+<!-- Approximate right-side midpoint mount mirrored from the live robot TF. -->
+<link name="gps_rover_link">
+  <inertial>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <mass value="0.3"/>
+    <inertia ixx="0.0001" ixy="0.0" ixz="0.0" iyy="0.0001" iyz="0.0" izz="0.0001"/>
+  </inertial>
+</link>
+
+<joint name="gps_rover_joint" type="fixed">
+  <parent link="reference_point"/>
+  <child link="gps_rover_link"/>
+  <origin xyz="0.315 -0.466 0.55" rpy="0 0 0"/>
+</joint>
+
+<!-- Dual-antenna legacy frames kept for compatibility with existing tools. -->
+<link name="gps_left_link">
+  <inertial>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <mass value="0.3"/>
+    <inertia ixx="0.0001" ixy="0.0" ixz="0.0" iyy="0.0001" iyz="0.0" izz="0.0001"/>
+  </inertial>
+</link>
+
+<joint name="gps_left_joint" type="fixed">
+  <parent link="center_lidar_link"/>
+  <child link="gps_left_link"/>
+  <origin xyz="0.0 0.55 0.15" rpy="0 0 0"/>
+</joint>
+
+<link name="gps_right_link">
+  <inertial>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <mass value="0.3"/>
+    <inertia ixx="0.0001" ixy="0.0" ixz="0.0" iyy="0.0001" iyz="0.0" izz="0.0001"/>
+  </inertial>
+</link>
+
+<joint name="gps_right_joint" type="fixed">
+  <parent link="center_lidar_link"/>
+  <child link="gps_right_link"/>
+  <origin xyz="0.0 -0.55 0.15" rpy="0 0 0"/>
 </joint>
 
 

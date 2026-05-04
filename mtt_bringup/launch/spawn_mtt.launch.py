@@ -25,14 +25,14 @@ def launch_setup(context, *args, **kwargs):
 
     bridge_args = [
         '/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock',
-        f'/world/default/model/{robot_name}/pose@geometry_msgs/msg/Pose[gz.msgs.Pose',
+        f'/model/{robot_name}/pose@geometry_msgs/msg/TransformStamped[gz.msgs.Pose',
         f'/world/default/model/{robot_name}/link/center_lidar_link/sensor/center_lidar/scan@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan',
         f'/world/default/model/{robot_name}/link/front_lidar_link/sensor/front_lidar/scan@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan',
         f'/world/default/model/{robot_name}/link/rear_lidar_link/sensor/rear_lidar/scan@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan',
     ]
 
     remappings = [
-        (f'/world/default/model/{robot_name}/pose', 'gz_pose'),
+        (f'/model/{robot_name}/pose', 'gz_pose'),
         (f'/world/default/model/{robot_name}/link/center_lidar_link/sensor/center_lidar/scan', 'center_lidar/scan'),
         (f'/world/default/model/{robot_name}/link/front_lidar_link/sensor/front_lidar/scan', 'front_lidar/scan'),
         (f'/world/default/model/{robot_name}/link/rear_lidar_link/sensor/rear_lidar/scan', 'rear_lidar/scan'),

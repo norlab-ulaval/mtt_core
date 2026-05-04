@@ -1,4 +1,5 @@
 import os
+import re
 import tempfile
 
 import logging
@@ -22,6 +23,44 @@ from launch.substitutions import LaunchConfiguration, PythonExpression
 import xacro
 
 
+def launch_sim_description(context, *args, **kwargs):
+    namespace = LaunchConfiguration('namespace').perform(context)
+    use_sim_time = LaunchConfiguration('use_sim_time')
+    robot_sdf_path = LaunchConfiguration('robot_sdf').perform(context)
+
+    robot_description_content = xacro.process_file(
+        robot_sdf_path,
+        mappings={'namespace': namespace},
+    ).toxml()
+    robot_description_content = re.sub(
+        r'file://[^"]*share/mtt_description/',
+        'package://mtt_description/',
+        robot_description_content,
+    )
+
+    robot_description = ParameterValue(robot_description_content, value_type=str)
+
+    return [
+        Node(
+            package='robot_state_publisher',
+            executable='robot_state_publisher',
+            name='robot_state_publisher',
+            namespace=namespace,
+            output='screen',
+            parameters=[
+                {
+                    'use_sim_time': use_sim_time,
+                    'robot_description': robot_description,
+                    'frame_prefix': PythonExpression(
+                        ["'", namespace, "/' if '", namespace, "' else ''"]
+                    ),
+                }
+            ],
+            remappings=[('/tf', 'tf'), ('/tf_static', 'tf_static')],
+        )
+    ]
+
+
 def generate_launch_description():
     # logging.getLogger().setLevel(logging.WARN)
 
@@ -38,6 +77,9 @@ def generate_launch_description():
     rviz_config_file = LaunchConfiguration('rviz_config_file')
 
     use_sim_time = LaunchConfiguration('use_sim_time')
+    base_frame = LaunchConfiguration('base_frame')
+    odom_frame = LaunchConfiguration('odom_frame')
+    odom_topic = LaunchConfiguration('odom_topic')
     world = LaunchConfiguration('world')
     pose = {
         'x': LaunchConfiguration('x_pose', default='-2.00'),
@@ -154,6 +196,24 @@ def generate_launch_description():
         default_value='true',
         description='Use simulation (Gazebo) clock if true',
     )
+
+    declare_base_frame_cmd = DeclareLaunchArgument(
+        'base_frame',
+        default_value='base_footprint',
+        description='Base frame used as the child of odom in simulation TF',
+    )
+
+    declare_odom_frame_cmd = DeclareLaunchArgument(
+        'odom_frame',
+        default_value='odom',
+        description='Odom frame published by the simulation odom bridge',
+    )
+
+    declare_odom_topic_cmd = DeclareLaunchArgument(
+        'odom_topic',
+        default_value='mtt_odometry',
+        description='Odometry topic published from Gazebo ground-truth pose',
+    )
     
     # TODO: check if other config isnt better
     declare_rviz_config_file_cmd = DeclareLaunchArgument(
@@ -181,40 +241,6 @@ def generate_launch_description():
         # default_value=os.path.join(mtt_description_dir, 'urdf', 'robot.urdf.xacro'),
 
         description='Full path to the robot xacro file used to spawn the robot in Gazebo',
-    )
-
-    urdf = os.path.join(mtt_description_dir, 'urdf', 'robot.urdf.xacro')
-
-    robot_description_content = xacro.process_file(urdf).toxml()
-    # Wrapping in ParameterValue with value_type=str is required when the
-    # URDF XML contains characters that ROS2's YAML parser would misinterpret
-    # (colons, angle brackets, quotes, etc.)
-    robot_description = ParameterValue(robot_description_content, value_type=str)
-
-
-
-
-    # TODO: check if it is not better to have in the bringup
-    start_robot_state_publisher_cmd = Node(
-        condition=IfCondition(use_robot_state_pub),
-        package='robot_state_publisher',
-        executable='robot_state_publisher',
-        name='robot_state_publisher',
-        namespace=namespace,
-        output='screen',
-        parameters=[
-            {'use_sim_time': use_sim_time, 
-             'robot_description': robot_description,
-             'frame_prefix': PythonExpression(["'", namespace, "/' if '", namespace, "' else ''"])}
-        ],
-        remappings=remappings,
-    )
-    # not necessary when used with the controller_manager joint_state_broadcaster (launched in mtt_controller)
-    joint_state_publisher_node = Node(
-        package='joint_state_publisher',
-        executable='joint_state_publisher',
-        name='joint_state_publisher',
-        output='screen'
     )
 
     # RVIZ
@@ -304,15 +330,6 @@ def generate_launch_description():
     
 
 
-    live_robot_cmd = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(os.path.join(get_package_share_directory('norlab_robot'), 'launch', 'live_robot.launch.py')),
-        launch_arguments={
-            'use_sim_time': use_sim_time,
-            'enable_sensors': 'false',
-            'enable_localization': 'false',
-        }.items(),
-    )
-
     mtt_controller_cmd = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(os.path.join(mtt_bringup_dir, 'launch', 'mtt_controller.launch.py')),
         launch_arguments={
@@ -320,6 +337,24 @@ def generate_launch_description():
             'use_namespace': use_namespace,
             'use_sim_time': use_sim_time,
         }.items(),
+    )
+
+    simulation_odom_cmd = Node(
+        package='mtt_bringup',
+        executable='odom_publisher_simul.py',
+        name='odom_publisher_simul',
+        output='screen',
+        parameters=[
+            {
+                'use_sim_time': use_sim_time,
+                'base_frame': base_frame,
+                'odom_frame': odom_frame,
+                'odom_topic': odom_topic,
+                'pose_topic': 'gz_pose',
+                'source_child_frame': robot_name,
+                'source_frame': 'default',
+            }
+        ],
     )
 
     ld = LaunchDescription()
@@ -334,6 +369,9 @@ def generate_launch_description():
     # 
 
     ld.add_action(declare_use_sim_time_cmd)
+    ld.add_action(declare_base_frame_cmd)
+    ld.add_action(declare_odom_frame_cmd)
+    ld.add_action(declare_odom_topic_cmd)
 
     # temp zone
     ld.add_action(declare_params_file_cmd)
@@ -364,18 +402,12 @@ def generate_launch_description():
     
     ld.add_action(world_sdf_xacro)
     ld.add_action(remove_temp_sdf_file)
+    ld.add_action(OpaqueFunction(function=launch_sim_description))
     ld.add_action(gz_robot)
     ld.add_action(gazebo_server)
     ld.add_action(gazebo_client)
+    ld.add_action(simulation_odom_cmd)
 
-    # Robot state publisher is now handled by live_robot.launch.py
-
-    # no longer necessary
-    # ld.add_action(joint_state_publisher_node)
-    # ld.add_action(rviz_cmd)
-
-
-    ld.add_action(live_robot_cmd)
     ld.add_action(mtt_controller_cmd)
 
     return ld
