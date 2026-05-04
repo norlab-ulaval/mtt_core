@@ -9,25 +9,43 @@ find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(visualization_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
-find_package(PCL REQUIRED COMPONENTS common filters segmentation)
+find_package(tf2_sensor_msgs REQUIRED)
+find_package(message_filters REQUIRED)
+find_package(Eigen3 REQUIRED)
+find_package(PCL REQUIRED COMPONENTS common filters)
 find_package(pcl_conversions REQUIRED)
 
 include_directories(include ${PCL_INCLUDE_DIRS})
 
-# --- Trailer Detector Node (LiDAR-based trailer angle estimation) ---
+# --- Trailer Detector Node ---
 add_executable(trailer_detector_node
   src/trailer_detector_node.cpp
 )
 ament_target_dependencies(trailer_detector_node
-  rclcpp sensor_msgs geometry_msgs std_msgs tf2 tf2_ros tf2_geometry_msgs pcl_conversions
+  rclcpp sensor_msgs geometry_msgs std_msgs visualization_msgs
+  tf2 tf2_ros pcl_conversions
 )
-target_link_libraries(trailer_detector_node ${PCL_LIBRARIES})
+target_link_libraries(trailer_detector_node
+  ${PCL_LIBRARIES}
+  Eigen3::Eigen
+)
+
+# --- Cloud Merger Node (dual-LiDAR fusion: Hesai + RS-Airy → base_link) ---
+add_executable(cloud_merger_node
+  src/cloud_merger_node.cpp
+)
+ament_target_dependencies(cloud_merger_node
+  rclcpp sensor_msgs tf2 tf2_ros tf2_sensor_msgs message_filters pcl_conversions
+)
+target_link_libraries(cloud_merger_node ${PCL_LIBRARIES})
 
 install(TARGETS
   trailer_detector_node
+  cloud_merger_node
   DESTINATION lib/${PROJECT_NAME}
 )
 

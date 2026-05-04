@@ -1,17 +1,66 @@
-# Trailer detection configuration
-perception:
+# ── Trailer detector — V1 (articulation / timon zone) ────────────────────────
+# ROI verified in CloudCompare (rsairy frame), with margin added.
+# topic: raw RS-Airy cloud so the node works independently of cloud_merger.
+# Switch to "/merged_points_filtered" if you want base_link frame.
+#
+# reference_yaw: set to M_PI (~3.14159) if the timon points along -X (base_link)
+#                at zero articulation. Leave 0.0 for rsairy frame (raw angle).
+#
+# hitch_x/y: position of the hitch pivot in the cloud frame.
+#             Used only for sign disambiguation. (0,0) = sensor origin works
+#             well for rsairy frame since the pivot is always "ahead" in Z.
+#
+# pca_ratio_min: reject if the cloud is not elongated enough (sphere-like cloud
+#                = no clear axis → noisy angle). Start at 2.0, raise if needed.
+trailer_detector_node:
   ros__parameters:
-    lidar_topic: "/rsairy_ns/points"
-    output_topic: "trailer/angle"
+    # merged_points_filtered is already in base_link frame → PCA XY directly
+    # gives the articulation angle without any frame transform issues.
+    # The cloud is recorded in the bag so no cloud_merger needed for replay.
+    lidar_topic: "/merged_points_filtered"
 
-    # Region of interest for trailer body (in lidar frame, meters)
-    roi_x_min: -2.5
-    roi_x_max: -0.5
-    roi_y_min: -1.0
-    roi_y_max: 1.0
-    roi_z_min: -0.5
-    roi_z_max: 1.0
+    # ROI in base_link (x=forward, y=left, z=up).
+    # Hitch yaw joint at [-1.051, -0.051, 0.301].
+    # Timon extends ~1.5m beyond hitch at the articulation angle (±60° → ±1.3m Y).
+    # Self-filter already removed chassis (x > -0.90), so x=-0.85 is safe.
+    roi_x_min: -2.20
+    roi_x_max: -0.85
+    roi_y_min: -1.40
+    roi_y_max:  1.40
+    roi_z_min:  0.05   # remove ground (ground ≈ -0.05 m in base_link)
+    roi_z_max:  1.10
 
-    # Processing
-    voxel_size: 0.05      # meters, downsampling
-    min_points: 20        # minimum inliers for valid detection
+    # Voxel downsampling
+    voxel_size:   0.05
+    enable_voxel: true
+
+    # Detection thresholds
+    min_points:    15
+    pca_ratio_min: 2.0   # tune up if noisy frames slip through
+
+    # Hitch pivot position in base_link (from URDF yaw joint origin).
+    # The PCA axis is flipped so it points FROM hitch TOWARD the trailer.
+    hitch_x: -1.051
+    hitch_y: -0.051
+
+    # At zero articulation the timon points along -X in base_link → atan2(0,-1) = π.
+    # articulation_angle = normalize(yaw_pca - π)  →  0 when straight.
+    reference_yaw: 3.14159265
+
+# ── Dual-LiDAR merger ────────────────────────────────────────────────────────
+cloud_merger_node:
+  ros__parameters:
+    target_frame: "base_link"
+    sync_tolerance: 0.05      # seconds — drop frame if LiDAR timestamps diverge more
+
+    # Self-filter BB1: tractor chassis (base_link frame: x=forward, y=left, z=up)
+    # The trailer is behind the robot (x < -0.90 m) and is preserved.
+    # Adjust by watching /merged_points vs /merged_points_filtered in Foxglove.
+    bbox_chassis_x: [-0.90, 0.70]
+    bbox_chassis_y: [-0.40, 0.40]
+    bbox_chassis_z: [-0.10, 0.80]
+
+    # Self-filter BB2: LiDAR cage/mounting structure (tight box at sensor cluster)
+    bbox_cage_x: [-0.25, 0.15]
+    bbox_cage_y: [-0.20, 0.20]
+    bbox_cage_z: [ 0.70, 1.10]
