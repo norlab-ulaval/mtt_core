@@ -1,14 +1,4 @@
 #!/usr/bin/env python3
-"""
-MTT Composable System Launch File
-
-This launch file starts the complete MTT composable architecture including:
-- MTT driver wrapper (hardware abstraction + ROS integration + safety)
-- MTT odometry node (dedicated composable odometry calculations)
-- Joystick input (optional)
-- Teleop controller (optional)
-"""
-
 import os
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, ExecuteProcess, GroupAction, OpaqueFunction
@@ -27,13 +17,26 @@ def generate_launch_description():
     driver_params_path = os.path.join(driver_share, 'config', 'mtt_driver_params.yaml')
     health_params_path = os.path.join(driver_share, 'config', 'mtt_health_monitor.yaml')
     control_params_path = os.path.join(control_share, 'config', 'control_defaults.yaml')
-    urdf_path = os.path.join(description_share, 'urdf', 'robot.urdf.xacro')
     robot_namespace = LaunchConfiguration('robot_namespace')
     use_namespace = LaunchConfiguration('use_namespace')
 
-    # --- real CAN bring-up (with bitrate) ---
-    # All commands end with || true so a failure (e.g. sudo not available in the
-    # container, or interface already up) never causes the launch to shut down.
+    setup_vcan_process = ExecuteProcess(
+        cmd=[
+            'bash', '-c',
+            'IFACE="$(echo $CAN_IFACE)"; '
+            'sudo modprobe vcan 2>/dev/null || true; '
+            'sudo ip link add dev "$IFACE" type vcan 2>/dev/null || true; '
+            'sudo ip link set "$IFACE" up 2>/dev/null || true; '
+            'echo "[vcan] ${IFACE} bring-up attempted."'
+        ],
+        additional_env={
+            'CAN_IFACE': LaunchConfiguration('can_interface'),
+        },
+        name='setup_vcan',
+        output='screen',
+        condition=IfCondition(LaunchConfiguration('setup_vcan')),
+    )
+
     setup_real_can_process = ExecuteProcess(
         cmd=[
             'bash', '-c',
@@ -169,11 +172,6 @@ def generate_launch_description():
             description='Odom frame (parent of base frame)'
         ),
         DeclareLaunchArgument(
-            'enable_map_frame',
-            default_value='false',
-            description='Publish static map->odom identity transform'
-        ),
-        DeclareLaunchArgument(
             'odometry_broadcast_tf',
             default_value='true',
             description='Whether mtt_odometry_node should publish odom->base TF'
@@ -199,31 +197,8 @@ def generate_launch_description():
             description='RViz config file path'
         ),
 
-        # -------- Actions / Nodes --------
-
-        # 0b) (Optional) Ensure real CAN is up with bitrate BEFORE anything else
+        setup_vcan_process,
         setup_real_can_process,
-
-        # 1) Robot description (URDF → TF tree for real runs)
-        
-
-        # 2) Joint controller (cmd_vel → joints) and joint_states
-        # Node(
-        #     package='mtt_driver',
-        #     executable='mtt_joint_controller',
-        #     name='mtt_joint_controller',
-        #     # No remapping - should receive final muxed commands from twist_mux
-        #     output='screen'
-        # ),
-
-        # 3) Optional static map->odom identity TF (RViz dead-reckoning)
-        # Node(
-        #     package='tf2_ros',
-        #     executable='static_transform_publisher',
-        #     name='static_map_odom',
-        #     arguments=['0','0','0','0','0','0','map', LaunchConfiguration('odom_frame')],
-        #     condition=IfCondition(LaunchConfiguration('enable_map_frame'))
-        # ),
 
         GroupAction(actions=[
             PushROSNamespace(condition=IfCondition(use_namespace), namespace=robot_namespace),

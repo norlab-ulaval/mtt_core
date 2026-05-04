@@ -1,25 +1,14 @@
-# ──────────────────────────────────────────────────────────────────────────
-# MTT Teleop Smoother — rate-limiter sitting between cmd_vel/teleop
-# (raw joystick) and cmd_vel/teleop_smoothed (what twist_mux sees).
-#
-# Edit this file to tune motion limits for data-collection sessions.
-# No recompile needed — restart the robot container to apply changes.
-# ──────────────────────────────────────────────────────────────────────────
+# Standalone teleop filter defaults for direct mtt_driver launches.
+# Live runtime tuning belongs in demos/common/config/mtt_control.yaml.
 
 teleop_cmd_smoother_node:
   ros__parameters:
+    input_topic: "cmd_vel/teleop_raw"
+    output_topic: "cmd_vel/teleop"
 
-    # ── Acceleration limits ──────────────────────────────────────────────
-    # How fast the commanded velocity can change (m/s² and rad/s²).
-    # Lower = smoother motion, less aggressive stops — better for lidar/IMU bags.
-    # Higher = more responsive joystick feel.
-    max_accel_linear:   0.5    # m/s²  — ramp from 0 to max in ~1.2 s at 0.6 m/s
-    max_accel_angular:  0.8    # rad/s²
+    max_accel_linear:   0.5
+    max_accel_angular:  0.8
 
-    # ── Safety timeout ───────────────────────────────────────────────────
-    # If no new cmd_vel/teleop arrives for this many seconds, decay to 0.
-    # Should be < twist_mux timeout (0.5 s) to avoid mux safety-zero firing.
-    input_timeout: 0.4         # s
+    input_timeout: 0.4
 
-    # ── Smoother output rate ─────────────────────────────────────────────
     rate_hz: 50.0

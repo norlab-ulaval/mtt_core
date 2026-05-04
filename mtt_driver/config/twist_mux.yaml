@@ -1,15 +1,17 @@
+# Compatibility file for standalone driver launches.
+# The live demos publish the final command from mtt_control and do not use this mux.
 twist_mux:
   ros__parameters:
-    use_stamped: true   # both mtt_can_node and teleop use TwistStamped
+    use_stamped: true
     topics:
+      teleop:
+        topic: cmd_vel/teleop   # smoothed operator command
+        timeout: 0.5
+        priority: 20
       controller:
         topic: controller/cmd_vel
         timeout: 0.5
         priority: 15
-      teleop:
-        topic: cmd_vel/teleop   # direct from teleop node — smoother bypassed for instant response
-        timeout: 0.5
-        priority: 10
       nav_cmd:
         topic: cmd_vel/nav
         timeout: 1.0
