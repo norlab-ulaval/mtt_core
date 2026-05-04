@@ -96,11 +96,19 @@ std::optional<RmcData> parse_rmc(const std::string& sentence) {
 
   RmcData data{};
   data.timestamp_utc = parse_utc_time(fields[1]);
-  data.valid = (fields[2] == "A");
+  data.valid         = (fields[2] == "A");
   data.latitude_deg  = parse_lat(fields[3], fields[4]);
   data.longitude_deg = parse_lon(fields[5], fields[6]);
   data.speed_knots   = fields[7].empty() ? 0.0 : std::stod(fields[7]);
   data.course_deg    = fields[8].empty() ? 0.0 : std::stod(fields[8]);
+
+  // Field 9: DDMMYY — parse calendar date for absolute timestamp computation
+  if (fields[9].size() == 6) {
+    data.day         = std::stoi(fields[9].substr(0, 2));
+    data.month       = std::stoi(fields[9].substr(2, 2));
+    data.year_2digit = std::stoi(fields[9].substr(4, 2));
+  }
+
   return data;
 }
 

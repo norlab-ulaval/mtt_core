@@ -1,0 +1,35 @@
+# GPS configuration — Single rover, USB Serial (DEFAULT for single-antenna setup)
+#
+# Hardware:
+#   Rover (Reach RS)  → /dev/reach_rover  (USB ACM, udev symlink)
+#   Base station      → fixed tripod, NOT connected to this computer
+#                       Sends RTCM3 corrections to rover via LoRa radio
+#                       (or via TCP if both on same WiFi network)
+#
+# ReachView3 setup on rover:
+#   1. Mode: Rover
+#   2. Correction input: LoRa (radio, same settings as base) OR
+#                        TCP client → base IP:9000 (if on same network)
+#   3. NMEA output: Serial USB → 115200 baud
+#      Enable sentences: GGA (5 Hz), RMC (1 Hz)
+#      GGA gives position + fix quality; RMC gives date (required for GPS-UTC timestamps)
+#
+# ReachView3 setup on base:
+#   1. Mode: Base
+#   2. Survey-in: auto (waits for StdDev < 0.5m, ~10 min) OR manual coordinates
+#   3. Correction output: LoRa radio OR TCP server port 9000
+#   4. NMEA output: optional (for base position reference)
+#
+# To create /dev/reach_rover udev symlink (run once on the robot):
+#   sudo bash scripts/setup_udev_reach_rs.sh
+#
+# Keys use the fully-qualified node name so ROS2 param loading matches
+# the node launched in its namespace.
+
+/gps/reach_driver_rover:
+  ros__parameters:
+    connection_type: "serial"
+    serial_port: "/dev/reach_rover"
+    baud_rate: 115200
+    frame_id: "gps_rover_link"
+    reconnect_interval_s: 3.0

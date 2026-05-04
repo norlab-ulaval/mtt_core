@@ -1,0 +1,24 @@
+# GPS configuration — Single rover, TCP mode
+#
+# Use this when the Reach RS rover is on the robot WiFi and you want to
+# connect from the robot PC over TCP instead of USB serial.
+#
+# ReachView3 setup on rover (same as serial, plus):
+#   3. NMEA output: TCP server → port 9001
+#      (robot PC connects as TCP client to rover IP:9001)
+#
+# The base station setup is identical — corrections travel over LoRa or
+# a separate TCP connection directly between the two Reach RS units.
+# The ROS driver does NOT need to touch RTCM corrections; the rover handles
+# them internally once configured in ReachView3.
+#
+# Keys use the fully-qualified node name so ROS2 param loading matches
+# the node launched in its namespace.
+
+/gps/reach_driver_rover:
+  ros__parameters:
+    connection_type: "tcp"
+    host: "192.168.2.59"     # rover IP — update to match ReachView3 network settings
+    port: 9001               # rover TCP NMEA output port — must be enabled in ReachView3
+    frame_id: "gps_rover_link"
+    reconnect_interval_s: 3.0

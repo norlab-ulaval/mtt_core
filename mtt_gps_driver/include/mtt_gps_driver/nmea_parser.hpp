@@ -23,12 +23,15 @@ struct GgaData {
 };
 
 struct RmcData {
-  double timestamp_utc;
+  double timestamp_utc;    // seconds since midnight (UTC)
+  int    day{0};           // 1-31  (from DDMMYY field)
+  int    month{0};         // 1-12
+  int    year_2digit{0};   // 0-99  (2000+ assumed)
   double latitude_deg;
   double longitude_deg;
   double speed_knots;
   double course_deg;
-  bool valid;
+  bool   valid;
 };
 
 struct HdtData {
