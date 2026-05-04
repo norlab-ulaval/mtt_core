@@ -4,13 +4,17 @@
 
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
+#include <chrono>
 
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_components/register_node_macro.hpp>
+#include <builtin_interfaces/msg/time.hpp>
 #include <nav_msgs/msg/odometry.hpp>
 #include <geometry_msgs/msg/twist_stamped.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
+#include <sensor_msgs/msg/joint_state.hpp>
 #include <std_msgs/msg/float64.hpp>
 #include <tf2_ros/transform_broadcaster.h>
 
@@ -19,6 +23,7 @@
 #include <mtt_interfaces/srv/set_steer_control_mode.hpp>
 #include <std_srvs/srv/trigger.hpp>
 
+#include "mtt_driver/logic/command_motion_model.hpp"
 #include "mtt_driver/logic/odometry_calculator.hpp"
 #include "mtt_driver/logic/vehicle_params.hpp"
 
@@ -31,17 +36,46 @@ public:
   {
     // ── Parameters ────────────────────────────────────────────────────
     odom_frame_       = declare_parameter("odom_frame",       std::string("odom"));
-    base_frame_       = declare_parameter("base_frame",       std::string("base_link"));
+    base_frame_       = declare_parameter("base_frame",       std::string("base_footprint"));
     broadcast_tf_     = declare_parameter("broadcast_tf",     true);
+    publish_runtime_joint_states_ =
+      declare_parameter("publish_runtime_joint_states", false);
+    runtime_joint_states_topic_ =
+      declare_parameter("runtime_joint_states_topic", std::string("joint_states"));
     track_width_m_    = declare_parameter("track_width_m",    VehicleParams::track_width);
     wheelbase_m_      = declare_parameter("wheelbase_m",      VehicleParams::total_wheelbase());
     steer_mode_       = declare_parameter("steer_control_mode", std::string("open_loop"));
+    cmd_angular_mode_ = declare_parameter("cmd_angular_mode", std::string("normalized_steer"));
+    cmd_vel_topic_    = declare_parameter("cmd_vel_topic", std::string("cmd_vel"));
+    cmd_vel_timeout_s_ = declare_parameter("cmd_vel_timeout_seconds", 0.5);
     pivot_turn_       = declare_parameter("pivot_turn_enabled", false);
     min_speed_turn_   = declare_parameter("min_turn_speed_ms", 0.03);
     max_articulation_rad_ = declare_parameter("max_articulation_deg",
         VehicleParams::max_articulation_deg) * M_PI / 180.0;
     yaw_slip_factor_  = declare_parameter("yaw_slip_factor",  1.0);
     wrap_threshold_m_ = declare_parameter("wrap_reset_threshold_m", 1000.0);
+    motion_model_params_.wheelbase_m = declare_parameter("model_wheelbase_m", wheelbase_m_);
+    motion_model_params_.max_articulation_rad =
+      declare_parameter("model_max_articulation_deg", VehicleParams::max_articulation_deg) * M_PI / 180.0;
+    motion_model_params_.min_turn_speed_ms = min_speed_turn_;
+    motion_model_params_.speed_response_gain = declare_parameter("model_speed_response_gain", 3.0);
+    motion_model_params_.articulation_response_gain =
+      declare_parameter("model_articulation_response_gain", VehicleParams::articulation_response);
+    motion_model_params_.brake_gain = declare_parameter("model_brake_gain", 1.0);
+    motion_model_params_.use_slip_heuristic = declare_parameter("model_use_slip_heuristic", true);
+    motion_model_params_.yaw_slip_base = declare_parameter("model_yaw_slip_base", 0.10);
+    motion_model_params_.yaw_slip_speed_gain = declare_parameter("model_yaw_slip_speed_gain", 0.05);
+    motion_model_params_.yaw_slip_articulation_gain =
+      declare_parameter("model_yaw_slip_articulation_gain", 0.15);
+    motion_model_params_.yaw_slip_min_scale = declare_parameter("model_yaw_slip_min_scale", 0.55);
+
+    if (cmd_angular_mode_ != "normalized_steer" && cmd_angular_mode_ != "yaw_rate") {
+      RCLCPP_WARN(
+        get_logger(),
+        "Unknown cmd_angular_mode '%s', falling back to 'normalized_steer'",
+        cmd_angular_mode_.c_str());
+      cmd_angular_mode_ = "normalized_steer";
+    }
 
     // ── Initial odometry mode ─────────────────────────────────────────
     calculator_ = logic::OdometryFactory::create(
@@ -50,6 +84,10 @@ public:
     // ── Publishers ────────────────────────────────────────────────────
     odom_pub_        = create_publisher<nav_msgs::msg::Odometry>("mtt_odometry", 10);
     articulation_pub_ = create_publisher<std_msgs::msg::Float64>("mtt_articulation_angle", 10);
+    if (publish_runtime_joint_states_) {
+      joint_state_pub_ = create_publisher<sensor_msgs::msg::JointState>(
+        runtime_joint_states_topic_, 10);
+    }
 
     // ── Subscribers ────────────────────────────────────────────────────────────
     tacho_sub_ = create_subscription<mtt_msgs::msg::MttTachometerData>(
@@ -59,7 +97,7 @@ public:
       "mtt_driving_mode", 10,
       [this](const mtt_msgs::msg::MttDrivingMode::SharedPtr msg){ on_mode_change(msg); });
     cmd_vel_sub_ = create_subscription<geometry_msgs::msg::TwistStamped>(
-      "cmd_vel/pid", 10,
+      cmd_vel_topic_, 10,
       [this](const geometry_msgs::msg::TwistStamped::SharedPtr msg){ on_cmd_vel(msg); });
 
     // ── Services ────────────────────────────────────────────────────────────
@@ -78,8 +116,8 @@ public:
 
     if (broadcast_tf_) {
       tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
-      // Publish identity TF at 10 Hz so ICP mapper always has a valid transform,
-      // even when the tachometer is dead (encoder failure, cold start, etc.).
+      // Keep publishing the last known odom->base transform and articulation state
+      // when telemetry pauses, so the TF tree stays usable for mapping/debugging.
       tf_fallback_timer_ = create_wall_timer(
         std::chrono::milliseconds(100),
         [this]() {
@@ -88,6 +126,7 @@ public:
           auto now_tp = std::chrono::steady_clock::now();
           if (now_tp - last_tacho_time_ < std::chrono::milliseconds(200)) return;
           geometry_msgs::msg::TransformStamped tf;
+          double articulation_angle = 0.0;
           tf.header.stamp    = now();
           tf.header.frame_id = odom_frame_;
           tf.child_frame_id  = base_frame_;
@@ -98,32 +137,46 @@ public:
             tf.transform.translation.y = pose.y;
             tf.transform.rotation.z = std::sin(pose.heading / 2.0);
             tf.transform.rotation.w = std::cos(pose.heading / 2.0);
+            articulation_angle = pose.articulation_angle;
           }
+          publish_runtime_joint_state(tf.header.stamp, articulation_angle);
           tf_broadcaster_->sendTransform(tf);
         });
     }
 
-    RCLCPP_INFO(get_logger(), "MttOdometryNode started (mode=SingleTrailer, steer=%s)",
-                steer_mode_.c_str());
+    RCLCPP_INFO(
+      get_logger(),
+      "MttOdometryNode started (mode=SingleTrailer, steer=%s, cmd_angular_mode=%s, cmd_vel=%s, runtime_joint_states=%s)",
+      steer_mode_.c_str(),
+      cmd_angular_mode_.c_str(),
+      cmd_vel_topic_.c_str(),
+      publish_runtime_joint_states_ ? runtime_joint_states_topic_.c_str() : "disabled");
   }
 
 private:
   // ── State ─────────────────────────────────────────────────────────
-  std::string odom_frame_, base_frame_, steer_mode_;
-  bool     broadcast_tf_, pivot_turn_;
+  std::string odom_frame_, base_frame_, steer_mode_, cmd_angular_mode_, cmd_vel_topic_, runtime_joint_states_topic_;
+  bool     broadcast_tf_, pivot_turn_, publish_runtime_joint_states_;
   double   track_width_m_, wheelbase_m_;
   double   max_articulation_rad_{VehicleParams::max_articulation_rad};
-  double   min_speed_turn_, yaw_slip_factor_, wrap_threshold_m_;
-  double   current_angular_vel_{0.0};
+  double   min_speed_turn_, yaw_slip_factor_, wrap_threshold_m_, cmd_vel_timeout_s_;
+  double   current_angular_cmd_{0.0};
+  logic::CommandMotionParams motion_model_params_{};
   std::chrono::steady_clock::time_point last_tacho_time_{};
+  std::chrono::steady_clock::time_point last_cmd_vel_time_{};
+  bool has_cmd_vel_{false};
+  std::optional<rclcpp::Time> last_tacho_stamp_;
+  std::optional<std::chrono::steady_clock::time_point> last_tacho_wall_time_;
 
   std::mutex calc_mutex_;
+  std::mutex state_mutex_;
   std::unique_ptr<logic::IOdometryCalculator> calculator_;
   logic::DrivingMode current_mode_{logic::DrivingMode::SingleTrailer};
 
   // ── ROS I/O ───────────────────────────────────────────────────────
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_pub_;
   rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr  articulation_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr joint_state_pub_;
   rclcpp::Subscription<mtt_msgs::msg::MttTachometerData>::SharedPtr tacho_sub_;
   rclcpp::Subscription<mtt_msgs::msg::MttDrivingMode>::SharedPtr    mode_sub_;
   rclcpp::TimerBase::SharedPtr tf_fallback_timer_;
@@ -132,52 +185,134 @@ private:
   rclcpp::Service<mtt_interfaces::srv::SetSteerControlMode>::SharedPtr steer_mode_srv_;
   std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
 
+  double normalized_steer_to_yaw_rate(double normalized_steer, double speed_ms) const
+  {
+    return logic::CommandMotionModel::yaw_rate_from_speed_and_steer(
+      normalized_steer,
+      speed_ms,
+      motion_model_params_,
+      motion_model_params_.use_slip_heuristic);
+  }
+
+  double command_to_yaw_rate(double angular_cmd, double speed_ms) const
+  {
+    if (cmd_angular_mode_ == "yaw_rate") {
+      return angular_cmd;
+    }
+
+    return normalized_steer_to_yaw_rate(angular_cmd, speed_ms);
+  }
+
+  void publish_runtime_joint_state(const builtin_interfaces::msg::Time& stamp, double articulation_angle)
+  {
+    if (!publish_runtime_joint_states_ || !joint_state_pub_) {
+      return;
+    }
+
+    sensor_msgs::msg::JointState msg;
+    msg.header.stamp = stamp;
+    msg.name = {"pitch", "yaw", "roll"};
+    msg.position = {0.0, articulation_angle, 0.0};
+    joint_state_pub_->publish(msg);
+  }
+
   // ── Callbacks ─────────────────────────────────────────────────────
   void on_cmd_vel(const geometry_msgs::msg::TwistStamped::SharedPtr msg) {
-    current_angular_vel_ = msg->twist.angular.z;
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    current_angular_cmd_ = msg->twist.angular.z;
+    last_cmd_vel_time_ = std::chrono::steady_clock::now();
+    has_cmd_vel_ = true;
   }
 
   void on_tachometer(const mtt_msgs::msg::MttTachometerData::SharedPtr msg)
   {
-    last_tacho_time_ = std::chrono::steady_clock::now();
+    const auto wall_now = std::chrono::steady_clock::now();
+    last_tacho_time_ = wall_now;
     const double speed_ms   = msg->speed_ms;
     const double steer_cmd  = msg->steer_cmd;
-    const int    dir_sign   = (msg->direction == "Reverse") ? -1 : 1;
+    int dir_sign   = (msg->direction == "Reverse") ? -1 : 1;
+    if (msg->model_state_valid && std::abs(msg->model_speed_ms) > 1e-4) {
+      dir_sign = msg->model_speed_ms < 0.0 ? -1 : 1;
+    }
+    const double signed_speed_ms = msg->model_state_valid ? msg->model_speed_ms : (speed_ms * dir_sign);
+
+    double dt = 0.02;
+    if (msg->header.stamp.sec != 0 || msg->header.stamp.nanosec != 0) {
+      const auto stamp = rclcpp::Time(msg->header.stamp);
+      if (last_tacho_stamp_) {
+        dt = (stamp - *last_tacho_stamp_).seconds();
+      }
+      last_tacho_stamp_ = stamp;
+    }
+    if ((dt <= 1e-4 || dt > 1.0) && last_tacho_wall_time_) {
+      dt = std::chrono::duration<double>(wall_now - *last_tacho_wall_time_).count();
+    }
+    last_tacho_wall_time_ = wall_now;
+    if (dt <= 1e-4 || dt > 1.0) {
+      dt = 0.02;
+    }
 
     // Compute effective angular velocity
     double eff_ang = 0.0;
-    if (steer_mode_ == "closed_loop") {
-      double phi = std::clamp(steer_cmd * max_articulation_rad_,
-                              -max_articulation_rad_,
-                               max_articulation_rad_);
-      eff_ang = speed_ms * std::tan(phi) / std::max(wheelbase_m_, 1e-6);
-    } else {
-      eff_ang = steer_cmd * VehicleParams::max_yaw_rate_rad_s;
+    bool closed_loop = false;
+    logic::DrivingMode mode_snapshot;
+    double current_angular_cmd = 0.0;
+    bool cmd_is_fresh = false;
+    {
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      closed_loop = (steer_mode_ == "closed_loop");
+      if (msg->model_state_valid) {
+        eff_ang = msg->model_yaw_rate_effective_rad_s;
+      } else if (closed_loop) {
+        eff_ang = normalized_steer_to_yaw_rate(steer_cmd, speed_ms);
+      } else {
+        cmd_is_fresh =
+          has_cmd_vel_ &&
+          std::chrono::duration<double>(wall_now - last_cmd_vel_time_).count() <= cmd_vel_timeout_s_;
+        current_angular_cmd = current_angular_cmd_;
+        eff_ang = cmd_is_fresh ? command_to_yaw_rate(current_angular_cmd, speed_ms) : 0.0;
+      }
+    }
+    {
+      std::lock_guard<std::mutex> lock(calc_mutex_);
+      mode_snapshot = current_mode_;
     }
 
     // Suppress yaw when near-stationary (no pivot turns unless enabled)
     if (!pivot_turn_ && std::abs(speed_ms) < min_speed_turn_) eff_ang = 0.0;
-    eff_ang = std::clamp(eff_ang * yaw_slip_factor_,
+    eff_ang = std::clamp(eff_ang * (msg->model_state_valid ? 1.0 : yaw_slip_factor_),
                          -VehicleParams::max_yaw_rate_rad_s,
                           VehicleParams::max_yaw_rate_rad_s);
 
     logic::OdometryInput input;
     input.distance_km      = msg->distance_km;
-    input.speed_ms         = speed_ms * dir_sign;
+    input.speed_ms         = signed_speed_ms;
     input.steer_cmd        = steer_cmd;
     input.angular_velocity = eff_ang;
     input.direction_sign   = dir_sign;
-    input.dt               = 0.02;  // nominal; TODO: derive from stamp delta
+    input.dt               = dt;
+    input.synthetic_model_valid = msg->model_state_valid;
+    input.articulation_command_rad = msg->model_articulation_command_rad;
+    input.articulation_effective_rad = msg->model_articulation_effective_rad;
+    input.curvature_nominal_m_inv = msg->model_curvature_nominal_m_inv;
+    input.curvature_effective_m_inv = msg->model_curvature_effective_m_inv;
+    input.yaw_rate_nominal_rad_s = msg->model_yaw_rate_nominal_rad_s;
+    input.yaw_rate_effective_rad_s = msg->model_yaw_rate_effective_rad_s;
 
     logic::OdometryOutput out;
     {
       std::lock_guard<std::mutex> lock(calc_mutex_);
       out = calculator_->update(input);
+      mode_snapshot = current_mode_;
     }
 
     // Build and publish nav_msgs/Odometry
     nav_msgs::msg::Odometry odom;
-    odom.header.stamp    = now();
+    if (msg->header.stamp.sec != 0 || msg->header.stamp.nanosec != 0) {
+      odom.header.stamp = msg->header.stamp;
+    } else {
+      odom.header.stamp = now();
+    }
     odom.header.frame_id = odom_frame_;
     odom.child_frame_id  = base_frame_;
     odom.pose.pose.position.x = out.x;
@@ -195,11 +330,12 @@ private:
     odom_pub_->publish(odom);
 
     // Publish articulation angle for joint controller
-    if (current_mode_ == logic::DrivingMode::SingleTrailer) {
+    if (mode_snapshot == logic::DrivingMode::SingleTrailer) {
       std_msgs::msg::Float64 artic;
       artic.data = out.articulation_angle;
       articulation_pub_->publish(artic);
     }
+    publish_runtime_joint_state(odom.header.stamp, out.articulation_angle);
 
     // TF broadcast
     if (broadcast_tf_ && tf_broadcaster_) {
@@ -248,6 +384,7 @@ private:
       res->message = "Invalid control_mode. Use 'open_loop' or 'closed_loop'";
       return;
     }
+    std::lock_guard<std::mutex> lock(state_mutex_);
     steer_mode_ = req->control_mode;
     res->success = true;
     res->message = "Steer control mode set to " + steer_mode_;

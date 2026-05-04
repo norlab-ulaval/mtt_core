@@ -4,8 +4,10 @@
 
 #include "mtt_driver/components/mtt_can_node.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <limits>
 
 #include <rclcpp_components/register_node_macro.hpp>
 
@@ -26,12 +28,68 @@ MttCanNode::MttCanNode(const rclcpp::NodeOptions& options)
   max_linear_speed_ms_ = declare_parameter("max_linear_speed_ms", 1.0);
   throttle_deadband_   = declare_parameter("throttle_deadband",   0.05);
   steer_deadband_      = declare_parameter("steer_deadband",      0.05);
-  base_frame_          = declare_parameter("base_frame",           std::string("base_link"));
+  wheelbase_m_         = declare_parameter("wheelbase_m",         VehicleParams::total_wheelbase());
+  min_steer_speed_ms_  = declare_parameter("min_steer_speed_ms",  VehicleParams::min_speed_for_steering);
+  motion_model_params_.wheelbase_m = declare_parameter("model_wheelbase_m", wheelbase_m_);
+  motion_model_params_.max_articulation_rad =
+    declare_parameter("model_max_articulation_deg", VehicleParams::max_articulation_deg) * M_PI / 180.0;
+  motion_model_params_.min_turn_speed_ms = min_steer_speed_ms_;
+  motion_model_params_.speed_response_gain = declare_parameter("model_speed_response_gain", 3.0);
+  motion_model_params_.articulation_response_gain =
+    declare_parameter("model_articulation_response_gain", VehicleParams::articulation_response);
+  motion_model_params_.brake_gain = declare_parameter("model_brake_gain", 1.0);
+  motion_model_params_.use_slip_heuristic = declare_parameter("model_use_slip_heuristic", true);
+  motion_model_params_.yaw_slip_base = declare_parameter("model_yaw_slip_base", 0.10);
+  motion_model_params_.yaw_slip_speed_gain = declare_parameter("model_yaw_slip_speed_gain", 0.05);
+  motion_model_params_.yaw_slip_articulation_gain =
+    declare_parameter("model_yaw_slip_articulation_gain", 0.15);
+  motion_model_params_.yaw_slip_min_scale = declare_parameter("model_yaw_slip_min_scale", 0.55);
+  base_frame_          = declare_parameter("base_frame",           std::string("base_footprint"));
+  cmd_angular_mode_    = declare_parameter("cmd_angular_mode",     std::string("normalized_steer"));
+  steer_control_mode_  = declare_parameter("steer_control_mode",   std::string("closed_loop"));
+  tachometer_mode_     = declare_parameter("tachometer_mode",      std::string("real"));
+  invert_inferred_tachometer_direction_ =
+    declare_parameter("invert_inferred_tachometer_direction", false);
+  publish_can_debug_   = declare_parameter("publish_can_debug",    false);
+  can_debug_topic_     = declare_parameter("can_debug_topic",      std::string("mtt_can/debug_frames"));
+
+  if (cmd_angular_mode_ != "normalized_steer" && cmd_angular_mode_ != "yaw_rate") {
+    RCLCPP_WARN(
+      get_logger(),
+      "Unknown cmd_angular_mode '%s', falling back to 'normalized_steer'",
+      cmd_angular_mode_.c_str());
+    cmd_angular_mode_ = "normalized_steer";
+  }
+
+  if (steer_control_mode_ != "open_loop" && steer_control_mode_ != "closed_loop") {
+    RCLCPP_WARN(
+      get_logger(),
+      "Unknown steer_control_mode '%s', falling back to 'closed_loop'",
+      steer_control_mode_.c_str());
+    steer_control_mode_ = "closed_loop";
+  }
+
+  if (tachometer_mode_ == "fake") {
+    tachometer_mode_ = "cmd_sim";
+  }
+  if (tachometer_mode_ != "real" && tachometer_mode_ != "cmd_sim") {
+    RCLCPP_WARN(
+      get_logger(),
+      "Unknown tachometer_mode '%s', falling back to 'real'",
+      tachometer_mode_.c_str());
+    tachometer_mode_ = "real";
+  }
+
+  synthetic_motion_model_.set_params(motion_model_params_);
 
   // ── Initialize command frame to safe defaults ────────────────────────
   {
     std::lock_guard<std::mutex> lock(frame_mutex_);
     command_frame_.init_defaults();
+    command_frame_.set_steering_mode(
+      steer_control_mode_ == "closed_loop"
+        ? can::SteeringMode::CloseLoop
+        : can::SteeringMode::OpenLoop);
   }
 
   // ── Open CAN interface ───────────────────────────────────────────────
@@ -43,6 +101,9 @@ MttCanNode::MttCanNode(const rclcpp::NodeOptions& options)
   driving_mode_pub_ = create_publisher<mtt_msgs::msg::MttDrivingMode>("mtt_driving_mode", 10);
   steer_cmd_pub_    = create_publisher<std_msgs::msg::UInt8>("mtt_steer_cmd", 10);
   bms_pub_          = create_publisher<mtt_msgs::msg::MttBmsData>("mtt_battery/status", 10);
+  if (publish_can_debug_) {
+    can_debug_pub_ = create_publisher<mtt_msgs::msg::MttCanFrame>(can_debug_topic_, 50);
+  }
 
   // ── Subscribers ──────────────────────────────────────────────────────
   cmd_vel_sub_ = create_subscription<geometry_msgs::msg::TwistStamped>(
@@ -54,6 +115,9 @@ MttCanNode::MttCanNode(const rclcpp::NodeOptions& options)
   estop_sub_ = create_subscription<std_msgs::msg::Bool>(
     "teleop_estop", 10,
     [this](const std_msgs::msg::Bool::SharedPtr msg){ on_estop(msg); });
+  deadman_sub_ = create_subscription<std_msgs::msg::Bool>(
+    "teleop_deadman", 10,
+    [this](const std_msgs::msg::Bool::SharedPtr msg){ on_deadman(msg); });
 
   // ── Services ─────────────────────────────────────────────────────────
   set_mode_srv_ = create_service<mtt_interfaces::srv::SetVehiculeTypeSrv>(
@@ -80,8 +144,15 @@ MttCanNode::MttCanNode(const rclcpp::NodeOptions& options)
   receiver_running_ = true;
   receiver_thread_ = std::thread([this](){ receiver_loop(); });
 
-  RCLCPP_INFO(get_logger(), "MttCanNode started on %s (id=0x%03X)",
-              can_interface_name_.c_str(), can_id_);
+  RCLCPP_INFO(
+    get_logger(),
+    "MttCanNode started on %s (id=0x%03X, steer_control_mode=%s, cmd_angular_mode=%s, tachometer_mode=%s, can_debug=%s)",
+    can_interface_name_.c_str(),
+    can_id_,
+    steer_control_mode_.c_str(),
+    cmd_angular_mode_.c_str(),
+    tachometer_mode_.c_str(),
+    publish_can_debug_ ? can_debug_topic_.c_str() : "disabled");
 }
 
 MttCanNode::~MttCanNode()
@@ -128,17 +199,33 @@ void MttCanNode::receiver_loop()
     auto frame = can_->receive(timeout_ms);
     if (!frame) continue;
 
+    const bool known_frame = can::is_known_mtt_frame(frame->id);
+    bool handled_by_driver = false;
+
     if (frame->id == can::kTelemetryId) {
       auto reading = can::TelemetryDecoder::decode(frame->data.data(), frame->dlc);
       if (reading) {
         std::lock_guard<std::mutex> lock(frame_mutex_);
         tachometer_.update(*reading);
+        handled_by_driver = true;
       }
     } else if (frame->id == can::kBmsCellTempsId ||
                frame->id == can::kBmsSysTempsId  ||
-               frame->id == can::kBmsCoreId) {
+               frame->id == can::kBmsCoreId     ||
+               frame->id == can::kBmsDateTimeId ||
+               frame->id == can::kChargerCommandId ||
+               frame->id == can::kChargerStatusId) {
       std::lock_guard<std::mutex> lock(frame_mutex_);
-      can::BmsDecoder::decode(frame->id, frame->data.data(), frame->dlc, bms_reading_);
+      handled_by_driver = can::BmsDecoder::decode(frame->id, frame->data.data(), frame->dlc, bms_reading_);
+    } else if (frame->id == can::kMainControllerVersionId ||
+               frame->id == can::kBatteryControllerVersionId) {
+      std::lock_guard<std::mutex> lock(frame_mutex_);
+      handled_by_driver = can::ControllerVersionDecoder::decode(
+        frame->id, frame->data.data(), frame->dlc, controller_versions_);
+    }
+
+    if (publish_can_debug_ && known_frame) {
+      publish_can_debug_frame(*frame, false, handled_by_driver);
     }
   }
 }
@@ -147,7 +234,7 @@ void MttCanNode::receiver_loop()
 void MttCanNode::on_cmd_vel(const geometry_msgs::msg::TwistStamped::SharedPtr msg)
 {
   const double lin   = msg->twist.linear.x;
-  const double steer = std::clamp(msg->twist.angular.z, -1.0, 1.0);
+  const double steer = command_angular_to_normalized_steer(lin, msg->twist.angular.z);
 
   // Normalize throttle by max speed, then apply deadband
   const double throttle_norm = std::clamp(std::abs(lin) / max_linear_speed_ms_, 0.0, 1.0);
@@ -159,8 +246,32 @@ void MttCanNode::on_cmd_vel(const geometry_msgs::msg::TwistStamped::SharedPtr ms
   command_frame_.set_steer(steer_cmd);
   command_frame_.set_direction(lin >= 0.0 ? can::Direction::Forward : can::Direction::Reverse);
   current_steering_input_ = steer_cmd;
+  current_linear_command_ms_ = std::clamp(lin, -max_linear_speed_ms_, max_linear_speed_ms_);
+  cmd_vel_seen_           = true;
   last_cmd_vel_time_       = std::chrono::steady_clock::now();
   command_timeout_active_  = false;
+}
+
+double MttCanNode::command_angular_to_normalized_steer(double linear_x, double angular_z) const
+{
+  if (cmd_angular_mode_ == "yaw_rate") {
+    auto params = motion_model_params_;
+    params.min_turn_speed_ms = min_steer_speed_ms_;
+    return logic::CommandMotionModel::normalized_steer_from_yaw_rate(angular_z, linear_x, params);
+  }
+
+  return std::clamp(angular_z, -1.0, 1.0);
+}
+
+can::Direction MttCanNode::infer_tachometer_direction(can::Direction commanded_direction) const
+{
+  if (!invert_inferred_tachometer_direction_) {
+    return commanded_direction;
+  }
+
+  return commanded_direction == can::Direction::Reverse
+    ? can::Direction::Forward
+    : can::Direction::Reverse;
 }
 
 // ── aux_cmd callback ──────────────────────────────────────────────────
@@ -184,6 +295,12 @@ void MttCanNode::on_estop(const std_msgs::msg::Bool::SharedPtr msg)
   set_safety_lock("teleop_estop", teleop_estop_active_);
 }
 
+void MttCanNode::on_deadman(const std_msgs::msg::Bool::SharedPtr msg)
+{
+  teleop_deadman_seen_ = true;
+  teleop_deadman_active_ = msg->data;
+}
+
 // ── Control loop (publish + timeout watchdog) ─────────────────────────
 void MttCanNode::control_loop()
 {
@@ -200,7 +317,11 @@ void MttCanNode::send_can_frame()
   f.id  = can_id_;
   f.dlc = 8;
   f.data = command_frame_.data;
-  if (!can_->send(f)) {
+  const bool sent = can_->send(f);
+  if (publish_can_debug_) {
+    publish_can_debug_frame(f, true, true);
+  }
+  if (!sent) {
     RCLCPP_WARN(get_logger(), "CAN send failed — attempting recovery");
     can_->try_recover();
   }
@@ -209,13 +330,48 @@ void MttCanNode::send_can_frame()
 // ── Command timeout ───────────────────────────────────────────────────
 bool MttCanNode::cmd_vel_is_fresh() const
 {
+  std::lock_guard<std::mutex> lock(frame_mutex_);
+  if (!cmd_vel_seen_) return false;
   auto age = std::chrono::steady_clock::now() - last_cmd_vel_time_;
   return std::chrono::duration<double>(age).count() <= command_timeout_s_;
 }
 
 void MttCanNode::apply_command_timeout_if_needed()
 {
-  // Bare-bones mode: no automatic command neutralization.
+  if (command_timeout_s_ <= 0.0) {
+    return;
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(frame_mutex_);
+    if (!cmd_vel_seen_) {
+      return;
+    }
+  }
+
+  if (cmd_vel_is_fresh()) {
+    return;
+  }
+
+  bool should_log = false;
+  {
+    std::lock_guard<std::mutex> lock(frame_mutex_);
+    command_frame_.set_throttle(0.0);
+    command_frame_.set_steer(0.0);
+    current_steering_input_ = 0.0;
+    current_linear_command_ms_ = 0.0;
+    if (!command_timeout_active_) {
+      command_timeout_active_ = true;
+      should_log = true;
+    }
+  }
+
+  if (should_log) {
+    RCLCPP_WARN(
+      get_logger(),
+      "cmd_vel timed out after %.3f s, neutralizing throttle and steering",
+      command_timeout_s_);
+  }
 }
 
 // ── Safety lock management ────────────────────────────────────────────
@@ -234,6 +390,7 @@ void MttCanNode::sync_safety_switch()
   if (!unlocked) {
     command_frame_.set_throttle(0.0);
     command_frame_.set_brake(1.0);   // full brake on e-stop / deadman release
+    current_linear_command_ms_ = 0.0;
   }
   // On unlock: don't touch brake — on_aux_cmd controls it via RT trigger
 }
@@ -251,25 +408,158 @@ void MttCanNode::publish_vehicle_data()
 {
   TachometerState tach_snap;
   can::BmsReading bms_snap;
+  can::ControllerVersionReading versions_snap;
   double steer_raw;
   double steer_cmd;
+  can::Direction direction;
+  can::Direction inferred_tachometer_direction;
   bool   estop_active;
   bool   deadman;
+  bool   remote_connected;
+  bool   command_timeout_active;
   std::string safety_str;
+  can::VehicleType vehicle_type;
+  can::WinchState winch_state;
+  can::SteeringMode steering_mode;
+  can::SafetyState safety_mode;
+  bool light_off_estop_patch;
+  uint8_t throttle_raw;
+  uint8_t brake_raw;
+  uint8_t reserved_raw;
+  double synthetic_distance_m = 0.0;
+  uint16_t synthetic_instant_rps = 0u;
+  uint32_t synthetic_cumulative_ticks = 0u;
+  double synthetic_speed_ms = 0.0;
+  double synthetic_speed_kmh = 0.0;
+  double synthetic_model_command_linear_speed_ms = 0.0;
+  double synthetic_model_speed_ms = 0.0;
+  double synthetic_model_articulation_command_rad = 0.0;
+  double synthetic_model_articulation_effective_rad = 0.0;
+  double synthetic_model_curvature_nominal_m_inv = 0.0;
+  double synthetic_model_curvature_effective_m_inv = 0.0;
+  double synthetic_model_yaw_rate_nominal_rad_s = 0.0;
+  double synthetic_model_yaw_rate_effective_rad_s = 0.0;
+  bool synthetic_model_state_valid = false;
+  int8_t synthetic_temp_a = 0;
+  int8_t synthetic_temp_b = 0;
+  bool synthetic_seen_once = false;
+  bool synthetic_fresh = false;
+  double synthetic_telemetry_age_ms = 0.0;
+  const auto wall_now = std::chrono::steady_clock::now();
 
   {
     std::lock_guard<std::mutex> lock(frame_mutex_);
     tach_snap    = tachometer_;
     bms_snap     = bms_reading_;
+    versions_snap = controller_versions_;
     steer_raw    = command_frame_.steer_raw();
     steer_cmd    = current_steering_input_;
+    throttle_raw = command_frame_.throttle_raw();
+    brake_raw    = command_frame_.brake_raw();
+    reserved_raw = command_frame_.reserved_raw();
+    direction    = command_frame_.get_direction();
+    inferred_tachometer_direction = infer_tachometer_direction(direction);
+    vehicle_type = command_frame_.get_vehicle_type();
+    winch_state  = command_frame_.get_winch();
+    steering_mode = command_frame_.get_steering_mode();
+    safety_mode  = command_frame_.get_safety();
+    light_off_estop_patch = command_frame_.light_off_estop_patch();
     estop_active = !safety_locks_.empty();
-    deadman      = teleop_estop_seen_ && !teleop_estop_active_;
+    deadman      = teleop_deadman_seen_ && teleop_deadman_active_;
+    remote_connected = teleop_deadman_seen_ || teleop_estop_seen_;
+    command_timeout_active = command_timeout_active_;
     safety_str   = describe_safety_state(safety_locks_.empty() ? "SafetyUnlocked" : "SafetyLocked");
+
+    if (tachometer_mode_ == "cmd_sim") {
+      if (!synthetic_tachometer_initialized_) {
+        last_synthetic_update_ = wall_now;
+        synthetic_tachometer_initialized_ = true;
+      }
+
+      double dt = std::chrono::duration<double>(wall_now - last_synthetic_update_).count();
+      if (dt < 0.0 || dt > 1.0) {
+        dt = 0.0;
+      }
+      last_synthetic_update_ = wall_now;
+
+      logic::CommandMotionCommand motion_command;
+      motion_command.linear_speed_cmd_ms = current_linear_command_ms_;
+      motion_command.normalized_steer_cmd = steer_cmd;
+      motion_command.brake_normalized =
+        std::clamp(
+          static_cast<double>(brake_raw) / static_cast<double>(VehicleParams::brake_max),
+          0.0,
+          1.0);
+      motion_command.dt = dt;
+      const auto& synthetic_state = synthetic_motion_model_.step(motion_command);
+      synthetic_distance_m_ = synthetic_state.cumulative_distance_m;
+      synthetic_distance_m = synthetic_state.cumulative_distance_m;
+      synthetic_speed_ms = std::abs(synthetic_state.v_eff_ms);
+      synthetic_speed_kmh = synthetic_speed_ms * 3.6;
+      synthetic_model_command_linear_speed_ms = synthetic_state.v_command_ms;
+      synthetic_model_speed_ms = synthetic_state.v_eff_ms;
+      synthetic_model_articulation_command_rad = synthetic_state.phi_command_rad;
+      synthetic_model_articulation_effective_rad = synthetic_state.phi_eff_rad;
+      synthetic_model_curvature_nominal_m_inv = synthetic_state.kappa_nominal_m_inv;
+      synthetic_model_curvature_effective_m_inv = synthetic_state.kappa_effective_m_inv;
+      synthetic_model_yaw_rate_nominal_rad_s = synthetic_state.yaw_rate_nominal_rad_s;
+      synthetic_model_yaw_rate_effective_rad_s = synthetic_state.yaw_rate_effective_rad_s;
+      synthetic_model_state_valid = true;
+
+      constexpr double encoder_ratio = VehicleParams::encoder_final_ratio();
+      constexpr double track_length_m = VehicleParams::track_length_m;
+      if (encoder_ratio > 0.0 && track_length_m > 1e-9) {
+        const double instant_rps = synthetic_speed_ms * encoder_ratio / track_length_m;
+        const double cumulative_ticks = synthetic_distance_m_ * encoder_ratio / track_length_m;
+        synthetic_instant_rps = static_cast<uint16_t>(std::clamp(
+          std::llround(instant_rps),
+          0LL,
+          static_cast<long long>(std::numeric_limits<uint16_t>::max())));
+        synthetic_cumulative_ticks = static_cast<uint32_t>(std::clamp(
+          std::llround(cumulative_ticks),
+          0LL,
+          static_cast<long long>(std::numeric_limits<uint32_t>::max())));
+      }
+
+      synthetic_temp_a = tachometer_.has_data ? tachometer_.reading.temperature_a : 0;
+      synthetic_temp_b = tachometer_.has_data ? tachometer_.reading.temperature_b : 0;
+      synthetic_seen_once = true;
+      synthetic_fresh = true;
+      synthetic_telemetry_age_ms = 0.0;
+    }
   }
 
   const auto timeout = std::chrono::milliseconds(static_cast<long>(telemetry_timeout_ms_));
-  const bool fresh = tach_snap.is_fresh(timeout);
+  const bool tachometer_is_synthetic = tachometer_mode_ == "cmd_sim";
+  const bool fresh = tachometer_is_synthetic ? synthetic_fresh : tach_snap.is_fresh(timeout);
+  const double telemetry_age_ms =
+    tachometer_is_synthetic ? synthetic_telemetry_age_ms : tach_snap.age_ms();
+  const bool telemetry_seen_once =
+    tachometer_is_synthetic ? synthetic_seen_once : tach_snap.has_data;
+  const uint16_t tachometer_instant =
+    tachometer_is_synthetic ? synthetic_instant_rps : (fresh ? tach_snap.reading.instant_rps : 0u);
+  const uint32_t tachometer_cumulative =
+    tachometer_is_synthetic ? synthetic_cumulative_ticks : tach_snap.reading.cumulative_ticks;
+  const double reported_speed_ms =
+    tachometer_is_synthetic ? synthetic_speed_ms : (fresh ? tach_snap.speed_ms() : 0.0);
+  const double reported_speed_kmh =
+    tachometer_is_synthetic ? synthetic_speed_kmh : (fresh ? tach_snap.speed_kmh() : 0.0);
+  const double reported_distance_km =
+    tachometer_is_synthetic ? (synthetic_distance_m / 1000.0) : (tach_snap.absolute_distance_m() / 1000.0);
+  const double reported_temp_a =
+    tachometer_is_synthetic ? static_cast<double>(synthetic_temp_a) : static_cast<double>(tach_snap.reading.temperature_a);
+  const double reported_temp_b =
+    tachometer_is_synthetic ? static_cast<double>(synthetic_temp_b) : static_cast<double>(tach_snap.reading.temperature_b);
+  const int8_t reported_temp_a_raw =
+    tachometer_is_synthetic ? synthetic_temp_a : tach_snap.reading.temperature_a;
+  const int8_t reported_temp_b_raw =
+    tachometer_is_synthetic ? synthetic_temp_b : tach_snap.reading.temperature_b;
+  can::Direction reported_direction = inferred_tachometer_direction;
+  if (tachometer_is_synthetic && synthetic_model_state_valid && std::abs(synthetic_model_speed_ms) > 1e-4) {
+    reported_direction = synthetic_model_speed_ms < 0.0
+      ? can::Direction::Reverse
+      : can::Direction::Forward;
+  }
 
   // Tachometer message — always published so that mtt_odometry_node stays alive
   // and joint_states / articulation_angle keep flowing even when the encoder
@@ -278,14 +568,31 @@ void MttCanNode::publish_vehicle_data()
     mtt_msgs::msg::MttTachometerData tacho_msg;
     tacho_msg.header.stamp    = now();
     tacho_msg.header.frame_id = base_frame_;
-    tacho_msg.tachometer_instant   = fresh ? tach_snap.reading.instant_rps  : 0u;
-    tacho_msg.tachometer_cumulative = tach_snap.reading.cumulative_ticks;  // keep last known
-    tacho_msg.speed_ms   = fresh ? tach_snap.speed_ms()  : 0.0;
-    tacho_msg.speed_kmh  = fresh ? tach_snap.speed_kmh() : 0.0;
-    tacho_msg.distance_km = tach_snap.absolute_distance_m() / 1000.0;
-    tacho_msg.main_sensor_temp_a = tach_snap.reading.temperature_a;
-    tacho_msg.main_sensor_temp_b = tach_snap.reading.temperature_b;
+    tacho_msg.telemetry_can_id = can::kTelemetryId;
+    tacho_msg.telemetry_seen_once = telemetry_seen_once;
+    tacho_msg.telemetry_fresh = fresh;
+    tacho_msg.telemetry_age_ms = telemetry_age_ms;
+    tacho_msg.tachometer_is_synthetic = tachometer_is_synthetic;
+    tacho_msg.tachometer_source = tachometer_mode_;
+    tacho_msg.tachometer_instant = tachometer_instant;
+    tacho_msg.tachometer_cumulative = tachometer_cumulative;
+    tacho_msg.speed_ms = reported_speed_ms;
+    tacho_msg.speed_kmh = reported_speed_kmh;
+    tacho_msg.distance_km = reported_distance_km;
+    tacho_msg.direction  =
+      reported_direction == can::Direction::Reverse ? "Reverse" : "Forward";
+    tacho_msg.main_sensor_temp_a = reported_temp_a;
+    tacho_msg.main_sensor_temp_b = reported_temp_b;
     tacho_msg.steer_cmd = steer_cmd;
+    tacho_msg.model_state_valid = synthetic_model_state_valid;
+    tacho_msg.model_command_linear_speed_ms = synthetic_model_command_linear_speed_ms;
+    tacho_msg.model_speed_ms = synthetic_model_speed_ms;
+    tacho_msg.model_articulation_command_rad = synthetic_model_articulation_command_rad;
+    tacho_msg.model_articulation_effective_rad = synthetic_model_articulation_effective_rad;
+    tacho_msg.model_curvature_nominal_m_inv = synthetic_model_curvature_nominal_m_inv;
+    tacho_msg.model_curvature_effective_m_inv = synthetic_model_curvature_effective_m_inv;
+    tacho_msg.model_yaw_rate_nominal_rad_s = synthetic_model_yaw_rate_nominal_rad_s;
+    tacho_msg.model_yaw_rate_effective_rad_s = synthetic_model_yaw_rate_effective_rad_s;
     tachometer_pub_->publish(tacho_msg);
   }
 
@@ -293,15 +600,53 @@ void MttCanNode::publish_vehicle_data()
   mtt_msgs::msg::MttVehicleStatus status_msg;
   status_msg.header.stamp    = now();
   status_msg.header.frame_id = base_frame_;
-  status_msg.speed_ms    = fresh ? tach_snap.speed_ms()  : 0.0;
-  status_msg.speed_kmh   = fresh ? tach_snap.speed_kmh() : 0.0;
-  status_msg.distance_km = fresh ? tach_snap.absolute_distance_m() / 1000.0 : 0.0;
-  status_msg.temperature_a = fresh ? static_cast<double>(tach_snap.reading.temperature_a) : 0.0;
-  status_msg.temperature_b = fresh ? static_cast<double>(tach_snap.reading.temperature_b) : 0.0;
+  status_msg.can_interface = can_interface_name_;
+  status_msg.command_can_id = can_id_;
+  status_msg.telemetry_can_id = can::kTelemetryId;
+  status_msg.telemetry_seen_once = telemetry_seen_once;
+  status_msg.telemetry_fresh = fresh;
+  status_msg.telemetry_age_ms = telemetry_age_ms;
+  status_msg.tachometer_is_synthetic = tachometer_is_synthetic;
+  status_msg.tachometer_source = tachometer_mode_;
+  status_msg.speed_ms = reported_speed_ms;
+  status_msg.speed_kmh = reported_speed_kmh;
+  status_msg.distance_km = reported_distance_km;
+  status_msg.direction   =
+    reported_direction == can::Direction::Reverse ? "Reverse" : "Forward";
+  status_msg.temperature_a = reported_temp_a;
+  status_msg.temperature_b = reported_temp_b;
+  status_msg.main_sensor_temp_a_raw = reported_temp_a_raw;
+  status_msg.main_sensor_temp_b_raw = reported_temp_b_raw;
   status_msg.steer_position = static_cast<uint8_t>(steer_raw);
+  status_msg.tachometer_instant = tachometer_instant;
+  status_msg.tachometer_cumulative = tachometer_cumulative;
+  status_msg.tachometer_instant_ticks_per_s = tachometer_instant;
+  status_msg.tachometer_cumulative_ticks = tachometer_cumulative;
+  status_msg.vehicle_type_raw = static_cast<uint8_t>(vehicle_type);
+  status_msg.vehicle_type_label = can::vehicle_type_to_string(vehicle_type);
+  status_msg.security_unlocked = safety_mode == can::SafetyState::Unlocked;
+  status_msg.light_off_estop_patch = light_off_estop_patch;
+  status_msg.direction_reverse = reported_direction == can::Direction::Reverse;
+  status_msg.throttle_raw = throttle_raw;
+  status_msg.brake_raw = brake_raw;
+  status_msg.steer_raw = static_cast<uint8_t>(steer_raw);
+  status_msg.steer_normalized = steer_cmd;
+  status_msg.winch_raw = static_cast<uint8_t>(winch_state);
+  status_msg.winch_state = can::winch_state_to_string(winch_state);
+  status_msg.steering_mode_closed_loop = steering_mode == can::SteeringMode::CloseLoop;
+  status_msg.reserved_byte_7 = reserved_raw;
   status_msg.emergency_stop_active = estop_active;
+  status_msg.remote_connected = remote_connected;
   status_msg.deadman_active = deadman;
+  status_msg.command_timeout_active = command_timeout_active;
+  status_msg.can_debug_enabled = publish_can_debug_;
   status_msg.safety_state   = safety_str;
+  status_msg.has_main_controller_version = versions_snap.has_main_controller_version;
+  status_msg.main_hardware_revision_raw = versions_snap.main_hardware_revision_raw;
+  status_msg.main_software_revision_raw = versions_snap.main_software_revision_raw;
+  status_msg.has_battery_controller_version = versions_snap.has_battery_controller_version;
+  status_msg.battery_hardware_revision_raw = versions_snap.battery_hardware_revision_raw;
+  status_msg.battery_software_revision_raw = versions_snap.battery_software_revision_raw;
   status_pub_->publish(status_msg);
 
   // Steer raw feedback
@@ -310,43 +655,96 @@ void MttCanNode::publish_vehicle_data()
   steer_cmd_pub_->publish(steer_fb);
 
   // BMS message (published at control rate; skips if no BMS frames received yet)
-  if (bms_snap.has_soc || bms_snap.has_cell_temps || bms_snap.has_sys_temps) {
-    constexpr double kDt = 1.0 / 50.0;  // 50 Hz control loop
-
+  if (bms_snap.has_soc ||
+      bms_snap.has_cell_temps ||
+      bms_snap.has_sys_temps ||
+      bms_snap.has_datetime ||
+      bms_snap.has_charger_command ||
+      bms_snap.has_charger_status) {
     mtt_msgs::msg::MttBmsData bms_msg;
     bms_msg.header.stamp    = now();
     bms_msg.header.frame_id = base_frame_;
 
-    // State of charge & pack
-    bms_msg.soc_percent         = static_cast<float>(bms_snap.soc_percent);
-    // voltage/current raw — scaling (V/A per LSB) not confirmed in spec; use raw ints
-    bms_msg.pack_voltage        = static_cast<float>(bms_snap.battery_voltage_raw);
-    bms_msg.pack_current        = static_cast<float>(bms_snap.battery_current_raw);
-    bms_msg.remaining_capacity  = static_cast<float>(bms_snap.charge_time_min);  // min→not Ah; named generically
-
-    // Cell temperatures
-    bms_msg.cell_temp_1 = static_cast<float>(bms_snap.cell_temp[0]);
-    bms_msg.cell_temp_2 = static_cast<float>(bms_snap.cell_temp[1]);
-    bms_msg.cell_temp_3 = static_cast<float>(bms_snap.cell_temp[2]);
-    bms_msg.cell_temp_4 = static_cast<float>(bms_snap.cell_temp[3]);
-
-    // System temperatures
-    bms_msg.ambient_temp = static_cast<float>(bms_snap.ambient_temp);
-    bms_msg.mosfet_temp  = static_cast<float>(bms_snap.mosfet_temp);
-
-    // Power & energy (raw product until scaling is confirmed)
-    float power = bms_msg.pack_voltage * bms_msg.pack_current;
-    bms_msg.power_watts = power;
-    energy_consumed_wh_ += static_cast<double>(power) * kDt / 3600.0;
-    bms_msg.energy_consumed_wh = static_cast<float>(energy_consumed_wh_);
-
-    // Freshness
+    // Frame availability
     bms_msg.has_soc        = bms_snap.has_soc;
     bms_msg.has_cell_temps = bms_snap.has_cell_temps;
     bms_msg.has_sys_temps  = bms_snap.has_sys_temps;
+    bms_msg.has_datetime   = bms_snap.has_datetime;
+    bms_msg.has_charger_command = bms_snap.has_charger_command;
+    bms_msg.has_charger_status = bms_snap.has_charger_status;
+
+    // Core state
+    bms_msg.soc_percent         = bms_snap.soc_percent;
+    bms_msg.battery_voltage_raw = bms_snap.battery_voltage_raw;
+    bms_msg.battery_current_raw = bms_snap.battery_current_raw;
+    bms_msg.battery_current_estimated_valid = true;
+    bms_msg.battery_voltage_valid = false;
+    bms_msg.power_valid = false;
+    bms_msg.battery_current_estimated_a =
+      static_cast<float>(bms_snap.battery_current_raw * 0.0103 - 0.72);
+    bms_msg.battery_voltage_v = 0.0f;
+    bms_msg.power_watts = 0.0f;
+    bms_msg.energy_consumed_wh = 0.0f;
+    bms_msg.charge_time_remaining_min = bms_snap.charge_time_min;
+    bms_msg.heatpad_a_on = bms_snap.heatpad_a_on;
+    bms_msg.heatpad_b_on = bms_snap.heatpad_b_on;
+    bms_msg.heatpads_reserved = bms_snap.heatpads_reserved;
+
+    // Cell temperatures (0x600)
+    bms_msg.cell_temp_1_raw = bms_snap.cell_temp[0];
+    bms_msg.cell_temp_2_raw = bms_snap.cell_temp[1];
+    bms_msg.cell_temp_3_raw = bms_snap.cell_temp[2];
+    bms_msg.cell_temp_4_raw = bms_snap.cell_temp[3];
+    bms_msg.cell_temp_1_c = static_cast<float>(bms_snap.cell_temp[0]);
+    bms_msg.cell_temp_2_c = static_cast<float>(bms_snap.cell_temp[1]);
+    bms_msg.cell_temp_3_c = static_cast<float>(bms_snap.cell_temp[2]);
+    bms_msg.cell_temp_4_c = static_cast<float>(bms_snap.cell_temp[3]);
+
+    // System temperatures (0x601)
+    bms_msg.ambient_temp_raw = bms_snap.ambient_temp;
+    bms_msg.mosfet_temp_raw = bms_snap.mosfet_temp;
+    bms_msg.heatpad_a_temp_raw = bms_snap.heatpad_a_temp;
+    bms_msg.heatpad_b_temp_raw = bms_snap.heatpad_b_temp;
+    bms_msg.ambient_temp_c = static_cast<float>(bms_snap.ambient_temp);
+    bms_msg.mosfet_temp_c = static_cast<float>(bms_snap.mosfet_temp);
+    bms_msg.heatpad_a_temp_c = static_cast<float>(bms_snap.heatpad_a_temp);
+    bms_msg.heatpad_b_temp_c = static_cast<float>(bms_snap.heatpad_b_temp);
+
+    // Raw 0x603 and charger payloads
+    bms_msg.charge_time_remaining_603_raw = bms_snap.charge_time_remaining_603_raw;
+    bms_msg.year_month_raw = bms_snap.year_month_raw;
+    bms_msg.day_hour_raw = bms_snap.day_hour_raw;
+    bms_msg.minute_second_raw = bms_snap.minute_second_raw;
+    bms_msg.charger_max_voltage_raw = bms_snap.charger_max_voltage_raw;
+    bms_msg.charger_max_current_raw = bms_snap.charger_max_current_raw;
+    bms_msg.charger_configured_voltage_raw = bms_snap.charger_configured_voltage_raw;
+    bms_msg.charger_configured_current_raw = bms_snap.charger_configured_current_raw;
 
     bms_pub_->publish(bms_msg);
   }
+}
+
+void MttCanNode::publish_can_debug_frame(
+  const hardware::CanFrame& frame,
+  bool is_tx,
+  bool handled_by_driver)
+{
+  if (!publish_can_debug_ || !can_debug_pub_) {
+    return;
+  }
+
+  mtt_msgs::msg::MttCanFrame msg;
+  msg.header.stamp = now();
+  msg.header.frame_id = base_frame_;
+  msg.can_interface = can_interface_name_;
+  msg.can_id = frame.id;
+  msg.is_extended = frame.is_extended;
+  msg.is_tx = is_tx;
+  msg.handled_by_driver = handled_by_driver;
+  msg.frame_name = can::frame_name_from_id(frame.id);
+  msg.dlc = frame.dlc;
+  msg.data = frame.data;
+  can_debug_pub_->publish(msg);
 }
 
 // ── Services ─────────────────────────────────────────────────────────

@@ -9,7 +9,6 @@
 #include <optional>
 #include <string>
 
-#include "mtt_driver/logic/articulated_model.hpp"
 #include "mtt_driver/logic/vehicle_params.hpp"
 
 namespace mtt::logic {
@@ -30,6 +29,13 @@ struct OdometryInput {
   int      direction_sign{1};       // +1 forward, -1 reverse
   double   dt{0.02};                // Integration time step (s)
   std::optional<double> imu_heading{};  // IMU heading (rad) if available
+  bool synthetic_model_valid{false};
+  double articulation_command_rad{0.0};
+  double articulation_effective_rad{0.0};
+  double curvature_nominal_m_inv{0.0};
+  double curvature_effective_m_inv{0.0};
+  double yaw_rate_nominal_rad_s{0.0};
+  double yaw_rate_effective_rad_s{0.0};
 };
 
 // ── Output pose from each calculator ─────────────────────────────────
@@ -50,6 +56,7 @@ struct OdometryOutput {
 // ── Serializable pose for mode-switch state preservation ─────────────
 struct OdometryPose {
   double x{0.0}, y{0.0}, heading{0.0};
+  double articulation_angle{0.0};
   std::optional<double> last_abs_m{};
 };
 
@@ -78,7 +85,11 @@ public:
   void set_imu_feedback(bool enabled) { use_imu_ = enabled; }
 
 private:
-  ArticulatedVehicleDynamics dynamics_;
+  double x_{0.0};
+  double y_{0.0};
+  double heading_{0.0};
+  double articulation_angle_{0.0};
+  double articulation_response_gain_{VehicleParams::articulation_response};
   std::optional<double> last_abs_m_{};
   bool use_imu_{true};
 };

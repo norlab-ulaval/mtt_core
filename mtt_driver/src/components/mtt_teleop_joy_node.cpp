@@ -1,6 +1,7 @@
 #include "mtt_driver/components/mtt_teleop_joy_node.hpp"
 #include <rclcpp_components/register_node_macro.hpp>
 #include <algorithm>
+#include <cmath>
 #include <memory>
 #include <utility>
 
@@ -14,11 +15,16 @@ MttTeleopJoyNode::MttTeleopJoyNode(const rclcpp::NodeOptions & options)
 {
   max_linear_speed_ = this->declare_parameter("max_linear_speed", 0.6);
   max_angular_speed_ = this->declare_parameter("max_angular_speed", 1.0);
+  linear_deadband_ = this->declare_parameter("linear_deadband", 0.05);
+  angular_deadband_ = this->declare_parameter("angular_deadband", 0.08);
+  linear_expo_ = this->declare_parameter("linear_expo", 1.2);
+  angular_expo_ = this->declare_parameter("angular_expo", 1.6);
   deadman_button_index_ = this->declare_parameter("deadman_button_index", 5);
   light_button_index_ = this->declare_parameter("light_button_index", 2);
   linear_axis_index_ = this->declare_parameter("linear_axis_index", 1);
   angular_axis_index_ = this->declare_parameter("angular_axis_index", 3);
   brake_axis_index_ = this->declare_parameter("brake_axis_index", 5);
+  deadman_releases_estop_ = this->declare_parameter("deadman_releases_estop", false);
   invert_linear_axis_ = this->declare_parameter("invert_linear_axis", true);
   invert_angular_axis_ = this->declare_parameter("invert_angular_axis", false);
   enable_brake_axis_ = this->declare_parameter("enable_brake_axis", false);
@@ -28,6 +34,7 @@ MttTeleopJoyNode::MttTeleopJoyNode(const rclcpp::NodeOptions & options)
   cmd_vel_pub_ = this->create_publisher<geometry_msgs::msg::TwistStamped>("cmd_vel_raw", 10);
   aux_cmd_pub_ = this->create_publisher<mtt_msgs::msg::MttAuxCommand>("mtt_aux_cmd", 10);
   estop_pub_ = this->create_publisher<std_msgs::msg::Bool>("teleop_estop", 10);
+  deadman_pub_ = this->create_publisher<std_msgs::msg::Bool>("teleop_deadman", 10);
 
   joy_sub_ = this->create_subscription<sensor_msgs::msg::Joy>(
     "joy", 10, std::bind(&MttTeleopJoyNode::joy_callback, this, std::placeholders::_1));
@@ -43,6 +50,20 @@ bool MttTeleopJoyNode::button_pressed(const sensor_msgs::msg::Joy::SharedPtr msg
   return false;
 }
 
+double MttTeleopJoyNode::shape_axis(double value, double deadband, double expo) const
+{
+  const double clipped = std::clamp(value, -1.0, 1.0);
+  const double magnitude = std::abs(clipped);
+
+  if (magnitude <= deadband) {
+    return 0.0;
+  }
+
+  const double normalized = (magnitude - deadband) / std::max(1.0 - deadband, 1e-6);
+  const double curved = expo > 0.0 ? std::pow(normalized, expo) : normalized;
+  return std::copysign(std::clamp(curved, 0.0, 1.0), clipped);
+}
+
 float MttTeleopJoyNode::axis_value(const sensor_msgs::msg::Joy::SharedPtr msg, size_t index, float default_val) const
 {
   if (index < msg->axes.size()) {
@@ -54,17 +75,20 @@ float MttTeleopJoyNode::axis_value(const sensor_msgs::msg::Joy::SharedPtr msg, s
 void MttTeleopJoyNode::joy_callback(const sensor_msgs::msg::Joy::SharedPtr msg)
 {
   bool deadman_pressed = button_pressed(msg, static_cast<size_t>(deadman_button_index_));
+  bool deadman_released = prev_deadman_pressed_ && !deadman_pressed;
   bool light_btn = button_pressed(msg, static_cast<size_t>(light_button_index_));
 
   float linear_axis = axis_value(msg, static_cast<size_t>(linear_axis_index_));
   if (invert_linear_axis_) {
     linear_axis = -linear_axis;
   }
+  linear_axis = static_cast<float>(shape_axis(linear_axis, linear_deadband_, linear_expo_));
 
   float angular_axis = axis_value(msg, static_cast<size_t>(angular_axis_index_));
   if (invert_angular_axis_) {
     angular_axis = -angular_axis;
   }
+  angular_axis = static_cast<float>(shape_axis(angular_axis, angular_deadband_, angular_expo_));
 
   float brake_axis = axis_value(
     msg,
@@ -79,8 +103,10 @@ void MttTeleopJoyNode::joy_callback(const sensor_msgs::msg::Joy::SharedPtr msg)
   auto twist_msg = std::make_unique<geometry_msgs::msg::TwistStamped>();
   auto aux_msg = std::make_unique<mtt_msgs::msg::MttAuxCommand>();
   auto estop_msg = std::make_unique<std_msgs::msg::Bool>();
+  auto deadman_msg = std::make_unique<std_msgs::msg::Bool>();
 
-  estop_msg->data = !deadman_pressed;
+  estop_msg->data = deadman_releases_estop_ ? !deadman_pressed : false;
+  deadman_msg->data = deadman_pressed;
   twist_msg->header.stamp = this->now();
   aux_msg->light_state = light_state_;
 
@@ -99,8 +125,12 @@ void MttTeleopJoyNode::joy_callback(const sensor_msgs::msg::Joy::SharedPtr msg)
   }
 
   estop_pub_->publish(std::move(estop_msg));
-  cmd_vel_pub_->publish(std::move(twist_msg));
+  deadman_pub_->publish(std::move(deadman_msg));
+  if (deadman_pressed || deadman_released) {
+    cmd_vel_pub_->publish(std::move(twist_msg));
+  }
   aux_cmd_pub_->publish(std::move(aux_msg));
+  prev_deadman_pressed_ = deadman_pressed;
 }
 
 }  // namespace mtt

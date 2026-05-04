@@ -9,6 +9,15 @@
 
 namespace mtt::logic {
 
+namespace {
+
+double wrap_angle(double angle)
+{
+  return std::atan2(std::sin(angle), std::cos(angle));
+}
+
+}  // namespace
+
 // ──────────────────────────────────────────────────────────────────────
 // Single Trailer
 // ──────────────────────────────────────────────────────────────────────
@@ -17,6 +26,7 @@ SingleTrailerOdometry::SingleTrailerOdometry() = default;
 OdometryOutput SingleTrailerOdometry::update(const OdometryInput& input)
 {
   const double cur_abs_m = input.distance_km * 1000.0;
+  const double heading_prev = heading_;
 
   // Encoder delta distance
   std::optional<double> delta_m{};
@@ -32,44 +42,54 @@ OdometryOutput SingleTrailerOdometry::update(const OdometryInput& input)
   else
     speed_ms = input.speed_ms;
 
-  // Throttle for dynamics ([-1, 1])
-  constexpr double max_v = VehicleParams::max_speed_ms;
-  double throttle = std::clamp(speed_ms / max_v, -1.0, 1.0);
+  const double ds = delta_m ? (*delta_m * input.direction_sign) : (speed_ms * input.dt);
+  const double commanded_phi = input.synthetic_model_valid
+    ? input.articulation_command_rad
+    : VehicleParams::normalized_steer_to_articulation_rad(input.steer_cmd);
+  const double effective_phi_target = input.synthetic_model_valid
+    ? input.articulation_effective_rad
+    : commanded_phi;
+  const double articulation_alpha = std::clamp(articulation_response_gain_ * input.dt, 0.0, 1.0);
+  articulation_angle_ += (effective_phi_target - articulation_angle_) * articulation_alpha;
+  articulation_angle_ = std::clamp(
+    articulation_angle_,
+    -VehicleParams::max_articulation_rad,
+    VehicleParams::max_articulation_rad);
 
-  // Save previous pose to integrate encoder distance
-  double x_prev = dynamics_.x();
-  double y_prev = dynamics_.y();
+  const double yaw_rate = input.synthetic_model_valid
+    ? input.yaw_rate_effective_rad_s
+    : input.angular_velocity;
+  const double dtheta = yaw_rate * input.dt;
 
-  auto [x, y, heading] = dynamics_.update(throttle, input.steer_cmd, input.dt);
-
-  // Override heading with IMU when available
-  double final_heading = (use_imu_ && input.imu_heading) ? *input.imu_heading : heading;
-
-  // Integrate position along encoder delta
-  double x_enc = x_prev, y_enc = y_prev;
-  if (delta_m) {
-    double ds = *delta_m * input.direction_sign;
-    x_enc = x_prev + ds * std::cos(final_heading);
-    y_enc = y_prev + ds * std::sin(final_heading);
+  double final_heading = heading_;
+  if (use_imu_ && input.imu_heading.has_value()) {
+    final_heading = wrap_angle(*input.imu_heading);
+  } else {
+    final_heading = wrap_angle(heading_ + dtheta);
   }
 
-  // Sync dynamics internal state
-  dynamics_.set_x(x_enc);
-  dynamics_.set_y(y_enc);
-  dynamics_.set_heading(final_heading);
+  const double heading_mid = (use_imu_ && input.imu_heading.has_value())
+    ? final_heading
+    : wrap_angle(heading_ + 0.5 * dtheta);
+  x_ += ds * std::cos(heading_mid);
+  y_ += ds * std::sin(heading_mid);
+  heading_ = final_heading;
 
   // Covariance increases with speed and articulation
-  const double phi = dynamics_.articulation_angle();
-  double speed_factor = std::abs(speed_ms) / max_v;
-  double artic_factor = std::abs(phi) / VehicleParams::max_articulation_rad;
+  constexpr double max_v = VehicleParams::max_speed_ms;
+  const double speed_factor = std::abs(speed_ms) / std::max(max_v, 1e-6);
+  const double artic_factor =
+    std::abs(articulation_angle_) / std::max(VehicleParams::max_articulation_rad, 1e-6);
 
   OdometryOutput out;
-  out.x                 = x_enc;
-  out.y                 = y_enc;
-  out.heading           = final_heading;
+  out.x                 = x_;
+  out.y                 = y_;
+  out.heading           = heading_;
   out.vx                = speed_ms;
-  out.wz                = input.angular_velocity;
-  out.articulation_angle = phi;
+  out.wz                = input.dt > 1e-6
+    ? wrap_angle(heading_ - heading_prev) / input.dt
+    : yaw_rate;
+  out.articulation_angle = articulation_angle_;
   out.pos_cov           = 0.02 * (1.0 + speed_factor + artic_factor);
   out.heading_cov       = 0.05 * (1.0 + 2.0 * artic_factor);
   out.vel_cov           = 0.15 * (1.0 + speed_factor);
@@ -78,18 +98,30 @@ OdometryOutput SingleTrailerOdometry::update(const OdometryInput& input)
 
 void SingleTrailerOdometry::reset()
 {
-  dynamics_.reset();
+  x_ = 0.0;
+  y_ = 0.0;
+  heading_ = 0.0;
+  articulation_angle_ = 0.0;
   last_abs_m_.reset();
 }
 
 OdometryPose SingleTrailerOdometry::export_pose() const
 {
-  return {dynamics_.x(), dynamics_.y(), dynamics_.heading(), last_abs_m_};
+  return {
+    x_,
+    y_,
+    heading_,
+    articulation_angle_,
+    last_abs_m_,
+  };
 }
 
 void SingleTrailerOdometry::import_pose(const OdometryPose& pose)
 {
-  dynamics_.set_state(pose.x, pose.y, pose.heading);
+  x_ = pose.x;
+  y_ = pose.y;
+  heading_ = pose.heading;
+  articulation_angle_ = pose.articulation_angle;
   last_abs_m_ = pose.last_abs_m;
 }
 
@@ -105,14 +137,16 @@ OdometryOutput DualDifferentialOdometry::update(const OdometryInput& input)
 
   if (!last_abs_m_) { last_abs_m_ = abs_m; }
 
-  double delta = abs_m - *last_abs_m_;
+  const double delta = abs_m - *last_abs_m_;
   last_abs_m_  = abs_m;
 
-  // Integrate with commanded angular velocity
-  constexpr double dt = 0.02;  // nominal; real dt passed in input.dt
-  theta_ += input.angular_velocity * input.dt;
-  x_ += delta * input.direction_sign * std::cos(theta_);
-  y_ += delta * input.direction_sign * std::sin(theta_);
+  const double ds = delta * input.direction_sign;
+  const double dtheta = input.angular_velocity * input.dt;
+  const double heading_mid = theta_ + 0.5 * dtheta;
+
+  x_ += ds * std::cos(heading_mid);
+  y_ += ds * std::sin(heading_mid);
+  theta_ = std::atan2(std::sin(theta_ + dtheta), std::cos(theta_ + dtheta));
 
   OdometryOutput out;
   out.x       = x_;
@@ -131,7 +165,7 @@ void DualDifferentialOdometry::reset()
 
 OdometryPose DualDifferentialOdometry::export_pose() const
 {
-  return {x_, y_, theta_, last_abs_m_};
+  return {x_, y_, theta_, 0.0, last_abs_m_};
 }
 
 void DualDifferentialOdometry::import_pose(const OdometryPose& pose)
@@ -158,34 +192,33 @@ OdometryOutput DualSerpentineOdometry::update(const OdometryInput& input)
     last_abs_m_ = cur_abs;
   }
 
-  const double steer = input.steer_cmd;
+  const double articulation = VehicleParams::normalized_steer_to_articulation_rad(input.steer_cmd);
+  double dtheta = 0.0;
 
-  if (std::abs(steer) < 1e-9 || wheelbase_m_ < 1e-9) {
+  if (std::abs(articulation) < 1e-9 || wheelbase_m_ < 1e-9) {
     x_ += ds * std::cos(th_);
     y_ += ds * std::sin(th_);
   } else {
-    double dth = std::tan(steer) / wheelbase_m_ * ds;
-    if (std::abs(dth) > 1e-9) {
-      double R = ds / dth;
-      x_ += R * (std::sin(th_ + dth) - std::sin(th_));
-      y_ -= R * (std::cos(th_ + dth) - std::cos(th_));
+    dtheta = std::tan(articulation) / wheelbase_m_ * ds;
+    if (std::abs(dtheta) > 1e-9) {
+      const double radius = ds / dtheta;
+      x_ += radius * (std::sin(th_ + dtheta) - std::sin(th_));
+      y_ -= radius * (std::cos(th_ + dtheta) - std::cos(th_));
     } else {
       x_ += ds * std::cos(th_);
       y_ += ds * std::sin(th_);
     }
-    th_ += dth;
+    th_ = std::atan2(std::sin(th_ + dtheta), std::cos(th_ + dtheta));
   }
 
-  double v = input.direction_sign * std::abs(input.speed_ms);
+  const double v = input.direction_sign * std::abs(input.speed_ms);
 
   OdometryOutput out;
   out.x       = x_;
   out.y       = y_;
   out.heading = th_;
   out.vx      = v;
-  out.wz      = (wheelbase_m_ > 1e-6 && std::abs(steer) > 0)
-                  ? (v / wheelbase_m_) * std::tan(steer)
-                  : 0.0;
+  out.wz      = input.dt > 1e-6 ? dtheta / input.dt : 0.0;
   return out;
 }
 
@@ -197,7 +230,7 @@ void DualSerpentineOdometry::reset()
 
 OdometryPose DualSerpentineOdometry::export_pose() const
 {
-  return {x_, y_, th_, last_abs_m_};
+  return {x_, y_, th_, 0.0, last_abs_m_};
 }
 
 void DualSerpentineOdometry::import_pose(const OdometryPose& pose)

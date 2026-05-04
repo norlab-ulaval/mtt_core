@@ -16,7 +16,10 @@ namespace mtt::can {
 
 // ── CAN IDs ───────────────────────────────────────────────────────────
 constexpr uint32_t kCommandId    = 0x001;
+constexpr uint32_t kExternalCommandId = 0x100;
 constexpr uint32_t kTelemetryId  = 0x2FF;
+constexpr uint32_t kMainControllerVersionId   = 0x300;
+constexpr uint32_t kBatteryControllerVersionId = 0x301;
 
 // ── Byte positions in the 8-byte command frame ───────────────────────
 enum FrameIndex : uint8_t {
@@ -68,6 +71,24 @@ struct CommandFrame {
 
   Direction get_direction() const {
     return (data[kGlobalSwitches] & 0b0010'0000) ? Direction::Reverse : Direction::Forward;
+  }
+
+  VehicleType get_vehicle_type() const {
+    return static_cast<VehicleType>(data[kVehicleType]);
+  }
+
+  SafetyState get_safety() const {
+    return (data[kGlobalSwitches] & 0b1000'0000)
+      ? SafetyState::Unlocked
+      : SafetyState::Locked;
+  }
+
+  bool light_off_estop_patch() const {
+    return (data[kGlobalSwitches] & 0b0100'0000) != 0;
+  }
+
+  WinchState get_winch() const {
+    return static_cast<WinchState>(data[kWinch]);
   }
 
   // Light (bit 6 of byte 1)
@@ -129,6 +150,7 @@ struct CommandFrame {
   uint8_t steer_raw()    const { return data[kSteer]; }
   uint8_t throttle_raw() const { return data[kThrottle]; }
   uint8_t brake_raw()    const { return data[kBrake]; }
+  uint8_t reserved_raw() const { return data[kReserved]; }
 
   // Steering mode (bit 0 of byte 6)
   void set_steering_mode(SteeringMode mode) {
@@ -136,6 +158,12 @@ struct CommandFrame {
       data[kDirectionMode] |= 0b0000'0001;
     else
       data[kDirectionMode] &= 0b1111'1110;
+  }
+
+  SteeringMode get_steering_mode() const {
+    return (data[kDirectionMode] & 0b0000'0001)
+      ? SteeringMode::CloseLoop
+      : SteeringMode::OpenLoop;
   }
 
   // Initialize to safe defaults (matches _setup_initial_frame in Python)
@@ -150,6 +178,32 @@ struct CommandFrame {
     set_steering_mode(SteeringMode::CloseLoop);
   }
 };
+
+inline const char* vehicle_type_to_string(VehicleType type)
+{
+  switch (type) {
+    case VehicleType::SingleTrack:
+      return "SingleTrack";
+    case VehicleType::SbsLeft:
+      return "SideBySideLeft";
+    case VehicleType::SbsRight:
+      return "SideBySideRight";
+  }
+  return "Unknown";
+}
+
+inline const char* winch_state_to_string(WinchState state)
+{
+  switch (state) {
+    case WinchState::Neutral:
+      return "Neutral";
+    case WinchState::In:
+      return "In";
+    case WinchState::Out:
+      return "Out";
+  }
+  return "Unknown";
+}
 
 // ── Telemetry Frame Decoder ──────────────────────────────────────────
 // Decodes the 8-byte incoming CAN frame from ID 0x2FF.
@@ -180,6 +234,62 @@ constexpr uint32_t kBmsCellTempsId  = 0x600;  // CellTemp1..4
 constexpr uint32_t kBmsSysTempsId   = 0x601;  // AmbientTemp, MosfetTemp, HeatpadA/B
 constexpr uint32_t kBmsCoreId       = 0x602;  // SOC, current, voltage, heatpad state
 constexpr uint32_t kBmsDateTimeId   = 0x603;  // Timestamp / extra (not decoded here)
+constexpr uint32_t kChargerCommandId = 0x1806E5F4;
+constexpr uint32_t kChargerStatusId  = 0x18FF50E5;
+
+inline const char* frame_name_from_id(uint32_t id)
+{
+  switch (id) {
+    case kCommandId:
+      return "MTT_Control_Joystick_001";
+    case kExternalCommandId:
+      return "MTT_Control_External_100";
+    case kTelemetryId:
+      return "MTT_Main_Status_2FF";
+    case kMainControllerVersionId:
+      return "MTT_Main_Controller_Version_300";
+    case kBatteryControllerVersionId:
+      return "MTT_Battery_Controller_Version_301";
+    case kBmsCellTempsId:
+      return "MTT_BMS_Cell_Temperatures_600";
+    case kBmsSysTempsId:
+      return "MTT_BMS_System_Temperatures_601";
+    case kBmsCoreId:
+      return "MTT_BMS_Core_Status_602";
+    case kBmsDateTimeId:
+      return "MTT_BMS_Date_Time_Remaining_603";
+    case kChargerCommandId:
+      return "MTT_Charger_Command_1806E5F4";
+    case kChargerStatusId:
+      return "MTT_Charger_Status_18FF50E5";
+    default:
+      return "Unknown";
+  }
+}
+
+inline bool is_known_mtt_frame(uint32_t id)
+{
+  return id == kCommandId ||
+         id == kExternalCommandId ||
+         id == kTelemetryId ||
+         id == kMainControllerVersionId ||
+         id == kBatteryControllerVersionId ||
+         id == kBmsCellTempsId ||
+         id == kBmsSysTempsId ||
+         id == kBmsCoreId ||
+         id == kBmsDateTimeId ||
+         id == kChargerCommandId ||
+         id == kChargerStatusId;
+}
+
+struct ControllerVersionReading {
+  uint32_t main_hardware_revision_raw{0};
+  uint32_t main_software_revision_raw{0};
+  uint32_t battery_hardware_revision_raw{0};
+  uint32_t battery_software_revision_raw{0};
+  bool has_main_controller_version{false};
+  bool has_battery_controller_version{false};
+};
 
 // ── BMS Reading ──────────────────────────────────────────────────────
 // Accumulates data across the 3 useful BMS frames.
@@ -193,6 +303,9 @@ struct BmsReading {
   int16_t  battery_current_raw{0};  // Signed int, unit not confirmed
   uint16_t battery_voltage_raw{0};  // Unsigned int, unit not confirmed
   uint16_t charge_time_min{0};      // Estimated time to full charge (min)
+  bool heatpad_b_on{false};
+  bool heatpad_a_on{false};
+  uint8_t heatpads_reserved{0};
 
   // ── 0x600 ────────────────────────────────────────────────────────
   int16_t cell_temp[4]{};           // 4 cell group temperatures (°C direct int)
@@ -203,10 +316,25 @@ struct BmsReading {
   int16_t heatpad_a_temp{0};        // Heatpad A temperature (°C)
   int16_t heatpad_b_temp{0};        // Heatpad B temperature (°C)
 
+  // ── 0x603 ────────────────────────────────────────────────────────
+  uint16_t charge_time_remaining_603_raw{0};
+  uint16_t year_month_raw{0};
+  uint16_t day_hour_raw{0};
+  uint16_t minute_second_raw{0};
+
+  // ── Charger 29-bit IDs ───────────────────────────────────────────
+  uint16_t charger_max_voltage_raw{0};
+  uint16_t charger_max_current_raw{0};
+  uint16_t charger_configured_voltage_raw{0};
+  uint16_t charger_configured_current_raw{0};
+
   // ── Freshness flags ───────────────────────────────────────────────
   bool has_soc{false};          // set after first 0x602
   bool has_cell_temps{false};   // set after first 0x600
   bool has_sys_temps{false};    // set after first 0x601
+  bool has_datetime{false};     // set after first 0x603
+  bool has_charger_command{false};
+  bool has_charger_status{false};
 };
 
 // ── BMS Decoder ──────────────────────────────────────────────────────
@@ -243,12 +371,66 @@ struct BmsDecoder {
       out.soc_percent         = data[0];
       out.battery_current_raw = static_cast<int16_t>((data[1] << 8) | data[2]);
       out.battery_voltage_raw = static_cast<uint16_t>((data[3] << 8) | data[4]);
+      out.heatpad_b_on        = (data[5] & 0x01) != 0;
+      out.heatpad_a_on        = (data[5] & 0x02) != 0;
+      out.heatpads_reserved   = static_cast<uint8_t>((data[5] >> 2) & 0x3F);
       out.charge_time_min     = static_cast<uint16_t>((data[6] << 8) | data[7]);
       out.has_soc = true;
       return true;
     }
 
-    // 0x603 (date/time fields) intentionally not decoded
+    if (id == kBmsDateTimeId) {
+      out.charge_time_remaining_603_raw = static_cast<uint16_t>((data[0] << 8) | data[1]);
+      out.year_month_raw                = static_cast<uint16_t>((data[2] << 8) | data[3]);
+      out.day_hour_raw                  = static_cast<uint16_t>((data[4] << 8) | data[5]);
+      out.minute_second_raw             = static_cast<uint16_t>((data[6] << 8) | data[7]);
+      out.has_datetime = true;
+      return true;
+    }
+
+    if (id == kChargerCommandId) {
+      out.charger_max_voltage_raw = static_cast<uint16_t>((data[0] << 8) | data[1]);
+      out.charger_max_current_raw = static_cast<uint16_t>((data[2] << 8) | data[3]);
+      out.has_charger_command = true;
+      return true;
+    }
+
+    if (id == kChargerStatusId) {
+      out.charger_configured_voltage_raw = static_cast<uint16_t>((data[0] << 8) | data[1]);
+      out.charger_configured_current_raw = static_cast<uint16_t>((data[2] << 8) | data[3]);
+      out.has_charger_status = true;
+      return true;
+    }
+
+    return false;
+  }
+};
+
+struct ControllerVersionDecoder {
+  static bool decode(uint32_t id, const uint8_t* data, size_t len, ControllerVersionReading& out) {
+    if (len < 8) {
+      return false;
+    }
+
+    const uint32_t hardware = static_cast<uint32_t>(
+      (data[0] << 24) | (data[1] << 16) | (data[2] << 8) | data[3]);
+    const uint32_t software = static_cast<uint32_t>(
+      (data[4] << 24) | (data[5] << 16) | (data[6] << 8) | data[7]);
+
+    if (id == kMainControllerVersionId) {
+      out.main_hardware_revision_raw = hardware;
+      out.main_software_revision_raw = software;
+      out.has_main_controller_version = true;
+      return true;
+    }
+
+    if (id == kBatteryControllerVersionId) {
+      out.battery_hardware_revision_raw = hardware;
+      out.battery_software_revision_raw = software;
+      out.has_battery_controller_version = true;
+      return true;
+    }
+
     return false;
   }
 };

@@ -1,4 +1,9 @@
 # MTT-154 Controller Configuration
+#
+# Legacy flat config kept for controller mapping / historical scripts.
+# The ROS 2 launch stack now reads runtime driver parameters from:
+#   config/mtt_driver_params.yaml
+# Use that file to tune startup steering mode, deadbands, and odometry behavior.
 
 # default_controller:
 #   axes:

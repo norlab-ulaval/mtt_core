@@ -15,6 +15,7 @@ struct CanFrame {
   uint32_t id{0};
   std::array<uint8_t, 8> data{};
   uint8_t dlc{8};  // data length code
+  bool is_extended{false};
 };
 
 class ICanInterface {

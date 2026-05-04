@@ -53,6 +53,20 @@ struct VehicleParams {
   static constexpr double steering_deadband_rad = steering_deadband_deg * M_PI / 180.0;
   static constexpr double steering_deadband_normalized = steering_deadband_deg / max_articulation_deg;
 
+  static constexpr double clamp_normalized(double value) {
+    return value < -1.0 ? -1.0 : (value > 1.0 ? 1.0 : value);
+  }
+
+  static constexpr double normalized_steer_to_articulation_rad(double normalized) {
+    return clamp_normalized(normalized) * max_articulation_rad;
+  }
+
+  static constexpr double articulation_rad_to_normalized_steer(double articulation_rad) {
+    return max_articulation_rad > 0.0
+      ? clamp_normalized(articulation_rad / max_articulation_rad)
+      : 0.0;
+  }
+
   static constexpr uint8_t steering_center_byte   = 127;
   static constexpr uint8_t steering_max_byte       = 255;
   static constexpr int     steering_halfspan_byte  = 100;

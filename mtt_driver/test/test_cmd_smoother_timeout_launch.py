@@ -45,7 +45,7 @@ class _Helper(Node):
 def test_decay_to_zero_after_timeout():
     # Start smoother as a background process
     cmd = [
-        'ros2', 'run', 'mtt_driver', 'teleop_cmd_smoother',
+        'ros2', 'run', 'mtt_driver', 'teleop_cmd_smoother_node_exe',
         '--ros-args',
         '-p', 'input_topic:=test/smoother/in',
         '-p', 'output_topic:=test/smoother/out',

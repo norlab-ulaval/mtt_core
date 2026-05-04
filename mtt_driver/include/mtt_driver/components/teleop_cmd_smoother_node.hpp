@@ -25,6 +25,7 @@ private:
   double rate_hz_;
   double max_accel_linear_;
   double max_accel_angular_;
+  double zero_epsilon_{1e-3};
 
   struct VelocityState {
     double linear_x = 0.0;

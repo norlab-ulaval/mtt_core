@@ -73,7 +73,9 @@ bool LinuxSocketCan::send(const CanFrame& frame)
   if (socket_fd_ < 0) return false;
 
   can_frame raw{};
-  raw.can_id  = frame.id & CAN_SFF_MASK;
+  raw.can_id  = frame.is_extended
+    ? ((frame.id & CAN_EFF_MASK) | CAN_EFF_FLAG)
+    : (frame.id & CAN_SFF_MASK);
   raw.can_dlc = frame.dlc;
   std::copy(frame.data.begin(), frame.data.begin() + frame.dlc, raw.data);
 
@@ -94,7 +96,10 @@ std::optional<CanFrame> LinuxSocketCan::receive(std::chrono::milliseconds timeou
   if (nbytes < static_cast<ssize_t>(sizeof(raw))) return std::nullopt;
 
   CanFrame frame;
-  frame.id  = raw.can_id & CAN_SFF_MASK;
+  frame.is_extended = (raw.can_id & CAN_EFF_FLAG) != 0;
+  frame.id  = frame.is_extended
+    ? (raw.can_id & CAN_EFF_MASK)
+    : (raw.can_id & CAN_SFF_MASK);
   frame.dlc = raw.can_dlc;
   std::copy(raw.data, raw.data + raw.can_dlc, frame.data.begin());
   return frame;
