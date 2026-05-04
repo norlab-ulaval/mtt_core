@@ -12,7 +12,7 @@ This launch file starts the complete MTT composable architecture including:
 import os
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, ExecuteProcess, GroupAction, OpaqueFunction
-from launch.substitutions import LaunchConfiguration, Command, PythonExpression
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch.conditions import IfCondition
 from launch_ros.actions import Node, PushROSNamespace, ComposableNodeContainer
 from launch_ros.descriptions import ComposableNode
@@ -22,6 +22,11 @@ from launch_ros.substitutions import FindPackageShare
 
 def generate_launch_description():
     description_share = FindPackageShare(package='mtt_description').find('mtt_description')
+    driver_share = FindPackageShare(package='mtt_driver').find('mtt_driver')
+    control_share = FindPackageShare(package='mtt_control').find('mtt_control')
+    driver_params_path = os.path.join(driver_share, 'config', 'mtt_driver_params.yaml')
+    health_params_path = os.path.join(driver_share, 'config', 'mtt_health_monitor.yaml')
+    control_params_path = os.path.join(control_share, 'config', 'control_defaults.yaml')
     urdf_path = os.path.join(description_share, 'urdf', 'robot.urdf.xacro')
     robot_namespace = LaunchConfiguration('robot_namespace')
     use_namespace = LaunchConfiguration('use_namespace')
@@ -64,6 +69,11 @@ def generate_launch_description():
             description='Whether to apply robot_namespace to the MTT runtime'
         ),
         DeclareLaunchArgument(
+            'use_sim_time',
+            default_value='false',
+            description='Use simulation or bag replay clock'
+        ),
+        DeclareLaunchArgument(
             'setup_real_can',
             default_value='false',
             description='Bring up real CAN interface with bitrate (host sudo).'
@@ -77,6 +87,21 @@ def generate_launch_description():
             'can_bitrate',
             default_value='250000',
             description='Bitrate for real CAN interface (e.g., 250000, 500000).'
+        ),
+        DeclareLaunchArgument(
+            'driver_params_file',
+            default_value=driver_params_path,
+            description='ROS parameter file for mtt_can_node and mtt_odometry_node'
+        ),
+        DeclareLaunchArgument(
+            'health_params_file',
+            default_value=health_params_path,
+            description='ROS parameter file for mtt_health_monitor_node'
+        ),
+        DeclareLaunchArgument(
+            'control_params_file',
+            default_value=control_params_path,
+            description='ROS parameter file for the MTT operator input, manual filter, mode manager, and cmd arbiter'
         ),
         DeclareLaunchArgument(
             'can_id',
@@ -119,6 +144,16 @@ def generate_launch_description():
             description='Enable joystick input node'
         ),
         DeclareLaunchArgument(
+            'joy_device',
+            default_value='/dev/input/js0',
+            description='Joystick device path for the built-in robot teleop'
+        ),
+        DeclareLaunchArgument(
+            'joy_deadzone',
+            default_value='0.15',
+            description='Joystick deadzone for the built-in robot teleop'
+        ),
+        DeclareLaunchArgument(
             'publish_description',
             default_value='true',
             description='Publish robot_state_publisher for real hardware run'
@@ -144,24 +179,14 @@ def generate_launch_description():
             description='Whether mtt_odometry_node should publish odom->base TF'
         ),
         DeclareLaunchArgument(
-            'max_articulation_deg',
-            default_value='60.0',
-            description='Maximum articulation angle (degrees). Matches URDF yaw joint ±60°.'
+            'publish_runtime_joint_states',
+            default_value='false',
+            description='Publish articulation joint states on the live /joint_states topic'
         ),
         DeclareLaunchArgument(
-            'max_linear_speed_ms',
-            default_value='0.6',
-            description='Maximum linear speed fed to the drive controller (m/s).'
-        ),
-        DeclareLaunchArgument(
-            'throttle_deadband',
-            default_value='0.05',
-            description='Normalized throttle deadband (0–1). Tune to remove mechanical slop.'
-        ),
-        DeclareLaunchArgument(
-            'steer_deadband',
-            default_value='0.05',
-            description='Normalized steering deadband (0–1). Tune to remove mechanical slop.'
+            'runtime_joint_states_topic',
+            default_value='joint_states',
+            description='JointState topic used to drive the articulated URDF'
         ),
         DeclareLaunchArgument(
             'use_rviz',
@@ -217,20 +242,18 @@ def generate_launch_description():
                                 package='mtt_driver',
                                 plugin='mtt::MttCanNode',
                                 name='mtt_can_node',
-                                parameters=[{
+                                parameters=[LaunchConfiguration('driver_params_file'), {
+                                    'use_sim_time': LaunchConfiguration('use_sim_time'),
                                     'can_interface': LaunchConfiguration('can_interface'),
                                     'can_id': ParameterValue(LaunchConfiguration('can_id'), value_type=int),
                                     'control_frequency_hz': LaunchConfiguration('control_frequency_hz'),
                                     'can_frame_frequency_hz': LaunchConfiguration('can_frame_frequency_hz'),
-                                    'max_linear_speed_ms': LaunchConfiguration('max_linear_speed_ms'),
                                     'telemetry_timeout_ms': ParameterValue(
                                         PythonExpression(['1000.0 * ', LaunchConfiguration('telemetry_timeout_seconds')]),
                                         value_type=float,
                                     ),
                                     'command_timeout_seconds': LaunchConfiguration('command_timeout_seconds'),
                                     'base_frame': LaunchConfiguration('base_frame'),
-                                    'throttle_deadband': LaunchConfiguration('throttle_deadband'),
-                                    'steer_deadband': LaunchConfiguration('steer_deadband'),
                                 }],
                                 extra_arguments=[{'use_intra_process_comms': True}],
                             )
@@ -242,18 +265,28 @@ def generate_launch_description():
                             package='mtt_driver',
                             plugin='mtt::MttOdometryNode',
                             name='mtt_odometry_node',
-                            parameters=[{
+                            parameters=[LaunchConfiguration('driver_params_file'), {
+                                'use_sim_time': LaunchConfiguration('use_sim_time'),
                                 'base_frame': LaunchConfiguration('base_frame'),
                                 'odom_frame': LaunchConfiguration('odom_frame'),
                                 'broadcast_tf': LaunchConfiguration('odometry_broadcast_tf'),
-                                'steer_control_mode': 'closed_loop',
-                                'pivot_turn_enabled': False,
-                                'min_turn_speed_ms': 0.05,
-                                'yaw_slip_factor': 0.6,
-                                'max_articulation_deg': LaunchConfiguration('max_articulation_deg'),
+                                'publish_runtime_joint_states': LaunchConfiguration('publish_runtime_joint_states'),
+                                'runtime_joint_states_topic': LaunchConfiguration('runtime_joint_states_topic'),
                             }],
                             extra_arguments=[{'use_intra_process_comms': True}],
-                        )
+                        ),
+                        ComposableNode(
+                            package='mtt_driver',
+                            plugin='mtt::MttHealthMonitorNode',
+                            name='mtt_health_monitor_node',
+                            parameters=[LaunchConfiguration('health_params_file'), {
+                                'use_sim_time': LaunchConfiguration('use_sim_time'),
+                                'base_frame': LaunchConfiguration('base_frame'),
+                                'odom_frame': LaunchConfiguration('odom_frame'),
+                                'cmd_vel_timeout_seconds': LaunchConfiguration('command_timeout_seconds'),
+                            }],
+                            extra_arguments=[{'use_intra_process_comms': True}],
+                        ),
                     ],
                     output='screen',
                     emulate_tty=True,
@@ -261,83 +294,66 @@ def generate_launch_description():
             ]),
 
             Node(
-                package='twist_mux',
-                executable='twist_mux',
-                name='twist_mux',
-                parameters=[os.path.join(FindPackageShare(package='mtt_driver').find('mtt_driver'), 'config', 'twist_mux.yaml')],
-                remappings=[('cmd_vel_out', 'cmd_vel')],
-                output='screen',
-                respawn=True,
-                respawn_delay=2.0
-            ),
-        # Node(
-        #     package='twist_stamper',
-        #     executable='twist_stamper',
-        #     name='twist_stamper',
-        #     parameters=[{
-        #         'input_topic': 'cmd_vel',
-        #         'output_topic': 'cmd_vel_stamped',
-        #         'frame_id': 'base_link'
-        #     }],
-        #     output='screen',
-        #     respawn=True,
-        #     respawn_delay=2.0
-        # ),
-
-
-        # 6) Joystick (joy_linux)
-        # Node(
-        #     package='joy_linux',
-        #     executable='joy_linux_node',
-        #     name='joy_node',
-        #     parameters=[{
-        #         'deadzone': 0.15,
-        #         'device_name': '/dev/input/js0'
-        #     }],
-        #     output='screen',
-        #     condition=IfCondition(LaunchConfiguration('enable_joystick')),
-        #     respawn=True
-        # ),
-            Node(
                 package='joy_linux',
                 executable='joy_linux_node',
                 name='joy_node',
                 parameters=[{
-                    'deadzone': 0.15,
-                    'device_name': '/dev/input/js0',
+                    'use_sim_time': LaunchConfiguration('use_sim_time'),
+                    'deadzone': LaunchConfiguration('joy_deadzone'),
+                    'device_name': LaunchConfiguration('joy_device'),
                     'autorepeat_rate': 20.0,
                 }],
                 output='screen',
                 condition=IfCondition(LaunchConfiguration('enable_joystick')),
                 respawn=True
             ),
-
-        # 6.5) Teleop command smoother — rate-limits acceleration and decays on timeout
-        #      Edit config/teleop_smoother.yaml to tune max_accel_linear/angular.
             Node(
-                package='mtt_driver',
-                executable='teleop_cmd_smoother_node_exe',
-                name='teleop_cmd_smoother_node',
-                parameters=[os.path.join(
-                    FindPackageShare(package='mtt_driver').find('mtt_driver'),
-                    'config', 'teleop_smoother.yaml')],
+                package='mtt_control',
+                executable='mtt_operator_input_node',
+                name='mtt_operator_input_node',
+                parameters=[
+                    LaunchConfiguration('control_params_file'),
+                    {'use_sim_time': LaunchConfiguration('use_sim_time')},
+                ],
                 output='screen',
                 respawn=True,
                 respawn_delay=2.0,
             ),
-
-        # 7) Teleop
             Node(
-                package='mtt_driver',
-                executable='mtt_teleop_joy',
-                name='mtt_teleop_joy_node',
-                parameters=[os.path.join(
-                    FindPackageShare(package='mtt_driver').find('mtt_driver'),
-                    'config', 'mtt_teleop_joy.yaml')],
-                remappings=[('cmd_vel_raw', 'cmd_vel/teleop')],
+                package='mtt_control',
+                executable='mtt_manual_cmd_filter_node',
+                name='mtt_manual_cmd_filter_node',
+                parameters=[
+                    LaunchConfiguration('control_params_file'),
+                    {'use_sim_time': LaunchConfiguration('use_sim_time')},
+                ],
                 output='screen',
-                condition=IfCondition(LaunchConfiguration('enable_teleop')),
-                respawn=True
+                respawn=True,
+                respawn_delay=2.0,
+            ),
+            Node(
+                package='mtt_control',
+                executable='mtt_mode_manager_node',
+                name='mtt_mode_manager_node',
+                parameters=[
+                    LaunchConfiguration('control_params_file'),
+                    {'use_sim_time': LaunchConfiguration('use_sim_time')},
+                ],
+                output='screen',
+                respawn=True,
+                respawn_delay=2.0,
+            ),
+            Node(
+                package='mtt_control',
+                executable='mtt_cmd_arbiter_node',
+                name='mtt_cmd_arbiter_node',
+                parameters=[
+                    LaunchConfiguration('control_params_file'),
+                    {'use_sim_time': LaunchConfiguration('use_sim_time')},
+                ],
+                output='screen',
+                respawn=True,
+                respawn_delay=2.0,
             ),
         ]),
     ])
