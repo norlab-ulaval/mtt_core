@@ -210,13 +210,17 @@ void TrailerDetectorNode::cloudCallback(
     mk.type     = visualization_msgs::msg::Marker::ARROW;
     mk.action   = visualization_msgs::msg::Marker::ADD;
 
+    // The PCA col(0) axis is the timon longitudinal direction in rsairy XY.
+    // Rotating 90° gives the visual arrow aligned with the timon in Foxglove.
+    const Eigen::Vector2d marker_axis(-pca.axis.y(), pca.axis.x());
+
     // Arrow: tail → head (from centroid minus half to centroid plus half)
     mk.points.resize(2);
-    mk.points[0].x = pca.centroid.x() - pca.axis.x() * half;
-    mk.points[0].y = pca.centroid.y() - pca.axis.y() * half;
+    mk.points[0].x = pca.centroid.x() - marker_axis.x() * half;
+    mk.points[0].y = pca.centroid.y() - marker_axis.y() * half;
     mk.points[0].z = mid_z;
-    mk.points[1].x = pca.centroid.x() + pca.axis.x() * half;
-    mk.points[1].y = pca.centroid.y() + pca.axis.y() * half;
+    mk.points[1].x = pca.centroid.x() + marker_axis.x() * half;
+    mk.points[1].y = pca.centroid.y() + marker_axis.y() * half;
     mk.points[1].z = mid_z;
 
     mk.scale.x = 0.025;   // shaft diameter
