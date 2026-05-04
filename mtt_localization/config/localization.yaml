@@ -31,7 +31,16 @@ localization:
     # Frame IDs
     map_frame: "map"
     odom_frame: "odom"
-    base_frame: "base_link"
+    base_frame: "base_footprint"
+
+    # Topic contract
+    imu_topic: "mti100/data"
+    track_odom_topic: "mtt_odometry"
+    gps_fix_topic: "gps_left/fix"
+    gps_heading_topic: "gps/heading"
+    lidar_odom_topic: "mapping/icp_odom"
+    visual_odom_topic: "zed/zed_node/odom"
 
     # Output rate (Hz)
     publish_rate: 50.0
+    min_imu_samples_per_update: 10

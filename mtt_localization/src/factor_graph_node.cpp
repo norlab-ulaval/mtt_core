@@ -11,6 +11,7 @@
 #include <mutex>
 #include <deque>
 #include <cmath>
+#include <string>
 
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/imu.hpp"
@@ -77,8 +78,15 @@ private:
 
     declare_parameter("map_frame", "map");
     declare_parameter("odom_frame", "odom");
-    declare_parameter("base_frame", "base_link");
+    declare_parameter("base_frame", "base_footprint");
+    declare_parameter("imu_topic", "mti100/data");
+    declare_parameter("track_odom_topic", "mtt_odometry");
+    declare_parameter("gps_fix_topic", "gps_left/fix");
+    declare_parameter("gps_heading_topic", "gps/heading");
+    declare_parameter("lidar_odom_topic", "mapping/icp_odom");
+    declare_parameter("visual_odom_topic", "zed/zed_node/odom");
     declare_parameter("publish_rate", 50.0);
+    declare_parameter("min_imu_samples_per_update", 10);
 
     declare_parameter("isam2_relinearize_threshold", 0.1);
     declare_parameter("isam2_relinearize_skip", 10);
@@ -111,6 +119,14 @@ private:
     map_frame_ = get_parameter("map_frame").as_string();
     odom_frame_ = get_parameter("odom_frame").as_string();
     base_frame_ = get_parameter("base_frame").as_string();
+    imu_topic_ = get_parameter("imu_topic").as_string();
+    track_odom_topic_ = get_parameter("track_odom_topic").as_string();
+    gps_fix_topic_ = get_parameter("gps_fix_topic").as_string();
+    gps_heading_topic_ = get_parameter("gps_heading_topic").as_string();
+    lidar_odom_topic_ = get_parameter("lidar_odom_topic").as_string();
+    visual_odom_topic_ = get_parameter("visual_odom_topic").as_string();
+    min_imu_samples_per_update_ =
+        static_cast<int>(get_parameter("min_imu_samples_per_update").as_int());
 
     noise_.accel_noise_density = get_parameter("imu_accel_noise").as_double();
     noise_.gyro_noise_density = get_parameter("imu_gyro_noise").as_double();
@@ -185,39 +201,49 @@ private:
   void setup_subscribers() {
     if (use_imu_) {
       imu_sub_ = create_subscription<sensor_msgs::msg::Imu>(
-          "/mti100/data", rclcpp::SensorDataQoS(),
+          imu_topic_, rclcpp::SensorDataQoS(),
           std::bind(&FactorGraphNode::imu_callback, this, std::placeholders::_1));
     }
 
     if (use_odom_) {
       odom_sub_ = create_subscription<nav_msgs::msg::Odometry>(
-          "/mtt/odom", 10,
+          track_odom_topic_, 10,
           std::bind(&FactorGraphNode::odom_callback, this, std::placeholders::_1));
     }
 
     if (use_gps_) {
       gps_sub_ = create_subscription<sensor_msgs::msg::NavSatFix>(
-          "/gps_left/fix", 10,
+          gps_fix_topic_, 10,
           std::bind(&FactorGraphNode::gps_callback, this, std::placeholders::_1));
     }
 
     if (use_gps_heading_) {
       heading_sub_ = create_subscription<geometry_msgs::msg::QuaternionStamped>(
-          "gps/heading", 10,
+          gps_heading_topic_, 10,
           std::bind(&FactorGraphNode::heading_callback, this, std::placeholders::_1));
     }
 
     if (use_lidar_odom_) {
       lidar_odom_sub_ = create_subscription<nav_msgs::msg::Odometry>(
-          "/icp_odom", 10,
+          lidar_odom_topic_, 10,
           std::bind(&FactorGraphNode::lidar_odom_callback, this, std::placeholders::_1));
     }
 
     if (use_visual_odom_) {
       visual_odom_sub_ = create_subscription<nav_msgs::msg::Odometry>(
-          "/zed/zed_node/odom", 10,
+          visual_odom_topic_, 10,
           std::bind(&FactorGraphNode::visual_odom_callback, this, std::placeholders::_1));
     }
+
+    RCLCPP_INFO(
+        get_logger(),
+        "Localization topics: imu=%s track_odom=%s gps_fix=%s gps_heading=%s lidar_odom=%s visual_odom=%s",
+        imu_topic_.c_str(),
+        track_odom_topic_.c_str(),
+        gps_fix_topic_.c_str(),
+        gps_heading_topic_.c_str(),
+        lidar_odom_topic_.c_str(),
+        visual_odom_topic_.c_str());
   }
 
   // ─── IMU callback: accumulate for preintegration ───────────────────
@@ -250,6 +276,13 @@ private:
   // ─── Track odometry callback ──────────────────────────────────────
   void odom_callback(const nav_msgs::msg::Odometry::SharedPtr msg) {
     std::lock_guard<std::mutex> lock(mtx_);
+    latest_odom_ = *msg;
+    has_latest_odom_ = true;
+    if (!has_last_odom_) {
+      last_odom_ = *msg;
+      has_last_odom_ = true;
+      return;
+    }
     pending_odom_ = *msg;
     has_pending_odom_ = true;
   }
@@ -335,8 +368,20 @@ private:
   void optimize_and_publish() {
     std::lock_guard<std::mutex> lock(mtx_);
 
-    // Only proceed if we have enough IMU data for a new keyframe
-    if (imu_data_count_ < 10) return;
+    const bool has_pending_measurement =
+        has_pending_odom_ ||
+        has_pending_gps_ ||
+        has_pending_heading_ ||
+        has_pending_lidar_odom_ ||
+        has_pending_visual_odom_;
+
+    if (use_imu_) {
+      if (imu_data_count_ < min_imu_samples_per_update_) {
+        return;
+      }
+    } else if (!has_pending_measurement) {
+      return;
+    }
 
     uint64_t prev_key = current_state_.key_index;
     uint64_t curr_key = prev_key + 1;
@@ -352,9 +397,11 @@ private:
     }
 
     // Predict new state from IMU
-    auto predicted = imu_preint_->predict(
-        gtsam::NavState(current_state_.pose, current_state_.velocity),
-        current_state_.imu_bias);
+    const auto predicted = (use_imu_ && imu_data_count_ > 0)
+        ? imu_preint_->predict(
+              gtsam::NavState(current_state_.pose, current_state_.velocity),
+              current_state_.imu_bias)
+        : gtsam::NavState(current_state_.pose, current_state_.velocity);
 
     initial_values_.insert(X(curr_key), predicted.pose());
     initial_values_.insert(V(curr_key), predicted.velocity());
@@ -389,6 +436,22 @@ private:
       gtsam::Pose3 heading_pose(heading_rot, predicted.pose().translation());
       graph_.addPrior(X(curr_key), heading_pose, heading_noise);
       has_pending_heading_ = false;
+    }
+
+    // Track odometry: relative planar constraint between keyframes
+    if (has_pending_odom_ && has_last_odom_) {
+      gtsam::Pose3 prev_odom = odom_to_pose3(last_odom_);
+      gtsam::Pose3 curr_odom = odom_to_pose3(pending_odom_);
+      gtsam::Pose3 delta = prev_odom.between(curr_odom);
+
+      auto odom_noise = gtsam::noiseModel::Diagonal::Sigmas(
+          (gtsam::Vector6() << 99.0, 99.0, noise_.odom_angular_noise,
+                               noise_.odom_linear_noise, noise_.odom_linear_noise, 99.0).finished());
+      graph_.add(gtsam::BetweenFactor<gtsam::Pose3>(
+          X(prev_key), X(curr_key), delta, odom_noise));
+
+      last_odom_ = pending_odom_;
+      has_pending_odom_ = false;
     }
 
     // LiDAR odometry: relative constraint between keyframes
@@ -450,7 +513,11 @@ private:
 
   void publish_odometry() {
     nav_msgs::msg::Odometry msg;
-    msg.header.stamp = now();
+    if (has_latest_odom_) {
+      msg.header.stamp = latest_odom_.header.stamp;
+    } else {
+      msg.header.stamp = now();
+    }
     msg.header.frame_id = map_frame_;
     msg.child_frame_id = base_frame_;
 
@@ -473,13 +540,25 @@ private:
   }
 
   void publish_tf() {
+    if (!has_latest_odom_) {
+      return;
+    }
+
+    gtsam::Pose3 map_to_base = current_state_.pose;
+    gtsam::Pose3 odom_to_base = odom_to_pose3(latest_odom_);
+    gtsam::Pose3 map_to_odom = map_to_base.compose(odom_to_base.inverse());
+
     geometry_msgs::msg::TransformStamped tf;
-    tf.header.stamp = now();
+    if (has_latest_odom_) {
+      tf.header.stamp = latest_odom_.header.stamp;
+    } else {
+      tf.header.stamp = now();
+    }
     tf.header.frame_id = map_frame_;
     tf.child_frame_id = odom_frame_;
 
-    auto& t = current_state_.pose.translation();
-    auto q = current_state_.pose.rotation().toQuaternion();
+    auto& t = map_to_odom.translation();
+    auto q = map_to_odom.rotation().toQuaternion();
 
     tf.transform.translation.x = t.x();
     tf.transform.translation.y = t.y();
@@ -513,6 +592,8 @@ private:
   sensor_msgs::msg::NavSatFix pending_gps_;
   geometry_msgs::msg::QuaternionStamped pending_heading_;
   nav_msgs::msg::Odometry pending_odom_;
+  nav_msgs::msg::Odometry last_odom_;
+  nav_msgs::msg::Odometry latest_odom_;
   nav_msgs::msg::Odometry pending_lidar_odom_;
   nav_msgs::msg::Odometry pending_visual_odom_;
   nav_msgs::msg::Odometry last_lidar_odom_;
@@ -521,6 +602,8 @@ private:
   bool has_pending_gps_{false};
   bool has_pending_heading_{false};
   bool has_pending_odom_{false};
+  bool has_last_odom_{false};
+  bool has_latest_odom_{false};
   bool has_pending_lidar_odom_{false};
   bool has_pending_visual_odom_{false};
   bool has_last_lidar_odom_{false};
@@ -538,6 +621,9 @@ private:
 
   // Frame IDs
   std::string map_frame_, odom_frame_, base_frame_;
+  std::string imu_topic_, track_odom_topic_, gps_fix_topic_;
+  std::string gps_heading_topic_, lidar_odom_topic_, visual_odom_topic_;
+  int min_imu_samples_per_update_{10};
 
   // ROS interfaces
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_pub_;

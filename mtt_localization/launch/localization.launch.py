@@ -1,6 +1,8 @@
 import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 def generate_launch_description():
@@ -12,7 +14,14 @@ def generate_launch_description():
         executable='factor_graph_node',
         name='factor_graph_node',
         output='both',
-        parameters=[config],
+        parameters=[config, {'use_sim_time': LaunchConfiguration('use_sim_time')}],
     )
 
-    return LaunchDescription([factor_graph])
+    return LaunchDescription([
+        DeclareLaunchArgument(
+            'use_sim_time',
+            default_value='false',
+            description='Use simulation or bag replay clock',
+        ),
+        factor_graph,
+    ])
