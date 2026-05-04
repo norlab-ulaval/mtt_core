@@ -30,7 +30,10 @@ setup(
     entry_points={
     'console_scripts': [
         'odom_publisher_simul = mtt_bringup.odom_publisher_simul:main',
+        'odom_to_pose_node = mtt_bringup.odom_to_pose_node:main',
         'mtt_controller_interface = mtt_bringup.mtt_controller_interface:main',
+        'mtt_path_follower = mtt_bringup.mtt_path_follower:main',
+        'mtt_repeat_supervisor = mtt_bringup.mtt_repeat_supervisor:main',
         ],
     },   
 )

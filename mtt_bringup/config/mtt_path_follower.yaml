@@ -1,0 +1,26 @@
+/**:
+  mtt_path_follower:
+    ros__parameters:
+      action_name: "/follow_path"
+      odom_topic: "/mapping/icp_odom"
+      cmd_vel_topic: "controller/cmd_vel"
+      control_rate_hz: 20.0
+      default_speed_ms: 0.60
+      max_speed_ms: 0.80
+      min_speed_ms: 0.25
+      slowdown_alpha: 2.0
+      k_y: 0.60
+      k_theta: 1.20
+      l_eq_m: 2.40
+      psi_max_rad: 1.0471975512
+      psi_dot_max_rad_s: 0.50
+      kappa_max: 0.70
+      advance_distance_m: 0.35
+      waypoint_tolerance_m: 0.35
+      final_heading_tolerance_rad: 0.35
+      odom_timeout_s: 2.5
+      model_use_slip_heuristic: true
+      model_yaw_slip_base: 0.10
+      model_yaw_slip_speed_gain: 0.05
+      model_yaw_slip_articulation_gain: 0.15
+      model_yaw_slip_min_scale: 0.55

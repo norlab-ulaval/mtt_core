@@ -1,0 +1,26 @@
+/**:
+  mtt_repeat_supervisor:
+    ros__parameters:
+      health_topic: "/mtt_health"
+      icp_odom_topic: "/mapping/icp_odom"
+      teleop_topic: "cmd_vel/manual"
+      deadman_topic: "teleop_deadman"
+      controller_cmd_vel_topic: "controller/cmd_vel"
+      selected_mode_topic: "selected_mode"
+      state_topic: "mtt_repeat/state"
+      ready_topic: "mtt_repeat/ready"
+      follow_path_action_name: "/follow_path"
+      teach_start_service: "/start_recording"
+      teach_stop_service: "/stop_recording"
+      play_line_service: "/play_line"
+      play_loop_service: "/play_loop"
+      cancel_service: "/cancel_trajectory"
+      request_auto_service: "mtt_control/request_auto"
+      request_manual_service: "mtt_control/request_manual"
+      health_timeout_s: 1.0
+      icp_timeout_s: 0.75
+      teleop_override_linear_threshold: 0.05
+      teleop_override_angular_threshold: 0.05
+      replay_idle_timeout_s: 1.0
+      replay_startup_timeout_s: 5.0
+      monitor_rate_hz: 10.0

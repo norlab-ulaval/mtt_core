@@ -30,6 +30,9 @@ install(PROGRAMS ${LAUNCH_FILES}
 
 install(PROGRAMS
   ${PROJECT_NAME}/odom_publisher_simul.py
+  ${PROJECT_NAME}/odom_to_pose_node.py
   ${PROJECT_NAME}/mtt_controller_interface.py
+  ${PROJECT_NAME}/mtt_path_follower.py
+  ${PROJECT_NAME}/mtt_repeat_supervisor.py
   DESTINATION lib/${PROJECT_NAME})
 ament_package()
