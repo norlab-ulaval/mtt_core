@@ -325,6 +325,7 @@ class MttPathFollower(Node):
     async def _execute_callback(self, goal_handle) -> FollowPath.Result:
         with self._goal_lock:
             self._active_goal = True
+            self._local_plan_received = False
 
         try:
             segments = self._sanitize_paths(goal_handle.request.path)
@@ -377,14 +378,33 @@ class MttPathFollower(Node):
                     robot_body_yaw = yaw_from_quaternion(robot_pose.orientation)
                     theta_eff = robot_body_yaw if forward else wrap_to_pi(robot_body_yaw + math.pi)
 
+                    # Track progress on global path
                     waypoint_index = self._advance_waypoint_index(segment.poses, waypoint_index, robot_pose)
-                    target_pose = segment.poses[waypoint_index]
+                    global_target_pose = segment.poses[waypoint_index]
+
+                    # Prioritize dynamic local plan from WILN
+                    local_plan = self._get_fresh_local_plan()
+                    if local_plan is not None:
+                        self._local_plan_received = True
+                        local_idx = self._find_start_index(local_plan.poses, robot_pose)
+                        local_idx = self._advance_waypoint_index(local_plan.poses, local_idx, robot_pose)
+                        target_pose = local_plan.poses[local_idx]
+                    elif self._local_plan_received:
+                        # Safety stop if local plan goes stale after being received once
+                        self.get_logger().warn("Local plan stale! Stopping for safety.", throttle_duration_sec=2.0)
+                        self._publish_zero_command()
+                        time.sleep(loop_dt)
+                        continue
+                    else:
+                        # Fallback to static global path
+                        target_pose = global_target_pose
+
                     self._publish_target_pose(target_pose)
 
                     if waypoint_index == len(segment.poses) - 1 and self._segment_complete(
                         robot_pose,
                         theta_eff,
-                        target_pose,
+                        global_target_pose,
                         forward,
                         final_segment,
                     ):
