@@ -37,7 +37,8 @@ trailer_detector_node:
 
     # Subtract from PCA yaw to get angle relative to MTT.
     # Set to the raw PCA angle observed at zero articulation.
-    reference_yaw: 0.0
+    # Observed value at straight (0 articulation) ≈ -π/2 in rsairy frame.
+    reference_yaw: -1.5708
 
 # ── Dual-LiDAR merger ────────────────────────────────────────────────────────
 cloud_merger_node:
