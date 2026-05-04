@@ -1,0 +1,43 @@
+# Standalone driver defaults.
+# Live runtime tuning belongs in demos/common/config/mtt_driver.yaml.
+mtt_can_node:
+  ros__parameters:
+    steer_control_mode: closed_loop
+    cmd_angular_mode: normalized_steer
+    tachometer_mode: real
+    invert_inferred_tachometer_direction: true
+    max_linear_speed_ms: 1.2
+    throttle_deadband: 0.05
+    steer_deadband: 0.05
+    min_steer_speed_ms: 0.1
+    model_wheelbase_m: 2.4
+    model_max_articulation_deg: 60.0
+    model_speed_response_gain: 3.0
+    model_articulation_response_gain: 0.8
+    model_brake_gain: 1.0
+    model_use_slip_heuristic: true
+    model_yaw_slip_base: 0.10
+    model_yaw_slip_speed_gain: 0.05
+    model_yaw_slip_articulation_gain: 0.15
+    model_yaw_slip_min_scale: 0.55
+    publish_can_debug: false
+    can_debug_topic: mtt_can/debug_frames
+
+mtt_odometry_node:
+  ros__parameters:
+    steer_control_mode: closed_loop
+    cmd_angular_mode: normalized_steer
+    pivot_turn_enabled: false
+    min_turn_speed_ms: 0.05
+    yaw_slip_factor: 1.0
+    max_articulation_deg: 60.0
+    model_wheelbase_m: 2.4
+    model_max_articulation_deg: 60.0
+    model_speed_response_gain: 3.0
+    model_articulation_response_gain: 0.8
+    model_brake_gain: 1.0
+    model_use_slip_heuristic: true
+    model_yaw_slip_base: 0.10
+    model_yaw_slip_speed_gain: 0.05
+    model_yaw_slip_articulation_gain: 0.15
+    model_yaw_slip_min_scale: 0.55

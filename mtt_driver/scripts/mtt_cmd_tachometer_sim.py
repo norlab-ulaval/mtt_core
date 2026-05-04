@@ -85,9 +85,12 @@ class MTTCommandTachometerSim:
             throttle_raw = data[2]  # 0-230 range
             switches = data[1]
             
-            # Extract direction from bit 5 of switches
-            direction_forward = bool(switches & 0b00100000)
-            self.current_direction = 1 if direction_forward else -1
+            # Extract direction from bit 5 of switches.
+            # Real MTT command semantics:
+            #   bit 5 = 0 -> Forward
+            #   bit 5 = 1 -> Reverse
+            direction_reverse = bool(switches & 0b00100000)
+            self.current_direction = -1 if direction_reverse else 1
             
             # Convert throttle to 0.0-1.0 range
             self.target_throttle = min(1.0, throttle_raw / 230.0)

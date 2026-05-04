@@ -30,6 +30,7 @@ find_package(std_srvs REQUIRED)
 #         tachometer.hpp (header-only), articulated_model, odometry_calculator
 # ────────────────────────────────────────────────────────────────────
 add_library(mtt_logic SHARED
+  src/logic/command_motion_model.cpp
   src/logic/articulated_model.cpp
   src/logic/odometry_calculator.cpp
 )
@@ -92,6 +93,7 @@ ament_target_dependencies(mtt_odometry_node
   rclcpp_components
   nav_msgs
   geometry_msgs
+  sensor_msgs
   std_msgs
   std_srvs
   tf2_ros
@@ -101,6 +103,29 @@ ament_target_dependencies(mtt_odometry_node
 rclcpp_components_register_node(mtt_odometry_node
   PLUGIN "mtt::MttOdometryNode"
   EXECUTABLE mtt_odometry_node_exe
+)
+
+# ────────────────────────────────────────────────────────────────────
+# COMPONENT: mtt_health_monitor_node  (ROS 2 node — health + fallback)
+# ────────────────────────────────────────────────────────────────────
+add_library(mtt_health_monitor_node SHARED
+  src/components/mtt_health_monitor_node.cpp
+)
+target_include_directories(mtt_health_monitor_node PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+target_link_libraries(mtt_health_monitor_node mtt_logic)
+ament_target_dependencies(mtt_health_monitor_node
+  rclcpp
+  rclcpp_components
+  geometry_msgs
+  nav_msgs
+  mtt_msgs
+)
+rclcpp_components_register_node(mtt_health_monitor_node
+  PLUGIN "mtt::MttHealthMonitorNode"
+  EXECUTABLE mtt_health_monitor_node_exe
 )
 
 # ────────────────────────────────────────────────────────────────────
@@ -149,13 +174,17 @@ rclcpp_components_register_node(teleop_cmd_smoother_node
 # ────────────────────────────────────────────────────────────────────
 # Install
 # ────────────────────────────────────────────────────────────────────
-install(TARGETS mtt_logic mtt_hardware mtt_can_node mtt_odometry_node mtt_teleop_joy_node teleop_cmd_smoother_node
+install(TARGETS mtt_logic mtt_hardware mtt_can_node mtt_odometry_node mtt_health_monitor_node mtt_teleop_joy_node teleop_cmd_smoother_node
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION bin
 )
 install(DIRECTORY include/ DESTINATION include)
 install(DIRECTORY launch config DESTINATION share/${PROJECT_NAME})
+install(PROGRAMS
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../../scripts/mtt_health_monitor.py
+  DESTINATION lib/${PROJECT_NAME}
+)
 
 # ────────────────────────────────────────────────────────────────────
 # Tests (GTest — no ROS required)

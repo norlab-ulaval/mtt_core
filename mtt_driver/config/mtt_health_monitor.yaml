@@ -1,0 +1,44 @@
+# Standalone health-monitor defaults.
+# Live runtime tuning belongs in demos/common/config/mtt_health_monitor.yaml.
+mtt_health_monitor_node:
+  ros__parameters:
+    health_topic: mtt_health
+    fallback_odom_topic: mtt_monitor/cmd_fallback_odom
+    status_topic: mtt_status
+    battery_topic: mtt_battery/status
+    tachometer_topic: mtt_tachometer
+    cmd_vel_topic: cmd_vel
+    can_debug_topic: mtt_can/debug_frames
+    health_publish_hz: 10.0
+    cmd_vel_timeout_seconds: 0.5
+    model_wheelbase_m: 2.4
+    model_max_articulation_deg: 60.0
+    model_speed_response_gain: 3.0
+    model_articulation_response_gain: 0.8
+    model_brake_gain: 1.0
+    model_use_slip_heuristic: true
+    model_yaw_slip_base: 0.10
+    model_yaw_slip_speed_gain: 0.05
+    model_yaw_slip_articulation_gain: 0.15
+    model_yaw_slip_min_scale: 0.55
+
+    # Command conflict detection
+    throttle_conflict_raw_threshold: 20
+    brake_conflict_raw_threshold: 20
+
+    # Main module temperatures
+    # Temp B is the most relevant one to watch for the encoder/tachometer side.
+    encoder_temp_warn_c: 50.0
+    encoder_temp_danger_c: 80.0
+    encoder_temp_critical_c: 100.0
+    controller_temp_warn_c: 70.0
+    controller_temp_danger_c: 90.0
+    controller_temp_critical_c: 100.0
+
+    # Battery / BMS temperatures
+    battery_temp_warn_c: 55.0
+    battery_temp_danger_c: 70.0
+    battery_temp_critical_c: 85.0
+
+    low_soc_warning_percent: 15.0
+    can_stale_warning_seconds: 1.0

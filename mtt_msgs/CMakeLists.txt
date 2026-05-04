@@ -13,6 +13,8 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/MttVehicleStatus.msg"
   "msg/MttDrivingMode.msg"
   "msg/MttBmsData.msg"
+  "msg/MttCanFrame.msg"
+  "msg/MttHealthState.msg"
   DEPENDENCIES std_msgs
 )
 
