@@ -43,6 +43,14 @@ public:
       declare_parameter("publish_runtime_joint_states", false);
     runtime_joint_states_topic_ =
       declare_parameter("runtime_joint_states_topic", std::string("joint_states"));
+    runtime_joint_pitch_rad_ =
+      declare_parameter("runtime_joint_pitch_rad", 0.0);
+    runtime_joint_roll_rad_ =
+      declare_parameter("runtime_joint_roll_rad", 0.0);
+    runtime_joint_articulation_sign_ =
+      declare_parameter("runtime_joint_articulation_sign", 1.0);
+    runtime_joint_articulation_offset_rad_ =
+      declare_parameter("runtime_joint_articulation_offset_rad", 0.0);
     track_width_m_    = declare_parameter("track_width_m",    VehicleParams::track_width);
     wheelbase_m_      = declare_parameter("wheelbase_m",      VehicleParams::total_wheelbase());
     steer_mode_       = declare_parameter("steer_control_mode", std::string("open_loop"));
@@ -160,6 +168,10 @@ private:
   bool     broadcast_tf_, pivot_turn_, publish_runtime_joint_states_;
   double   track_width_m_, wheelbase_m_;
   double   max_articulation_rad_{VehicleParams::max_articulation_rad};
+  double   runtime_joint_pitch_rad_{0.0};
+  double   runtime_joint_roll_rad_{0.0};
+  double   runtime_joint_articulation_sign_{1.0};
+  double   runtime_joint_articulation_offset_rad_{0.0};
   double   min_speed_turn_, yaw_slip_factor_, wrap_threshold_m_, cmd_vel_timeout_s_;
   double   current_angular_cmd_{0.0};
   logic::CommandMotionParams motion_model_params_{};
@@ -210,10 +222,15 @@ private:
       return;
     }
 
+    const double runtime_yaw = std::clamp(
+      runtime_joint_articulation_sign_ * articulation_angle + runtime_joint_articulation_offset_rad_,
+      -max_articulation_rad_,
+      max_articulation_rad_);
+
     sensor_msgs::msg::JointState msg;
     msg.header.stamp = stamp;
     msg.name = {"pitch", "yaw", "roll"};
-    msg.position = {M_PI / 2.0, articulation_angle, 0.0};
+    msg.position = {runtime_joint_pitch_rad_, runtime_yaw, runtime_joint_roll_rad_};
     joint_state_pub_->publish(msg);
   }
 
