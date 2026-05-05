@@ -41,6 +41,51 @@ def launch_sim_description(context, *args, **kwargs):
     robot_description = ParameterValue(robot_description_content, value_type=str)
 
     return [
+        # Synthetic tachometer node (converts cmd_vel to tachometer data)
+        Node(
+            package='mtt_driver',
+            executable='mtt_synthetic_tachometer',
+            name='mtt_synthetic_tachometer',
+            namespace=namespace,
+            output='screen',
+            parameters=[
+                {
+                    'cmd_vel_topic': 'cmd_vel',
+                    'tacho_topic': 'mtt_tachometer',
+                    'publish_rate_hz': 50.0,
+                    'command_timeout_seconds': 0.5,
+                    'cmd_angular_mode': 'normalized_steer',
+                    'max_linear_speed_ms': 1.0,
+                    'model_max_articulation_deg': 60.0,
+                    'model_articulation_response_gain': 0.8,
+                }
+            ],
+            remappings=[],
+        ),
+        # MTT odometry node (runs motion model, publishes joint states)
+        Node(
+            package='mtt_driver',
+            executable='mtt_odometry_node_exe',
+            name='mtt_odometry_node',
+            namespace=namespace,
+            output='screen',
+            parameters=[
+                {
+                    'use_sim_time': use_sim_time,
+                    'publish_runtime_joint_states': True,
+                    'runtime_joint_states_topic': 'joint_states',
+                    'model_articulation_response_gain': 0.8,
+                    'model_max_articulation_deg': 60.0,
+                    'broadcast_tf': False,  # Let robot_state_publisher handle TF
+                }
+            ],
+            remappings=[
+                ('/mtt_tachometer', 'mtt_tachometer'),
+                ('/mtt_odometry', 'mtt_odometry'),
+                ('/joint_states', 'joint_states'),
+            ],
+        ),
+        # Robot state publisher (converts URDF + joint_states -> TF)
         Node(
             package='robot_state_publisher',
             executable='robot_state_publisher',

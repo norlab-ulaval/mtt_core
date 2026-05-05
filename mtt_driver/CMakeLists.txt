@@ -172,9 +172,32 @@ rclcpp_components_register_node(teleop_cmd_smoother_node
 )
 
 # ────────────────────────────────────────────────────────────────────
+# COMPONENT: mtt_synthetic_tachometer_node (ROS 2 node — Simulation mode)
+# Converts cmd_vel to synthetic tachometer data for unified real/sim testing
+# ────────────────────────────────────────────────────────────────────
+add_library(mtt_synthetic_tachometer_node SHARED
+  src/components/mtt_synthetic_tachometer_node.cpp
+)
+target_include_directories(mtt_synthetic_tachometer_node PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+target_link_libraries(mtt_synthetic_tachometer_node mtt_logic)
+ament_target_dependencies(mtt_synthetic_tachometer_node
+  rclcpp
+  rclcpp_components
+  geometry_msgs
+  mtt_msgs
+)
+rclcpp_components_register_node(mtt_synthetic_tachometer_node
+  PLUGIN "mtt::MttSyntheticTachometerNode"
+  EXECUTABLE mtt_synthetic_tachometer
+)
+
+# ────────────────────────────────────────────────────────────────────
 # Install
 # ────────────────────────────────────────────────────────────────────
-install(TARGETS mtt_logic mtt_hardware mtt_can_node mtt_odometry_node mtt_health_monitor_node mtt_teleop_joy_node teleop_cmd_smoother_node
+install(TARGETS mtt_logic mtt_hardware mtt_can_node mtt_odometry_node mtt_health_monitor_node mtt_teleop_joy_node teleop_cmd_smoother_node mtt_synthetic_tachometer_node
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION bin
