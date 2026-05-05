@@ -14,8 +14,11 @@
 #include <geometry_msgs/msg/twist_stamped.hpp>
 #include <mtt_msgs/msg/mtt_aux_command.hpp>
 #include <mtt_msgs/msg/mtt_tachometer_data.hpp>
+#include <mtt_msgs/msg/mtt_vehicle_status.hpp>
 
+#include "mtt_driver/logic/can_frame_codec.hpp"
 #include "mtt_driver/logic/command_motion_model.hpp"
+#include "mtt_driver/logic/hold_assist.hpp"
 #include "mtt_driver/logic/vehicle_params.hpp"
 
 namespace mtt {
@@ -31,6 +34,7 @@ public:
     command_timeout_s_ = declare_parameter("command_timeout_seconds", 0.5);
     max_linear_speed_ms_ = declare_parameter("max_linear_speed_ms", 1.0);
     cmd_angular_mode_ = declare_parameter("cmd_angular_mode", std::string("normalized_steer"));
+    status_topic_ = declare_parameter("status_topic", std::string("mtt_status"));
     motion_model_params_.wheelbase_m =
       declare_parameter("model_wheelbase_m", VehicleParams::total_wheelbase());
     motion_model_params_.max_articulation_rad =
@@ -48,6 +52,20 @@ public:
       declare_parameter("model_yaw_slip_articulation_gain", 0.15);
     motion_model_params_.yaw_slip_min_scale =
       declare_parameter("model_yaw_slip_min_scale", 0.55);
+    hold_assist_params_.enabled = declare_parameter("hold_assist_enabled", true);
+    hold_assist_params_.entry_speed_ms = declare_parameter("hold_assist_entry_speed_ms", 0.03);
+    hold_assist_params_.release_speed_ms = declare_parameter("hold_assist_release_speed_ms", 0.015);
+    hold_assist_params_.exit_command_ms = declare_parameter("hold_assist_exit_command_ms", 0.08);
+    hold_assist_params_.kp = declare_parameter("hold_assist_kp", 1.2);
+    hold_assist_params_.ki = declare_parameter("hold_assist_ki", 0.8);
+    hold_assist_params_.integrator_limit = declare_parameter("hold_assist_integrator_limit", 0.25);
+    hold_assist_params_.output_limit = declare_parameter("hold_assist_output_limit", 0.35);
+    hold_assist_params_.deadband_compensation =
+      declare_parameter("hold_assist_deadband_compensation", 0.12);
+    hold_assist_params_.dither_enabled = declare_parameter("hold_assist_dither_enabled", false);
+    hold_assist_params_.dither_amplitude = declare_parameter("hold_assist_dither_amplitude", 0.02);
+    hold_assist_params_.dither_frequency_hz =
+      declare_parameter("hold_assist_dither_frequency_hz", 6.0);
 
     if (cmd_angular_mode_ != "normalized_steer" && cmd_angular_mode_ != "yaw_rate") {
       RCLCPP_WARN(
@@ -58,6 +76,8 @@ public:
     }
 
     motion_model_.set_params(motion_model_params_);
+    hold_assist_controller_.set_params(hold_assist_params_);
+    synthetic_frame_.init_defaults();
 
     cmd_vel_sub_ = create_subscription<geometry_msgs::msg::TwistStamped>(
       cmd_vel_topic_, 10,
@@ -68,6 +88,7 @@ public:
 
     tacho_pub_ = create_publisher<mtt_msgs::msg::MttTachometerData>(
       tacho_topic_, rclcpp::SensorDataQoS());
+    status_pub_ = create_publisher<mtt_msgs::msg::MttVehicleStatus>(status_topic_, 10);
 
     const auto period = std::chrono::duration<double>(1.0 / std::max(1.0, publish_rate_hz_));
     timer_ = create_wall_timer(
@@ -85,23 +106,29 @@ public:
 private:
   std::string cmd_vel_topic_;
   std::string tacho_topic_;
+  std::string status_topic_;
   std::string cmd_angular_mode_;
   double publish_rate_hz_{50.0};
   double command_timeout_s_{0.5};
   double max_linear_speed_ms_{1.0};
   logic::CommandMotionParams motion_model_params_{};
+  logic::HoldAssistParams hold_assist_params_{};
   logic::CommandMotionModel motion_model_{};
+  logic::HoldAssistController hold_assist_controller_{};
   double current_linear_command_ms_{0.0};
+  double effective_linear_command_ms_{0.0};
   double current_steer_cmd_{0.0};
   double current_brake_norm_{0.0};
   bool has_cmd_vel_{false};
   std::chrono::steady_clock::time_point last_cmd_vel_time_{};
   std::chrono::steady_clock::time_point last_publish_time_{};
   bool publish_initialized_{false};
+  can::CommandFrame synthetic_frame_{};
 
   rclcpp::Subscription<geometry_msgs::msg::TwistStamped>::SharedPtr cmd_vel_sub_;
   rclcpp::Subscription<mtt_msgs::msg::MttAuxCommand>::SharedPtr aux_cmd_sub_;
   rclcpp::Publisher<mtt_msgs::msg::MttTachometerData>::SharedPtr tacho_pub_;
+  rclcpp::Publisher<mtt_msgs::msg::MttVehicleStatus>::SharedPtr status_pub_;
   rclcpp::TimerBase::SharedPtr timer_;
 
   void on_cmd_vel(const geometry_msgs::msg::TwistStamped::SharedPtr msg)
@@ -158,8 +185,21 @@ private:
     dt = std::clamp(dt, 0.0, 1.0);
 
     const bool fresh = cmd_vel_is_fresh(wall_now);
+    logic::HoldAssistInput hold_input;
+    hold_input.dt = dt;
+    hold_input.commanded_speed_ms = fresh ? current_linear_command_ms_ : 0.0;
+    hold_input.measured_speed_ms = motion_model_.state().v_eff_ms;
+    hold_input.telemetry_fresh = true;
+    hold_input.safety_locked = false;
+    hold_input.brake_normalized = current_brake_norm_;
+    const auto& hold_output = hold_assist_controller_.update(hold_input);
+    effective_linear_command_ms_ = std::clamp(
+      hold_input.commanded_speed_ms + hold_output.correction_speed_ms,
+      -max_linear_speed_ms_,
+      max_linear_speed_ms_);
+
     logic::CommandMotionCommand motion_command;
-    motion_command.linear_speed_cmd_ms = fresh ? current_linear_command_ms_ : 0.0;
+    motion_command.linear_speed_cmd_ms = effective_linear_command_ms_;
     motion_command.normalized_steer_cmd = fresh ? current_steer_cmd_ : 0.0;
     motion_command.brake_normalized = current_brake_norm_;
     motion_command.dt = dt;
@@ -212,6 +252,69 @@ private:
     tacho.model_yaw_rate_effective_rad_s = state.yaw_rate_effective_rad_s;
 
     tacho_pub_->publish(tacho);
+
+    const double throttle_norm =
+      std::clamp(std::abs(effective_linear_command_ms_) / max_linear_speed_ms_, 0.0, 1.0);
+    synthetic_frame_.set_throttle(throttle_norm);
+    synthetic_frame_.set_brake(current_brake_norm_);
+    synthetic_frame_.set_steer(motion_command.normalized_steer_cmd);
+    synthetic_frame_.set_direction(
+      effective_linear_command_ms_ >= 0.0 ? can::Direction::Forward : can::Direction::Reverse);
+
+    mtt_msgs::msg::MttVehicleStatus status;
+    status.header = tacho.header;
+    status.can_interface = "synthetic";
+    status.command_can_id = 0x001u;
+    status.telemetry_can_id = 0x2FFu;
+    status.telemetry_seen_once = true;
+    status.telemetry_fresh = true;
+    status.telemetry_age_ms = 0.0;
+    status.tachometer_is_synthetic = true;
+    status.tachometer_source = "cmd_sim";
+    status.speed_ms = tacho.speed_ms;
+    status.speed_kmh = tacho.speed_kmh;
+    status.distance_km = tacho.distance_km;
+    status.direction = tacho.direction;
+    status.temperature_a = 0.0;
+    status.temperature_b = 0.0;
+    status.steer_position = synthetic_frame_.steer_raw();
+    status.main_sensor_temp_a_raw = 0;
+    status.main_sensor_temp_b_raw = 0;
+    status.tachometer_instant = tacho.tachometer_instant;
+    status.tachometer_cumulative = tacho.tachometer_cumulative;
+    status.tachometer_instant_ticks_per_s = tacho.tachometer_instant;
+    status.tachometer_cumulative_ticks = tacho.tachometer_cumulative;
+    status.vehicle_type_raw = static_cast<uint8_t>(synthetic_frame_.get_vehicle_type());
+    status.vehicle_type_label = can::vehicle_type_to_string(synthetic_frame_.get_vehicle_type());
+    status.security_unlocked = true;
+    status.light_off_estop_patch = false;
+    status.direction_reverse = tacho.direction == "Reverse";
+    status.throttle_raw = synthetic_frame_.throttle_raw();
+    status.brake_raw = synthetic_frame_.brake_raw();
+    status.steer_raw = synthetic_frame_.steer_raw();
+    status.steer_normalized = motion_command.normalized_steer_cmd;
+    status.command_linear_speed_ms = hold_input.commanded_speed_ms;
+    status.effective_linear_speed_command_ms = effective_linear_command_ms_;
+    status.hold_assist_active = hold_output.active;
+    status.hold_assist_mode = hold_output.mode;
+    status.hold_assist_output_ms = hold_output.correction_speed_ms;
+    status.winch_raw = static_cast<uint8_t>(synthetic_frame_.get_winch());
+    status.winch_state = can::winch_state_to_string(synthetic_frame_.get_winch());
+    status.steering_mode_closed_loop = synthetic_frame_.get_steering_mode() == can::SteeringMode::CloseLoop;
+    status.reserved_byte_7 = synthetic_frame_.reserved_raw();
+    status.emergency_stop_active = false;
+    status.remote_connected = has_cmd_vel_;
+    status.deadman_active = false;
+    status.command_timeout_active = !fresh;
+    status.can_debug_enabled = false;
+    status.safety_state = "SafetyUnlocked";
+    status.has_main_controller_version = false;
+    status.main_hardware_revision_raw = 0u;
+    status.main_software_revision_raw = 0u;
+    status.has_battery_controller_version = false;
+    status.battery_hardware_revision_raw = 0u;
+    status.battery_software_revision_raw = 0u;
+    status_pub_->publish(status);
   }
 };
 

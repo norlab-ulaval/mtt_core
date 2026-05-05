@@ -44,6 +44,20 @@ MttCanNode::MttCanNode(const rclcpp::NodeOptions& options)
   motion_model_params_.yaw_slip_articulation_gain =
     declare_parameter("model_yaw_slip_articulation_gain", 0.15);
   motion_model_params_.yaw_slip_min_scale = declare_parameter("model_yaw_slip_min_scale", 0.55);
+  hold_assist_params_.enabled = declare_parameter("hold_assist_enabled", true);
+  hold_assist_params_.entry_speed_ms = declare_parameter("hold_assist_entry_speed_ms", 0.03);
+  hold_assist_params_.release_speed_ms = declare_parameter("hold_assist_release_speed_ms", 0.015);
+  hold_assist_params_.exit_command_ms = declare_parameter("hold_assist_exit_command_ms", 0.08);
+  hold_assist_params_.kp = declare_parameter("hold_assist_kp", 1.2);
+  hold_assist_params_.ki = declare_parameter("hold_assist_ki", 0.8);
+  hold_assist_params_.integrator_limit = declare_parameter("hold_assist_integrator_limit", 0.25);
+  hold_assist_params_.output_limit = declare_parameter("hold_assist_output_limit", 0.35);
+  hold_assist_params_.deadband_compensation =
+    declare_parameter("hold_assist_deadband_compensation", 0.12);
+  hold_assist_params_.dither_enabled = declare_parameter("hold_assist_dither_enabled", false);
+  hold_assist_params_.dither_amplitude = declare_parameter("hold_assist_dither_amplitude", 0.02);
+  hold_assist_params_.dither_frequency_hz =
+    declare_parameter("hold_assist_dither_frequency_hz", 6.0);
   base_frame_          = declare_parameter("base_frame",           std::string("base_footprint"));
   cmd_angular_mode_    = declare_parameter("cmd_angular_mode",     std::string("normalized_steer"));
   steer_control_mode_  = declare_parameter("steer_control_mode",   std::string("closed_loop"));
@@ -81,6 +95,7 @@ MttCanNode::MttCanNode(const rclcpp::NodeOptions& options)
   }
 
   synthetic_motion_model_.set_params(motion_model_params_);
+  hold_assist_controller_.set_params(hold_assist_params_);
 
   // ── Initialize command frame to safe defaults ────────────────────────
   {
@@ -236,16 +251,8 @@ void MttCanNode::on_cmd_vel(const geometry_msgs::msg::TwistStamped::SharedPtr ms
   const double lin   = msg->twist.linear.x;
   const double steer = command_angular_to_normalized_steer(lin, msg->twist.angular.z);
 
-  // Normalize throttle by max speed, then apply deadband
-  const double throttle_norm = std::clamp(std::abs(lin) / max_linear_speed_ms_, 0.0, 1.0);
-  const double throttle_cmd  = (throttle_norm < throttle_deadband_) ? 0.0 : throttle_norm;
-  const double steer_cmd     = (std::abs(steer)  < steer_deadband_)  ? 0.0 : steer;
-
   std::lock_guard<std::mutex> lock(frame_mutex_);
-  command_frame_.set_throttle(throttle_cmd);
-  command_frame_.set_steer(steer_cmd);
-  command_frame_.set_direction(lin >= 0.0 ? can::Direction::Forward : can::Direction::Reverse);
-  current_steering_input_ = steer_cmd;
+  current_steering_input_ = (std::abs(steer) < steer_deadband_) ? 0.0 : steer;
   current_linear_command_ms_ = std::clamp(lin, -max_linear_speed_ms_, max_linear_speed_ms_);
   cmd_vel_seen_           = true;
   last_cmd_vel_time_       = std::chrono::steady_clock::now();
@@ -305,7 +312,57 @@ void MttCanNode::on_deadman(const std_msgs::msg::Bool::SharedPtr msg)
 void MttCanNode::control_loop()
 {
   apply_command_timeout_if_needed();
+  refresh_command_frame();
   publish_vehicle_data();
+}
+
+void MttCanNode::refresh_command_frame()
+{
+  const auto wall_now = std::chrono::steady_clock::now();
+  std::lock_guard<std::mutex> lock(frame_mutex_);
+
+  double dt = 1.0 / std::max(1e-3, control_freq_hz_);
+  if (last_hold_assist_update_.time_since_epoch().count() != 0) {
+    dt = std::chrono::duration<double>(wall_now - last_hold_assist_update_).count();
+  }
+  last_hold_assist_update_ = wall_now;
+  dt = std::clamp(dt, 0.0, 1.0);
+
+  const bool safety_locked = !safety_locks_.empty();
+  const auto timeout = std::chrono::milliseconds(static_cast<long>(telemetry_timeout_ms_));
+  const bool tachometer_is_synthetic = tachometer_mode_ == "cmd_sim";
+  const bool telemetry_fresh = tachometer_is_synthetic ? true : tachometer_.is_fresh(timeout);
+  const double measured_speed_ms = tachometer_is_synthetic
+    ? synthetic_motion_model_.state().v_eff_ms
+    : (telemetry_fresh
+        ? tachometer_.speed_ms() * (
+            infer_tachometer_direction(command_frame_.get_direction()) == can::Direction::Reverse ? -1.0 : 1.0)
+        : 0.0);
+
+  logic::HoldAssistInput hold_input;
+  hold_input.dt = dt;
+  hold_input.commanded_speed_ms = current_linear_command_ms_;
+  hold_input.measured_speed_ms = measured_speed_ms;
+  hold_input.telemetry_fresh = telemetry_fresh;
+  hold_input.safety_locked = safety_locked;
+  hold_input.brake_normalized = std::clamp(
+    static_cast<double>(command_frame_.brake_raw()) / static_cast<double>(VehicleParams::brake_max),
+    0.0,
+    1.0);
+  last_hold_assist_output_ = hold_assist_controller_.update(hold_input);
+
+  effective_linear_command_ms_ = std::clamp(
+    current_linear_command_ms_ + last_hold_assist_output_.correction_speed_ms,
+    -max_linear_speed_ms_,
+    max_linear_speed_ms_);
+
+  const double throttle_norm =
+    std::clamp(std::abs(effective_linear_command_ms_) / max_linear_speed_ms_, 0.0, 1.0);
+  const double throttle_cmd = (throttle_norm < throttle_deadband_) ? 0.0 : throttle_norm;
+  command_frame_.set_throttle(safety_locked ? 0.0 : throttle_cmd);
+  command_frame_.set_steer(current_steering_input_);
+  command_frame_.set_direction(
+    effective_linear_command_ms_ >= 0.0 ? can::Direction::Forward : can::Direction::Reverse);
 }
 
 // ── CAN send timer ────────────────────────────────────────────────────
@@ -440,6 +497,9 @@ void MttCanNode::publish_vehicle_data()
   double synthetic_model_yaw_rate_nominal_rad_s = 0.0;
   double synthetic_model_yaw_rate_effective_rad_s = 0.0;
   bool synthetic_model_state_valid = false;
+  double hold_assist_output_ms = 0.0;
+  bool hold_assist_active = false;
+  std::string hold_assist_mode = "off";
   int8_t synthetic_temp_a = 0;
   int8_t synthetic_temp_b = 0;
   bool synthetic_seen_once = false;
@@ -469,6 +529,9 @@ void MttCanNode::publish_vehicle_data()
     remote_connected = teleop_deadman_seen_ || teleop_estop_seen_;
     command_timeout_active = command_timeout_active_;
     safety_str   = describe_safety_state(safety_locks_.empty() ? "SafetyUnlocked" : "SafetyLocked");
+    hold_assist_output_ms = last_hold_assist_output_.correction_speed_ms;
+    hold_assist_active = last_hold_assist_output_.active;
+    hold_assist_mode = last_hold_assist_output_.mode;
 
     if (tachometer_mode_ == "cmd_sim") {
       if (!synthetic_tachometer_initialized_) {
@@ -483,7 +546,7 @@ void MttCanNode::publish_vehicle_data()
       last_synthetic_update_ = wall_now;
 
       logic::CommandMotionCommand motion_command;
-      motion_command.linear_speed_cmd_ms = current_linear_command_ms_;
+      motion_command.linear_speed_cmd_ms = effective_linear_command_ms_;
       motion_command.normalized_steer_cmd = steer_cmd;
       motion_command.brake_normalized =
         std::clamp(
@@ -636,6 +699,11 @@ void MttCanNode::publish_vehicle_data()
   status_msg.brake_raw = brake_raw;
   status_msg.steer_raw = static_cast<uint8_t>(steer_raw);
   status_msg.steer_normalized = steer_cmd;
+  status_msg.command_linear_speed_ms = current_linear_command_ms_;
+  status_msg.effective_linear_speed_command_ms = effective_linear_command_ms_;
+  status_msg.hold_assist_active = hold_assist_active;
+  status_msg.hold_assist_mode = hold_assist_mode;
+  status_msg.hold_assist_output_ms = hold_assist_output_ms;
   status_msg.winch_raw = static_cast<uint8_t>(winch_state);
   status_msg.winch_state = can::winch_state_to_string(winch_state);
   status_msg.steering_mode_closed_loop = steering_mode == can::SteeringMode::CloseLoop;

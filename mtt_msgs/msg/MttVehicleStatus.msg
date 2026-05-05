@@ -41,6 +41,11 @@ uint8 throttle_raw
 uint8 brake_raw
 uint8 steer_raw
 float64 steer_normalized
+float64 command_linear_speed_ms
+float64 effective_linear_speed_command_ms
+bool hold_assist_active
+string hold_assist_mode
+float64 hold_assist_output_ms
 uint8 winch_raw
 string winch_state
 bool steering_mode_closed_loop

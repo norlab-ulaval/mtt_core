@@ -29,6 +29,7 @@
 #include "mtt_driver/hardware/linux_socket_can.hpp"
 #include "mtt_driver/logic/can_frame_codec.hpp"
 #include "mtt_driver/logic/command_motion_model.hpp"
+#include "mtt_driver/logic/hold_assist.hpp"
 #include "mtt_driver/logic/tachometer.hpp"
 #include "mtt_driver/logic/vehicle_params.hpp"
 
@@ -53,6 +54,7 @@ private:
   double      wheelbase_m_;
   double      min_steer_speed_ms_;
   logic::CommandMotionParams motion_model_params_{};
+  logic::HoldAssistParams hold_assist_params_{};
   std::string base_frame_;
   std::string cmd_angular_mode_;
   std::string steer_control_mode_;
@@ -75,6 +77,7 @@ private:
   std::set<std::string> safety_locks_;
   double   current_steering_input_{0.0};
   double   current_linear_command_ms_{0.0};
+  double   effective_linear_command_ms_{0.0};
   int      current_driving_mode_{0};
   bool     command_timeout_active_{false};
   bool     cmd_vel_seen_{false};
@@ -84,8 +87,11 @@ private:
   bool     teleop_deadman_seen_{false};
   double   synthetic_distance_m_{0.0};
   logic::CommandMotionModel synthetic_motion_model_{};
+  logic::HoldAssistController hold_assist_controller_{};
+  logic::HoldAssistOutput last_hold_assist_output_{};
   bool     synthetic_tachometer_initialized_{false};
   std::chrono::steady_clock::time_point last_synthetic_update_{};
+  std::chrono::steady_clock::time_point last_hold_assist_update_{};
   std::chrono::steady_clock::time_point last_cmd_vel_time_{};
 
   // ── ROS I/O ──────────────────────────────────────────────────────────
@@ -120,6 +126,7 @@ private:
   void send_can_frame();
   void publish_vehicle_data();
   void publish_can_debug_frame(const hardware::CanFrame& frame, bool is_tx, bool handled_by_driver);
+  void refresh_command_frame();
 
   void apply_command_timeout_if_needed();
   bool cmd_vel_is_fresh() const;
