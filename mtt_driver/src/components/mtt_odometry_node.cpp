@@ -8,6 +8,7 @@
 #include <string>
 #include <chrono>
 
+#include <cmath>
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_components/register_node_macro.hpp>
 #include <builtin_interfaces/msg/time.hpp>
@@ -212,7 +213,7 @@ private:
     sensor_msgs::msg::JointState msg;
     msg.header.stamp = stamp;
     msg.name = {"pitch", "yaw", "roll"};
-    msg.position = {0.0, articulation_angle, 0.0};
+    msg.position = {M_PI / 2.0, articulation_angle, 0.0};
     joint_state_pub_->publish(msg);
   }
 
@@ -230,11 +231,18 @@ private:
     last_tacho_time_ = wall_now;
     const double speed_ms   = msg->speed_ms;
     const double steer_cmd  = msg->steer_cmd;
-    int dir_sign   = (msg->direction == "Reverse") ? -1 : 1;
+    int dir_sign = (msg->direction == "Reverse") ? -1 : 1;
+    double signed_speed_ms = 0.0;
     if (msg->model_state_valid && std::abs(msg->model_speed_ms) > 1e-4) {
-      dir_sign = msg->model_speed_ms < 0.0 ? -1 : 1;
+      signed_speed_ms = msg->model_speed_ms;
+    } else if (speed_ms < -1e-4) {
+      signed_speed_ms = speed_ms;
+    } else {
+      signed_speed_ms = speed_ms * static_cast<double>(dir_sign);
     }
-    const double signed_speed_ms = msg->model_state_valid ? msg->model_speed_ms : (speed_ms * dir_sign);
+    if (std::abs(signed_speed_ms) > 1e-4) {
+      dir_sign = signed_speed_ms < 0.0 ? -1 : 1;
+    }
 
     double dt = 0.02;
     if (msg->header.stamp.sec != 0 || msg->header.stamp.nanosec != 0) {
@@ -264,13 +272,13 @@ private:
       if (msg->model_state_valid) {
         eff_ang = msg->model_yaw_rate_effective_rad_s;
       } else if (closed_loop) {
-        eff_ang = normalized_steer_to_yaw_rate(steer_cmd, speed_ms);
+        eff_ang = normalized_steer_to_yaw_rate(steer_cmd, signed_speed_ms);
       } else {
         cmd_is_fresh =
           has_cmd_vel_ &&
           std::chrono::duration<double>(wall_now - last_cmd_vel_time_).count() <= cmd_vel_timeout_s_;
         current_angular_cmd = current_angular_cmd_;
-        eff_ang = cmd_is_fresh ? command_to_yaw_rate(current_angular_cmd, speed_ms) : 0.0;
+        eff_ang = cmd_is_fresh ? command_to_yaw_rate(current_angular_cmd, signed_speed_ms) : 0.0;
       }
     }
     {
@@ -279,7 +287,7 @@ private:
     }
 
     // Suppress yaw when near-stationary (no pivot turns unless enabled)
-    if (!pivot_turn_ && std::abs(speed_ms) < min_speed_turn_) eff_ang = 0.0;
+    if (!pivot_turn_ && std::abs(signed_speed_ms) < min_speed_turn_) eff_ang = 0.0;
     eff_ang = std::clamp(eff_ang * (msg->model_state_valid ? 1.0 : yaw_slip_factor_),
                          -VehicleParams::max_yaw_rate_rad_s,
                           VehicleParams::max_yaw_rate_rad_s);

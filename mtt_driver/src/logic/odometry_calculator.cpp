@@ -27,6 +27,7 @@ OdometryOutput SingleTrailerOdometry::update(const OdometryInput& input)
 {
   const double cur_abs_m = input.distance_km * 1000.0;
   const double heading_prev = heading_;
+  const bool use_distance_delta = !input.synthetic_model_valid;
 
   // Encoder delta distance
   std::optional<double> delta_m{};
@@ -36,13 +37,13 @@ OdometryOutput SingleTrailerOdometry::update(const OdometryInput& input)
   last_abs_m_ = cur_abs_m;
 
   // Signed speed
-  double speed_ms = 0.0;
-  if (delta_m && input.dt > 0.001)
+  double speed_ms = input.speed_ms;
+  if (use_distance_delta && delta_m && input.dt > 0.001)
     speed_ms = (*delta_m * input.direction_sign) / input.dt;
-  else
-    speed_ms = input.speed_ms;
 
-  const double ds = delta_m ? (*delta_m * input.direction_sign) : (speed_ms * input.dt);
+  const double ds = (use_distance_delta && delta_m)
+    ? (*delta_m * input.direction_sign)
+    : (speed_ms * input.dt);
   const double commanded_phi = input.synthetic_model_valid
     ? input.articulation_command_rad
     : VehicleParams::normalized_steer_to_articulation_rad(input.steer_cmd);
@@ -134,13 +135,19 @@ DualDifferentialOdometry::DualDifferentialOdometry(double track_width_m)
 OdometryOutput DualDifferentialOdometry::update(const OdometryInput& input)
 {
   const double abs_m = input.distance_km * 1000.0;
+  const bool use_distance_delta = !input.synthetic_model_valid;
 
   if (!last_abs_m_) { last_abs_m_ = abs_m; }
 
   const double delta = abs_m - *last_abs_m_;
   last_abs_m_  = abs_m;
 
-  const double ds = delta * input.direction_sign;
+  const double speed_ms = use_distance_delta && input.dt > 1e-6
+    ? (delta * input.direction_sign) / input.dt
+    : input.speed_ms;
+  const double ds = use_distance_delta
+    ? delta * input.direction_sign
+    : speed_ms * input.dt;
   const double dtheta = input.angular_velocity * input.dt;
   const double heading_mid = theta_ + 0.5 * dtheta;
 
@@ -152,7 +159,7 @@ OdometryOutput DualDifferentialOdometry::update(const OdometryInput& input)
   out.x       = x_;
   out.y       = y_;
   out.heading = theta_;
-  out.vx      = input.speed_ms;
+  out.vx      = speed_ms;
   out.wz      = input.angular_velocity;
   return out;
 }
@@ -183,19 +190,36 @@ DualSerpentineOdometry::DualSerpentineOdometry(double wheelbase_m)
 OdometryOutput DualSerpentineOdometry::update(const OdometryInput& input)
 {
   const double cur_abs = input.distance_km * 1000.0;
+  const bool use_distance_delta = !input.synthetic_model_valid;
 
   double ds = 0.0;
   if (!last_abs_m_) {
     last_abs_m_ = cur_abs;
   } else {
-    ds = (cur_abs - *last_abs_m_) * input.direction_sign;
+    if (use_distance_delta) {
+      ds = (cur_abs - *last_abs_m_) * input.direction_sign;
+    }
     last_abs_m_ = cur_abs;
   }
+  const double speed_ms = use_distance_delta
+    ? (input.direction_sign * std::abs(input.speed_ms))
+    : input.speed_ms;
+  if (!use_distance_delta) {
+    ds = speed_ms * input.dt;
+  }
 
-  const double articulation = VehicleParams::normalized_steer_to_articulation_rad(input.steer_cmd);
+  const double articulation = input.synthetic_model_valid
+    ? input.articulation_effective_rad
+    : VehicleParams::normalized_steer_to_articulation_rad(input.steer_cmd);
   double dtheta = 0.0;
 
-  if (std::abs(articulation) < 1e-9 || wheelbase_m_ < 1e-9) {
+  if (input.synthetic_model_valid) {
+    dtheta = input.yaw_rate_effective_rad_s * input.dt;
+    const double heading_mid = th_ + 0.5 * dtheta;
+    x_ += ds * std::cos(heading_mid);
+    y_ += ds * std::sin(heading_mid);
+    th_ = std::atan2(std::sin(th_ + dtheta), std::cos(th_ + dtheta));
+  } else if (std::abs(articulation) < 1e-9 || wheelbase_m_ < 1e-9) {
     x_ += ds * std::cos(th_);
     y_ += ds * std::sin(th_);
   } else {
@@ -211,14 +235,14 @@ OdometryOutput DualSerpentineOdometry::update(const OdometryInput& input)
     th_ = std::atan2(std::sin(th_ + dtheta), std::cos(th_ + dtheta));
   }
 
-  const double v = input.direction_sign * std::abs(input.speed_ms);
-
   OdometryOutput out;
   out.x       = x_;
   out.y       = y_;
   out.heading = th_;
-  out.vx      = v;
-  out.wz      = input.dt > 1e-6 ? dtheta / input.dt : 0.0;
+  out.vx      = speed_ms;
+  out.wz      = input.synthetic_model_valid
+    ? input.yaw_rate_effective_rad_s
+    : (input.dt > 1e-6 ? dtheta / input.dt : 0.0);
   return out;
 }
 

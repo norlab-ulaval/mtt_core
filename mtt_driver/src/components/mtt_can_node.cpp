@@ -494,8 +494,9 @@ void MttCanNode::publish_vehicle_data()
       const auto& synthetic_state = synthetic_motion_model_.step(motion_command);
       synthetic_distance_m_ = synthetic_state.cumulative_distance_m;
       synthetic_distance_m = synthetic_state.cumulative_distance_m;
-      synthetic_speed_ms = std::abs(synthetic_state.v_eff_ms);
-      synthetic_speed_kmh = synthetic_speed_ms * 3.6;
+      const double synthetic_abs_speed_ms = std::abs(synthetic_state.v_eff_ms);
+      synthetic_speed_ms = synthetic_state.v_eff_ms;
+      synthetic_speed_kmh = synthetic_state.v_eff_ms * 3.6;
       synthetic_model_command_linear_speed_ms = synthetic_state.v_command_ms;
       synthetic_model_speed_ms = synthetic_state.v_eff_ms;
       synthetic_model_articulation_command_rad = synthetic_state.phi_command_rad;
@@ -509,7 +510,7 @@ void MttCanNode::publish_vehicle_data()
       constexpr double encoder_ratio = VehicleParams::encoder_final_ratio();
       constexpr double track_length_m = VehicleParams::track_length_m;
       if (encoder_ratio > 0.0 && track_length_m > 1e-9) {
-        const double instant_rps = synthetic_speed_ms * encoder_ratio / track_length_m;
+        const double instant_rps = synthetic_abs_speed_ms * encoder_ratio / track_length_m;
         const double cumulative_ticks = synthetic_distance_m_ * encoder_ratio / track_length_m;
         synthetic_instant_rps = static_cast<uint16_t>(std::clamp(
           std::llround(instant_rps),
@@ -555,10 +556,14 @@ void MttCanNode::publish_vehicle_data()
   const int8_t reported_temp_b_raw =
     tachometer_is_synthetic ? synthetic_temp_b : tach_snap.reading.temperature_b;
   can::Direction reported_direction = inferred_tachometer_direction;
-  if (tachometer_is_synthetic && synthetic_model_state_valid && std::abs(synthetic_model_speed_ms) > 1e-4) {
-    reported_direction = synthetic_model_speed_ms < 0.0
-      ? can::Direction::Reverse
-      : can::Direction::Forward;
+  if (tachometer_is_synthetic) {
+    const double signed_speed_for_direction =
+      std::abs(synthetic_speed_ms) > 1e-4 ? synthetic_speed_ms : synthetic_model_speed_ms;
+    if (std::abs(signed_speed_for_direction) > 1e-4) {
+      reported_direction = signed_speed_for_direction < 0.0
+        ? can::Direction::Reverse
+        : can::Direction::Forward;
+    }
   }
 
   // Tachometer message — always published so that mtt_odometry_node stays alive
