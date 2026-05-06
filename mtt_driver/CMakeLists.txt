@@ -195,9 +195,32 @@ rclcpp_components_register_node(mtt_synthetic_tachometer_node
 )
 
 # ────────────────────────────────────────────────────────────────────
+# COMPONENT: mtt_joint_state_builder_node (ROS 2 node — shared articulation view)
+# Builds a consistent joint-state stream for replay, live runtime, and simulation.
+# ────────────────────────────────────────────────────────────────────
+add_library(mtt_joint_state_builder_node SHARED
+  src/components/mtt_joint_state_builder_node.cpp
+)
+target_include_directories(mtt_joint_state_builder_node PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+ament_target_dependencies(mtt_joint_state_builder_node
+  rclcpp
+  rclcpp_components
+  sensor_msgs
+  std_msgs
+  mtt_msgs
+)
+rclcpp_components_register_node(mtt_joint_state_builder_node
+  PLUGIN "mtt::MttJointStateBuilderNode"
+  EXECUTABLE mtt_joint_state_builder_node_exe
+)
+
+# ────────────────────────────────────────────────────────────────────
 # Install
 # ────────────────────────────────────────────────────────────────────
-install(TARGETS mtt_logic mtt_hardware mtt_can_node mtt_odometry_node mtt_health_monitor_node mtt_teleop_joy_node teleop_cmd_smoother_node mtt_synthetic_tachometer_node
+install(TARGETS mtt_logic mtt_hardware mtt_can_node mtt_odometry_node mtt_health_monitor_node mtt_teleop_joy_node teleop_cmd_smoother_node mtt_synthetic_tachometer_node mtt_joint_state_builder_node
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION bin

@@ -245,7 +245,7 @@ def generate_launch_description():
                                 'base_frame': LaunchConfiguration('base_frame'),
                                 'odom_frame': LaunchConfiguration('odom_frame'),
                                 'broadcast_tf': LaunchConfiguration('odometry_broadcast_tf'),
-                                'publish_runtime_joint_states': LaunchConfiguration('publish_runtime_joint_states'),
+                                'publish_runtime_joint_states': False,
                                 'runtime_joint_states_topic': LaunchConfiguration('runtime_joint_states_topic'),
                             }],
                             extra_arguments=[{'use_intra_process_comms': True}],
@@ -268,6 +268,22 @@ def generate_launch_description():
                 )
             ]),
 
+            Node(
+                package='mtt_driver',
+                executable='mtt_joint_state_builder_node_exe',
+                name='mtt_joint_state_builder_node',
+                parameters=[
+                    LaunchConfiguration('driver_params_file'),
+                    {
+                        'use_sim_time': LaunchConfiguration('use_sim_time'),
+                        'joint_state_topic': LaunchConfiguration('runtime_joint_states_topic'),
+                    },
+                ],
+                output='screen',
+                respawn=True,
+                respawn_delay=2.0,
+                condition=IfCondition(LaunchConfiguration('publish_runtime_joint_states')),
+            ),
             Node(
                 package='joy_linux',
                 executable='joy_linux_node',

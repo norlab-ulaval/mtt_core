@@ -27,6 +27,10 @@ def launch_sim_description(context, *args, **kwargs):
     namespace = LaunchConfiguration('namespace').perform(context)
     use_sim_time = LaunchConfiguration('use_sim_time')
     robot_sdf_path = LaunchConfiguration('robot_sdf').perform(context)
+    driver_launch_dir = os.path.join(
+        get_package_share_directory('mtt_driver'),
+        'launch',
+    )
 
     robot_description_content = xacro.process_file(
         robot_sdf_path,
@@ -62,28 +66,24 @@ def launch_sim_description(context, *args, **kwargs):
             ],
             remappings=[],
         ),
-        # MTT odometry node (runs motion model, publishes joint states)
-        Node(
-            package='mtt_driver',
-            executable='mtt_odometry_node_exe',
-            name='mtt_odometry_node',
-            namespace=namespace,
-            output='screen',
-            parameters=[
-                {
-                    'use_sim_time': use_sim_time,
-                    'publish_runtime_joint_states': True,
-                    'runtime_joint_states_topic': 'joint_states',
-                    'model_articulation_response_gain': 0.8,
-                    'model_max_articulation_deg': 60.0,
-                    'broadcast_tf': False,  # Let robot_state_publisher handle TF
-                }
-            ],
-            remappings=[
-                ('/mtt_tachometer', 'mtt_tachometer'),
-                ('/mtt_odometry', 'mtt_odometry'),
-                ('/joint_states', 'joint_states'),
-            ],
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(
+                os.path.join(driver_launch_dir, 'mtt.launch.py')
+            ),
+            launch_arguments={
+                'use_sim_time': use_sim_time,
+                'setup_vcan': 'false',
+                'setup_real_can': 'false',
+                'enable_joystick': LaunchConfiguration('enable_joystick'),
+                'joy_device': LaunchConfiguration('joy_device'),
+                'joy_deadzone': LaunchConfiguration('joy_deadzone'),
+                'base_frame': LaunchConfiguration('base_frame'),
+                'odom_frame': LaunchConfiguration('odom_frame'),
+                'odometry_broadcast_tf': 'true',
+                'publish_runtime_joint_states': 'true',
+                'runtime_joint_states_topic': 'joint_states',
+                'use_rviz': 'false',
+            }.items(),
         ),
         # Robot state publisher (converts URDF + joint_states -> TF)
         Node(
@@ -124,7 +124,7 @@ def generate_launch_description():
     use_sim_time = LaunchConfiguration('use_sim_time')
     base_frame = LaunchConfiguration('base_frame')
     odom_frame = LaunchConfiguration('odom_frame')
-    odom_topic = LaunchConfiguration('odom_topic')
+    ground_truth_odom_topic = LaunchConfiguration('ground_truth_odom_topic')
     world = LaunchConfiguration('world')
     pose = {
         'x': LaunchConfiguration('x_pose', default='-2.00'),
@@ -241,6 +241,21 @@ def generate_launch_description():
         default_value='true',
         description='Use simulation (Gazebo) clock if true',
     )
+    declare_enable_joystick_cmd = DeclareLaunchArgument(
+        'enable_joystick',
+        default_value='false',
+        description='Enable the same joystick stack used on the real robot',
+    )
+    declare_joy_device_cmd = DeclareLaunchArgument(
+        'joy_device',
+        default_value='/dev/input/js0',
+        description='Joystick device path for the simulation control stack',
+    )
+    declare_joy_deadzone_cmd = DeclareLaunchArgument(
+        'joy_deadzone',
+        default_value='0.15',
+        description='Joystick deadzone for the simulation control stack',
+    )
 
     declare_base_frame_cmd = DeclareLaunchArgument(
         'base_frame',
@@ -254,10 +269,10 @@ def generate_launch_description():
         description='Odom frame published by the simulation odom bridge',
     )
 
-    declare_odom_topic_cmd = DeclareLaunchArgument(
-        'odom_topic',
-        default_value='mtt_odometry',
-        description='Odometry topic published from Gazebo ground-truth pose',
+    declare_ground_truth_odom_topic_cmd = DeclareLaunchArgument(
+        'ground_truth_odom_topic',
+        default_value='mtt_odometry/ground_truth',
+        description='Ground-truth odometry topic published from the Gazebo pose bridge',
     )
     
     # TODO: check if other config isnt better
@@ -381,6 +396,7 @@ def generate_launch_description():
             'namespace': namespace,
             'use_namespace': use_namespace,
             'use_sim_time': use_sim_time,
+            'enable_joint_state_broadcaster': 'false',
         }.items(),
     )
 
@@ -394,10 +410,11 @@ def generate_launch_description():
                 'use_sim_time': use_sim_time,
                 'base_frame': base_frame,
                 'odom_frame': odom_frame,
-                'odom_topic': odom_topic,
+                'odom_topic': ground_truth_odom_topic,
                 'pose_topic': 'gz_pose',
                 'source_child_frame': robot_name,
                 'source_frame': 'default',
+                'broadcast_tf': False,
             }
         ],
     )
@@ -414,9 +431,12 @@ def generate_launch_description():
     # 
 
     ld.add_action(declare_use_sim_time_cmd)
+    ld.add_action(declare_enable_joystick_cmd)
+    ld.add_action(declare_joy_device_cmd)
+    ld.add_action(declare_joy_deadzone_cmd)
     ld.add_action(declare_base_frame_cmd)
     ld.add_action(declare_odom_frame_cmd)
-    ld.add_action(declare_odom_topic_cmd)
+    ld.add_action(declare_ground_truth_odom_topic_cmd)
 
     # temp zone
     ld.add_action(declare_params_file_cmd)

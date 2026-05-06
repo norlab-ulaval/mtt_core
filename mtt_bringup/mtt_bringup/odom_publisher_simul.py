@@ -16,6 +16,7 @@ class OdomPublisher(Node):
         self.declare_parameter('pose_topic', 'gz_pose')
         self.declare_parameter('source_child_frame', '')
         self.declare_parameter('source_frame', '')
+        self.declare_parameter('broadcast_tf', True)
 
         base_frame = self.get_parameter('base_frame').get_parameter_value().string_value
         robot_frame = self.get_parameter('robot_frame').get_parameter_value().string_value
@@ -25,6 +26,7 @@ class OdomPublisher(Node):
         self.pose_topic = self.get_parameter('pose_topic').get_parameter_value().string_value
         self.source_child_frame = self.get_parameter('source_child_frame').get_parameter_value().string_value
         self.source_frame = self.get_parameter('source_frame').get_parameter_value().string_value
+        self.broadcast_tf = self.get_parameter('broadcast_tf').get_parameter_value().bool_value
 
         self.odom_pub = self.create_publisher(Odometry, self.odom_topic, 10)
         self.sub = self.create_subscription(TransformStamped, self.pose_topic, self.callback, 10)
@@ -51,7 +53,8 @@ class OdomPublisher(Node):
         t.transform.translation.y = pose_msg.transform.translation.y
         t.transform.translation.z = pose_msg.transform.translation.z
         t.transform.rotation = pose_msg.transform.rotation
-        self.tf_broadcaster.sendTransform(t)
+        if self.broadcast_tf:
+            self.tf_broadcaster.sendTransform(t)
 
         # Publish Odometry message
         odom_msg = Odometry()

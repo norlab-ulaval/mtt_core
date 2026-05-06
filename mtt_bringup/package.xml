@@ -11,6 +11,8 @@
 
   <exec_depend>rclpy</exec_depend>
   <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>mtt_control</exec_depend>
+  <exec_depend>mtt_driver</exec_depend>
   <exec_depend>mtt_msgs</exec_depend>
   <exec_depend>nav_msgs</exec_depend>
   <exec_depend>norlab_controllers_msgs</exec_depend>

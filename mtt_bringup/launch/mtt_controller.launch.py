@@ -24,9 +24,17 @@ def generate_launch_description():
     declared_arguments = [] 
     declared_arguments.append(
         launch.actions.DeclareLaunchArgument (name="gui", default_value="true", description="Start the RViz2 GUI."))
+    declared_arguments.append(
+        launch.actions.DeclareLaunchArgument(
+            name="enable_joint_state_broadcaster",
+            default_value="true",
+            description="Spawn the Gazebo joint_state_broadcaster",
+        )
+    )
     
     # Initialize Arguments
     gui = LaunchConfiguration("gui")
+    enable_joint_state_broadcaster = LaunchConfiguration("enable_joint_state_broadcaster")
 
 
     # joint state broadcaster
@@ -34,6 +42,7 @@ def generate_launch_description():
         package="controller_manager",
         executable="spawner",
         arguments=["joint_state_broadcaster"],
+        condition=launch.conditions.IfCondition(enable_joint_state_broadcaster),
     )
 
     robot_controller_spawner = launch_ros.actions.Node(
@@ -60,6 +69,7 @@ def generate_launch_description():
     
     ld = launch.LaunchDescription()
     ld.add_action(declared_arguments[0])
+    ld.add_action(declared_arguments[1])
 
     # Only necessary when this launch is launched alone
     # ld.add_action(robot_state_publisher_node)
