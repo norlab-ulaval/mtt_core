@@ -91,8 +91,15 @@ void MttJointStateBuilderNode::on_tachometer(const mtt_msgs::msg::MttTachometerD
 
 void MttJointStateBuilderNode::publish_joint_states()
 {
+  bool use_sim_time = false;
+  (void)get_parameter("use_sim_time", use_sim_time);
+  const auto stamp = now();
+  if (use_sim_time && (stamp.nanoseconds() <= 0 || stamp.seconds() >= 1.0e8)) {
+    return;
+  }
+
   sensor_msgs::msg::JointState msg;
-  msg.header.stamp = now();
+  msg.header.stamp = stamp;
   msg.name = joint_names_;
   msg.position.resize(joint_names_.size(), 0.0);
 

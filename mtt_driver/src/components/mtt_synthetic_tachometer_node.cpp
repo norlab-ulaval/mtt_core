@@ -172,8 +172,23 @@ private:
     return std::chrono::duration<double>(now_tp - last_cmd_vel_time_).count() <= command_timeout_s_;
   }
 
+  bool stamp_clock_ready()
+  {
+    bool use_sim_time = false;
+    (void)get_parameter("use_sim_time", use_sim_time);
+    if (!use_sim_time) {
+      return true;
+    }
+    const auto stamp = now();
+    return stamp.nanoseconds() > 0 && stamp.seconds() < 1.0e8;
+  }
+
   void publish_synthetic_tachometer()
   {
+    if (!stamp_clock_ready()) {
+      return;
+    }
+
     const auto wall_now = std::chrono::steady_clock::now();
     double dt = 1.0 / std::max(1.0, publish_rate_hz_);
     if (publish_initialized_) {

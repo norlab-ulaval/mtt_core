@@ -131,12 +131,19 @@ public:
         std::chrono::milliseconds(100),
         [this]() {
           if (!broadcast_tf_ || !tf_broadcaster_) return;
+          if (!last_tacho_wall_time_) return;
+          bool use_sim_time = false;
+          (void)get_parameter("use_sim_time", use_sim_time);
+          const auto stamp = now();
+          if (use_sim_time && (stamp.nanoseconds() <= 0 || stamp.seconds() >= 1.0e8)) {
+            return;
+          }
           // Only publish if no tachometer update in the last 200 ms
           auto now_tp = std::chrono::steady_clock::now();
           if (now_tp - last_tacho_time_ < std::chrono::milliseconds(200)) return;
           geometry_msgs::msg::TransformStamped tf;
           double articulation_angle = 0.0;
-          tf.header.stamp    = now();
+          tf.header.stamp    = stamp;
           tf.header.frame_id = odom_frame_;
           tf.child_frame_id  = base_frame_;
           {

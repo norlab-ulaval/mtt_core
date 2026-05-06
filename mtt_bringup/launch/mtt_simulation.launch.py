@@ -55,6 +55,7 @@ def launch_sim_description(context, *args, **kwargs):
             output='screen',
             parameters=[
                 {
+                    'use_sim_time': use_sim_time,
                     'cmd_vel_topic': 'cmd_vel',
                     'tacho_topic': 'mtt_tachometer',
                     'publish_rate_hz': 50.0,
@@ -75,6 +76,7 @@ def launch_sim_description(context, *args, **kwargs):
                 'use_sim_time': use_sim_time,
                 'setup_vcan': 'false',
                 'setup_real_can': 'false',
+                'enable_operator_control': LaunchConfiguration('enable_operator_control'),
                 'enable_joystick': LaunchConfiguration('enable_joystick'),
                 'joy_device': LaunchConfiguration('joy_device'),
                 'joy_deadzone': LaunchConfiguration('joy_deadzone'),
@@ -246,6 +248,11 @@ def generate_launch_description():
         'enable_joystick',
         default_value='false',
         description='Enable the same joystick stack used on the real robot',
+    )
+    declare_enable_operator_control_cmd = DeclareLaunchArgument(
+        'enable_operator_control',
+        default_value='true',
+        description='Enable the shared operator control stack inside the simulation launch',
     )
     declare_joy_device_cmd = DeclareLaunchArgument(
         'joy_device',
@@ -437,6 +444,7 @@ def generate_launch_description():
     # 
 
     ld.add_action(declare_use_sim_time_cmd)
+    ld.add_action(declare_enable_operator_control_cmd)
     ld.add_action(declare_enable_joystick_cmd)
     ld.add_action(declare_joy_device_cmd)
     ld.add_action(declare_joy_deadzone_cmd)

@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 import os
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, ExecuteProcess, GroupAction, OpaqueFunction
+from launch.actions import DeclareLaunchArgument, ExecuteProcess, GroupAction, OpaqueFunction, IncludeLaunchDescription
 from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch.conditions import IfCondition
 from launch_ros.actions import Node, PushROSNamespace, ComposableNodeContainer
 from launch_ros.descriptions import ComposableNode
 from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
+from launch.launch_description_sources import PythonLaunchDescriptionSource
 
 
 def generate_launch_description():
@@ -147,6 +148,11 @@ def generate_launch_description():
             description='Enable joystick input node'
         ),
         DeclareLaunchArgument(
+            'enable_operator_control',
+            default_value='true',
+            description='Enable the operator control stack (joystick, manual filter, mode manager, arbiter)'
+        ),
+        DeclareLaunchArgument(
             'joy_device',
             default_value='/dev/input/js0',
             description='Joystick device path for the built-in robot teleop'
@@ -284,67 +290,18 @@ def generate_launch_description():
                 respawn_delay=2.0,
                 condition=IfCondition(LaunchConfiguration('publish_runtime_joint_states')),
             ),
-            Node(
-                package='joy_linux',
-                executable='joy_linux_node',
-                name='joy_node',
-                parameters=[{
+            IncludeLaunchDescription(
+                PythonLaunchDescriptionSource(
+                    os.path.join(control_share, 'launch', 'operator_control.launch.py')
+                ),
+                launch_arguments={
                     'use_sim_time': LaunchConfiguration('use_sim_time'),
-                    'deadzone': LaunchConfiguration('joy_deadzone'),
-                    'device_name': LaunchConfiguration('joy_device'),
-                    'autorepeat_rate': 20.0,
-                }],
-                output='screen',
-                condition=IfCondition(LaunchConfiguration('enable_joystick')),
-                respawn=True
-            ),
-            Node(
-                package='mtt_control',
-                executable='mtt_operator_input_node',
-                name='mtt_operator_input_node',
-                parameters=[
-                    LaunchConfiguration('control_params_file'),
-                    {'use_sim_time': LaunchConfiguration('use_sim_time')},
-                ],
-                output='screen',
-                respawn=True,
-                respawn_delay=2.0,
-            ),
-            Node(
-                package='mtt_control',
-                executable='mtt_manual_cmd_filter_node',
-                name='mtt_manual_cmd_filter_node',
-                parameters=[
-                    LaunchConfiguration('control_params_file'),
-                    {'use_sim_time': LaunchConfiguration('use_sim_time')},
-                ],
-                output='screen',
-                respawn=True,
-                respawn_delay=2.0,
-            ),
-            Node(
-                package='mtt_control',
-                executable='mtt_mode_manager_node',
-                name='mtt_mode_manager_node',
-                parameters=[
-                    LaunchConfiguration('control_params_file'),
-                    {'use_sim_time': LaunchConfiguration('use_sim_time')},
-                ],
-                output='screen',
-                respawn=True,
-                respawn_delay=2.0,
-            ),
-            Node(
-                package='mtt_control',
-                executable='mtt_cmd_arbiter_node',
-                name='mtt_cmd_arbiter_node',
-                parameters=[
-                    LaunchConfiguration('control_params_file'),
-                    {'use_sim_time': LaunchConfiguration('use_sim_time')},
-                ],
-                output='screen',
-                respawn=True,
-                respawn_delay=2.0,
+                    'control_params_file': LaunchConfiguration('control_params_file'),
+                    'enable_joystick': LaunchConfiguration('enable_joystick'),
+                    'joy_device': LaunchConfiguration('joy_device'),
+                    'joy_deadzone': LaunchConfiguration('joy_deadzone'),
+                }.items(),
+                condition=IfCondition(LaunchConfiguration('enable_operator_control')),
             ),
         ]),
     ])
