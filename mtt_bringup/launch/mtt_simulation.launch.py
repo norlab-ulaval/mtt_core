@@ -26,6 +26,7 @@ import xacro
 def launch_sim_description(context, *args, **kwargs):
     namespace = LaunchConfiguration('namespace').perform(context)
     use_sim_time = LaunchConfiguration('use_sim_time')
+    robot_description_xacro_path = LaunchConfiguration('robot_description_xacro').perform(context)
     robot_sdf_path = LaunchConfiguration('robot_sdf').perform(context)
     driver_launch_dir = os.path.join(
         get_package_share_directory('mtt_driver'),
@@ -33,7 +34,7 @@ def launch_sim_description(context, *args, **kwargs):
     )
 
     robot_description_content = xacro.process_file(
-        robot_sdf_path,
+        robot_description_xacro_path,
         mappings={'namespace': namespace},
     ).toxml()
     robot_description_content = re.sub(
@@ -302,6 +303,11 @@ def generate_launch_description():
 
         description='Full path to the robot xacro file used to spawn the robot in Gazebo',
     )
+    declare_robot_description_xacro_cmd = DeclareLaunchArgument(
+        'robot_description_xacro',
+        default_value=os.path.join(mtt_description_dir, 'urdf', 'robot_less_collision.urdf.xacro'),
+        description='Full path to the robot xacro file used by robot_state_publisher in simulation',
+    )
 
     # RVIZ
     rviz_cmd = IncludeLaunchDescription(
@@ -344,7 +350,7 @@ def generate_launch_description():
         cmd=['xacro', '-o', world_sdf, ['headless:=', headless], world], output='screen')
 
     start_gz_sim = ExecuteProcess(
-        cmd=['gz', 'sim', '-r', '-s', os.path.join(mtt_description_dir, 'worlds', 'test_world.sdf')],
+        cmd=['gz', 'sim', '-r', '-s', world_sdf],
         output='screen',
         condition=IfCondition(use_simulator)
     )
@@ -368,7 +374,7 @@ def generate_launch_description():
                         'gz_sim.launch.py')
         ),
         condition=IfCondition(PythonExpression(
-            [use_simulator, ' and not ', headless])),
+            ['"', use_simulator, '".lower() == "true" and "', headless, '".lower() != "true"'])),
         launch_arguments={'gz_args': ['-v4 -g ']}.items(),
     )
 
@@ -460,6 +466,7 @@ def generate_launch_description():
     ld.add_action(declare_world_cmd)
     ld.add_action(declare_robot_name_cmd)
     ld.add_action(declare_robot_sdf_cmd)
+    ld.add_action(declare_robot_description_xacro_cmd)
 
     # temp zone
     ld.add_action(declare_use_respawn_cmd)

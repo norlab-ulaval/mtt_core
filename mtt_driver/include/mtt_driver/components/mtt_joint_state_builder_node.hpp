@@ -38,6 +38,8 @@ private:
   double max_articulation_rad_{0.0};
   double trailer_left_link_rest_rad_{0.0};
   double trailer_right_link_rest_rad_{0.0};
+  double drive_joint_radius_m_{0.0202};
+  double drive_joint_rotation_sign_{-1.0};
   double trailer_wheel_radius_m_{0.0508};
   double left_wheel_rotation_sign_{1.0};
   double right_wheel_rotation_sign_{1.0};
@@ -46,17 +48,7 @@ private:
   double cumulative_distance_m_{0.0};
   std::optional<rclcpp::Time> last_tacho_stamp_;
 
-  const std::vector<std::string> joint_names_{
-    "pitch",
-    "yaw",
-    "roll",
-    "Remorque_lien_roue_gauche_joint",
-    "Remorque_lien_roue_droite_joint",
-    "frontleft_wheel",
-    "backleft_wheel",
-    "frontright_wheel",
-    "backright_wheel",
-  };
+  std::vector<std::string> joint_names_;
 
   rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr joint_state_pub_;
   rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr articulation_sub_;

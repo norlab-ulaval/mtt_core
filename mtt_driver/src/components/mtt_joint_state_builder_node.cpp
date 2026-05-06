@@ -30,9 +30,26 @@ MttJointStateBuilderNode::MttJointStateBuilderNode(const rclcpp::NodeOptions & o
     VehicleParams::max_articulation_deg) * M_PI / 180.0;
   trailer_left_link_rest_rad_ = declare_parameter("trailer_left_link_rest_rad", 0.0);
   trailer_right_link_rest_rad_ = declare_parameter("trailer_right_link_rest_rad", 0.0);
+  drive_joint_radius_m_ = declare_parameter("drive_joint_radius_m", VehicleParams::wheel_radius());
+  drive_joint_rotation_sign_ = declare_parameter("drive_joint_rotation_sign", -1.0);
   trailer_wheel_radius_m_ = declare_parameter("trailer_wheel_radius_m", 0.0508);
   left_wheel_rotation_sign_ = declare_parameter("left_wheel_rotation_sign", 1.0);
   right_wheel_rotation_sign_ = declare_parameter("right_wheel_rotation_sign", 1.0);
+
+  joint_names_ = {
+    "pitch",
+    "yaw",
+    "roll",
+    "Remorque_lien_roue_gauche_joint",
+    "Remorque_lien_roue_droite_joint",
+    "frontleft_wheel",
+    "backleft_wheel",
+    "frontright_wheel",
+    "backright_wheel",
+  };
+  for (int i = 1; i <= 20; ++i) {
+    joint_names_.push_back(std::to_string(i) + "_continuous");
+  }
 
   joint_state_pub_ = create_publisher<sensor_msgs::msg::JointState>(joint_state_topic_, 10);
   articulation_sub_ = create_subscription<std_msgs::msg::Float64>(
@@ -92,6 +109,10 @@ void MttJointStateBuilderNode::publish_joint_states()
     (trailer_wheel_radius_m_ > 1e-6)
     ? right_wheel_rotation_sign_ * cumulative_distance_m_ / trailer_wheel_radius_m_
     : 0.0;
+  const double drive_joint_angle =
+    (drive_joint_radius_m_ > 1e-6)
+    ? drive_joint_rotation_sign_ * cumulative_distance_m_ / drive_joint_radius_m_
+    : 0.0;
 
   msg.position[0] = pitch_rest_rad_;
   msg.position[1] = yaw_rest_rad_ + articulation_delta;
@@ -102,6 +123,9 @@ void MttJointStateBuilderNode::publish_joint_states()
   msg.position[6] = left_wheel_angle;
   msg.position[7] = right_wheel_angle;
   msg.position[8] = right_wheel_angle;
+  for (std::size_t i = 9; i < msg.position.size(); ++i) {
+    msg.position[i] = drive_joint_angle;
+  }
 
   joint_state_pub_->publish(std::move(msg));
 }
