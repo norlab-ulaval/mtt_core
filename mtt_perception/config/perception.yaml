@@ -198,8 +198,9 @@ cloud_merger_node:
     normalize_fields: false         # false → preserve original fields if compatible
     remove_invalid_points: false    # remove NaN/Inf only when true (path B only)
 
-    # Optional outputs (disabled by default)
-    publish_filtered: false         # enable /merged_points_filtered with bbox filter
+    # /merged_points_filtered is the primary input for the ICP mapper.
+    # Must be true for live_robot and replay stacks to receive point cloud data.
+    publish_filtered: true          # enable /merged_points_filtered with bbox filter
     publish_debug_inputs: false     # enable /hesai_in_base and /rsairy_in_base
 
     # Self-filter BB1: tractor chassis (base_link: x=forward, y=left, z=up)
@@ -214,9 +215,12 @@ cloud_merger_node:
     bbox_cage_y: [-0.20, 0.20]
     bbox_cage_z: [ 0.70, 1.10]
 
-    # Optional mapping-only self-filter for the trailer body. This affects only
-    # /merged_points_filtered; trailer perception still reads /rsairy_ns/points.
-    enable_trailer_bbox_filter: false
+    # Trailer self-filter for /merged_points_filtered only.
+    # Trailer perception still reads /rsairy_ns/points directly — unaffected.
+    # Dimensions verified against trailer_pose_node geometry:
+    #   hitch at base_link x=-1.45, trailer rear at x≈-3.35, width=0.80 m.
+    #   Margins: +0.25 m on all sides for motion and uncertainty.
+    enable_trailer_bbox_filter: true
     bbox_trailer_x: [-3.60, -0.95]
     bbox_trailer_y: [-0.85,  0.85]
     bbox_trailer_z: [-0.20,  1.30]

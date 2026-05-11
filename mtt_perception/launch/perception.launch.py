@@ -64,8 +64,8 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'publish_filtered',
-            default_value='false',
-            description='Publish /merged_points_filtered from cloud_merger_node',
+            default_value='true',
+            description='Publish /merged_points_filtered from cloud_merger_node (must be true for mapper)',
         ),
         DeclareLaunchArgument(
             'cloud_merger_anchor_sensor',
@@ -94,7 +94,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'cloud_merger_enable_trailer_bbox_filter',
-            default_value='false',
+            default_value='true',
             description='Remove trailer body from /merged_points_filtered for mapping/replay',
         ),
         cloud_merger,
