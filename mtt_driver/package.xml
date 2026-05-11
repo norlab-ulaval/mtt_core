@@ -20,6 +20,8 @@
   <depend>sensor_msgs</depend>
   <depend>tf2_ros</depend>
   <depend>std_srvs</depend>
+  <depend>libboost-system-dev</depend>
+  <depend>libboost-thread-dev</depend>
 
   <!-- Custom message / service packages -->
   <depend>mtt_msgs</depend>

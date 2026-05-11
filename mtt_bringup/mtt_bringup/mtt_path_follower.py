@@ -76,7 +76,9 @@ class MttPathFollower(Node):
         self.declare_parameter("odom_topic", "/mapping/icp_odom")
         self.declare_parameter("cmd_vel_topic", "controller/cmd_vel")
         self.declare_parameter("control_rate_hz", 20.0)
-        self.declare_parameter("local_plan_topic", "/local_plan")
+        # WILN publishes the live control plan on /wiln/control/local_plan.
+        # This is NOT diagnostic-only: it is prioritised over the global path for steering.
+        self.declare_parameter("local_plan_topic", "/wiln/control/local_plan")
         self.declare_parameter("local_plan_timeout_s", 0.5)
         self.declare_parameter("default_speed_ms", 0.60)
         self.declare_parameter("max_speed_ms", 0.80)
@@ -164,8 +166,9 @@ class MttPathFollower(Node):
         )
 
         self.get_logger().info(
-            f"MTT path follower ready (action={self._action_name}, odom={self._odom_topic}, "
-            f"cmd_vel={self._cmd_vel_topic}, v_max={self._max_speed_ms:.2f} m/s)"
+            f"MTT path follower ready — action={self._action_name}  odom={self._odom_topic}  "
+            f"cmd_vel={self._cmd_vel_topic}  local_plan={self._local_plan_topic}  "
+            f"v_max={self._max_speed_ms:.2f} m/s  psi_max={math.degrees(self._psi_max_rad):.1f}°"
         )
 
     def destroy_node(self):

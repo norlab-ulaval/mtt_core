@@ -1,5 +1,7 @@
 #pragma once
 
+#include <mutex>
+
 #include <rclcpp/rclcpp.hpp>
 
 #include <geometry_msgs/msg/twist_stamped.hpp>
@@ -46,6 +48,17 @@ private:
   double angular_omega_n_{10.0};
   double angular_zeta_{1.0};
   double zero_epsilon_{1e-3};
+
+  // Feedforward deceleration brake.
+  // When output > decel_brake_threshold_ and target drops to 0,
+  // the effective target is pushed to -decel_brake_gain_ * output so
+  // the rate limiter overshoots zero and commands brief counter-thrust.
+  // Self-regulating: as output decays toward 0, boost decays too.
+  // Does NOT require tachometer feedback.
+  double decel_brake_gain_{0.0};
+  double decel_brake_threshold_{0.05};
+
+  mutable std::mutex state_mutex_;
 
   VelocityState target_;
   ControlMode current_mode_{ControlMode::Stop};

@@ -9,18 +9,21 @@ namespace mtt_control
 MttOperatorInputNode::MttOperatorInputNode(const rclcpp::NodeOptions & options)
 : rclcpp::Node("mtt_operator_input_node", options)
 {
-  max_linear_speed_ = declare_parameter("max_linear_speed", 1.0);
-  max_angular_command_ = declare_parameter("max_angular_command", 0.6);
-  linear_deadband_ = declare_parameter("linear_deadband", 0.05);
-  angular_deadband_ = declare_parameter("angular_deadband", 0.08);
+  max_linear_speed_ = declare_parameter("max_linear_speed", 0.4);
+  max_angular_command_ = declare_parameter("max_angular_command", 0.4);
+  linear_deadband_ = declare_parameter("linear_deadband", 0.10);
+  angular_deadband_ = declare_parameter("angular_deadband", 0.10);
   linear_expo_ = declare_parameter("linear_expo", 1.2);
   angular_expo_ = declare_parameter("angular_expo", 1.6);
   manual_activity_linear_threshold_ = declare_parameter("manual_activity_linear_threshold", 0.05);
   manual_activity_angular_threshold_ = declare_parameter("manual_activity_angular_threshold", 0.05);
   estop_trigger_threshold_ = declare_parameter("estop_trigger_threshold", -0.10);
   brake_axis_default_ = declare_parameter("brake_axis_default", 1.0);
+  articulation_hold_max_speed_ms_ = declare_parameter("articulation_hold_max_speed_ms", 0.25);
+  articulation_hold_release_deadband_ = declare_parameter("articulation_hold_release_deadband", 0.08);
   deadman_button_index_ = declare_parameter("deadman_button_index", 5);
   light_button_index_ = declare_parameter("light_button_index", 2);
+  articulation_hold_button_index_ = declare_parameter("articulation_hold_button_index", 6);
   linear_axis_index_ = declare_parameter("linear_axis_index", 1);
   angular_axis_index_ = declare_parameter("angular_axis_index", 3);
   brake_axis_index_ = declare_parameter("brake_axis_index", 5);
@@ -29,6 +32,11 @@ MttOperatorInputNode::MttOperatorInputNode(const rclcpp::NodeOptions & options)
   invert_linear_axis_ = declare_parameter("invert_linear_axis", true);
   invert_angular_axis_ = declare_parameter("invert_angular_axis", false);
   enable_brake_axis_ = declare_parameter("enable_brake_axis", true);
+  articulation_hold_enabled_ = declare_parameter("articulation_hold_enabled", true);
+  articulation_hold_reset_on_deadman_release_ =
+    declare_parameter("articulation_hold_reset_on_deadman_release", true);
+  enable_steering_mode_switch_ = declare_parameter("enable_steering_mode_switch", true);
+  steer_mode_switch_button_index_ = declare_parameter("steer_mode_switch_button_index", 4);
 
   joy_sub_ = create_subscription<sensor_msgs::msg::Joy>(
     "joy",
@@ -37,14 +45,76 @@ MttOperatorInputNode::MttOperatorInputNode(const rclcpp::NodeOptions & options)
 
   manual_raw_pub_ = create_publisher<geometry_msgs::msg::TwistStamped>("cmd_vel/manual_raw", 20);
   aux_pub_ = create_publisher<mtt_msgs::msg::MttAuxCommand>("mtt_aux_cmd", 20);
-  deadman_pub_ = create_publisher<std_msgs::msg::Bool>("teleop_deadman", 20);
-  estop_pub_ = create_publisher<std_msgs::msg::Bool>("teleop_estop", 20);
+  deadman_pub_ = create_publisher<std_msgs::msg::Bool>("mtt_control/teleop_deadman", 20);
+  estop_pub_ = create_publisher<std_msgs::msg::Bool>("mtt_control/teleop_estop", 20);
   manual_activity_pub_ = create_publisher<std_msgs::msg::Bool>("mtt_control/manual_activity", 20);
+  articulation_mode_pub_ =
+    create_publisher<std_msgs::msg::String>("mtt_control/articulation_mode", 20);
+  articulation_hold_active_pub_ =
+    create_publisher<std_msgs::msg::Bool>("mtt_control/articulation_hold_active", 20);
+
+  publish_articulation_hold_state(false);
+
+  can_steer_mode_client_ = create_client<mtt_interfaces::srv::SetSteerControlMode>(
+    "mtt/set_steer_control_mode");
+  odom_steer_mode_client_ = create_client<mtt_interfaces::srv::SetSteerControlMode>(
+    "mtt/odometry/set_steer_control_mode");
+}
+
+void MttOperatorInputNode::toggle_steering_mode()
+{
+  const std::string new_mode =
+    (current_steer_mode_ == "closed_loop") ? "open_loop" : "closed_loop";
+
+  auto req = std::make_shared<mtt_interfaces::srv::SetSteerControlMode::Request>();
+  req->control_mode = new_mode;
+  req->max_rate  = 0.0;
+  req->max_angle = 0.0;
+
+  if (can_steer_mode_client_->service_is_ready()) {
+    can_steer_mode_client_->async_send_request(
+      req,
+      [this](rclcpp::Client<mtt_interfaces::srv::SetSteerControlMode>::SharedFuture f) {
+        if (!f.get()->success) {
+          RCLCPP_WARN(get_logger(), "CAN steer mode service rejected: %s",
+            f.get()->message.c_str());
+        }
+      });
+  } else {
+    RCLCPP_WARN(get_logger(), "CAN steer mode service not available, skipping");
+  }
+
+  if (odom_steer_mode_client_->service_is_ready()) {
+    odom_steer_mode_client_->async_send_request(
+      req,
+      [this](rclcpp::Client<mtt_interfaces::srv::SetSteerControlMode>::SharedFuture f) {
+        if (!f.get()->success) {
+          RCLCPP_WARN(get_logger(), "Odom steer mode service rejected: %s",
+            f.get()->message.c_str());
+        }
+      });
+  } else {
+    RCLCPP_WARN(get_logger(), "Odom steer mode service not available, skipping");
+  }
+
+  current_steer_mode_ = new_mode;
+  RCLCPP_INFO(get_logger(), "Steer mode → %s", current_steer_mode_.c_str());
 }
 
 bool MttOperatorInputNode::trigger_pressed(const JoystickState & state, int axis_index) const
 {
   return state.axis_value(static_cast<std::size_t>(axis_index), 1.0F) < estop_trigger_threshold_;
+}
+
+void MttOperatorInputNode::publish_articulation_hold_state(bool hold_active)
+{
+  auto mode_msg = std_msgs::msg::String();
+  mode_msg.data = articulation_hold_mode_ ? "hold" : "return_to_zero";
+  articulation_mode_pub_->publish(mode_msg);
+
+  auto active_msg = std_msgs::msg::Bool();
+  active_msg.data = hold_active;
+  articulation_hold_active_pub_->publish(active_msg);
 }
 
 void MttOperatorInputNode::on_joy(const sensor_msgs::msg::Joy::SharedPtr msg)
@@ -54,8 +124,24 @@ void MttOperatorInputNode::on_joy(const sensor_msgs::msg::Joy::SharedPtr msg)
   const bool deadman_pressed = joystick_state_.button_pressed(static_cast<std::size_t>(deadman_button_index_));
   const bool deadman_released = previous_deadman_pressed_ && !deadman_pressed;
   const bool light_rising = joystick_state_.button_rising(static_cast<std::size_t>(light_button_index_));
+  const bool articulation_hold_rising =
+    articulation_hold_enabled_ &&
+    joystick_state_.button_rising(static_cast<std::size_t>(articulation_hold_button_index_));
+  const bool steer_mode_rising =
+    enable_steering_mode_switch_ &&
+    joystick_state_.button_rising(static_cast<std::size_t>(steer_mode_switch_button_index_));
   if (light_rising) {
     light_state_ = !light_state_;
+  }
+  if (articulation_hold_rising) {
+    articulation_hold_mode_ = !articulation_hold_mode_;
+    if (!articulation_hold_mode_) {
+      has_held_angular_command_ = false;
+      held_angular_command_ = 0.0;
+    }
+  }
+  if (steer_mode_rising) {
+    toggle_steering_mode();
   }
 
   float linear_axis = joystick_state_.axis_value(static_cast<std::size_t>(linear_axis_index_));
@@ -74,11 +160,32 @@ void MttOperatorInputNode::on_joy(const sensor_msgs::msg::Joy::SharedPtr msg)
     trigger_pressed(joystick_state_, estop_left_trigger_axis_) &&
     trigger_pressed(joystick_state_, estop_right_trigger_axis_);
 
+  const double linear_command = max_linear_speed_ * linear_axis;
+  double angular_command = max_angular_command_ * angular_axis;
+  bool articulation_hold_active = false;
+
+  if (!deadman_pressed || estop_active) {
+    angular_command = 0.0;
+    if (articulation_hold_reset_on_deadman_release_) {
+      has_held_angular_command_ = false;
+      held_angular_command_ = 0.0;
+    }
+  } else if (articulation_hold_enabled_ && articulation_hold_mode_ &&
+             std::abs(linear_command) <= articulation_hold_max_speed_ms_) {
+    if (std::abs(angular_axis) > articulation_hold_release_deadband_) {
+      held_angular_command_ = angular_command;
+      has_held_angular_command_ = true;
+    } else if (has_held_angular_command_) {
+      angular_command = held_angular_command_;
+      articulation_hold_active = std::abs(angular_command) > manual_activity_angular_threshold_;
+    }
+  }
+
   const bool manual_activity =
     deadman_pressed &&
     !estop_active &&
-    (std::abs(max_linear_speed_ * linear_axis) > manual_activity_linear_threshold_ ||
-     std::abs(max_angular_command_ * angular_axis) > manual_activity_angular_threshold_);
+    (std::abs(linear_command) > manual_activity_linear_threshold_ ||
+     std::abs(angular_command) > manual_activity_angular_threshold_);
 
   auto deadman_msg = std_msgs::msg::Bool();
   deadman_msg.data = deadman_pressed;
@@ -91,6 +198,7 @@ void MttOperatorInputNode::on_joy(const sensor_msgs::msg::Joy::SharedPtr msg)
   auto activity_msg = std_msgs::msg::Bool();
   activity_msg.data = manual_activity;
   manual_activity_pub_->publish(activity_msg);
+  publish_articulation_hold_state(articulation_hold_active);
 
   mtt_msgs::msg::MttAuxCommand aux_msg;
   aux_msg.light_state = light_state_;
@@ -107,8 +215,8 @@ void MttOperatorInputNode::on_joy(const sensor_msgs::msg::Joy::SharedPtr msg)
   geometry_msgs::msg::TwistStamped manual_msg;
   manual_msg.header.stamp = now();
   if (deadman_pressed && !estop_active) {
-    manual_msg.twist.linear.x = max_linear_speed_ * linear_axis;
-    manual_msg.twist.angular.z = max_angular_command_ * angular_axis;
+    manual_msg.twist.linear.x = linear_command;
+    manual_msg.twist.angular.z = angular_command;
   }
 
   if (deadman_pressed || deadman_released || estop_active) {

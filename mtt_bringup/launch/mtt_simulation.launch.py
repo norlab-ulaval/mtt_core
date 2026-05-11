@@ -410,6 +410,7 @@ def generate_launch_description():
             'use_namespace': use_namespace,
             'use_sim_time': use_sim_time,
             'enable_joint_state_broadcaster': 'false',
+            'spawn_motion_controllers': 'false',
         }.items(),
     )
 

@@ -16,6 +16,7 @@ find_package(geometry_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
 find_package(mtt_msgs REQUIRED)
+find_package(mtt_interfaces REQUIRED)
 
 add_library(mtt_control_core SHARED
   src/common/joystick_state.cpp
@@ -41,6 +42,7 @@ ament_target_dependencies(mtt_operator_input_node
   geometry_msgs
   std_msgs
   mtt_msgs
+  mtt_interfaces
 )
 
 add_executable(mtt_manual_cmd_filter_node src/nodes/mtt_manual_cmd_filter_node.cpp)
@@ -80,12 +82,23 @@ ament_target_dependencies(mtt_cmd_arbiter_node
   std_msgs
 )
 
+add_executable(mtt_cmd_vel_bridge_node src/nodes/mtt_cmd_vel_bridge_node.cpp)
+target_include_directories(mtt_cmd_vel_bridge_node PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+ament_target_dependencies(mtt_cmd_vel_bridge_node
+  rclcpp
+  geometry_msgs
+)
+
 install(TARGETS
   mtt_control_core
   mtt_operator_input_node
   mtt_manual_cmd_filter_node
   mtt_mode_manager_node
   mtt_cmd_arbiter_node
+  mtt_cmd_vel_bridge_node
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION lib/${PROJECT_NAME}

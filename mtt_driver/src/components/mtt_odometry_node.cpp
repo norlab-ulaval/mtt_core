@@ -21,6 +21,7 @@
 
 #include <mtt_msgs/msg/mtt_tachometer_data.hpp>
 #include <mtt_msgs/msg/mtt_driving_mode.hpp>
+#include <mtt_msgs/msg/mtt_articulation_state.hpp>
 #include <mtt_interfaces/srv/set_steer_control_mode.hpp>
 #include <std_srvs/srv/trigger.hpp>
 
@@ -63,6 +64,9 @@ public:
         VehicleParams::max_articulation_deg) * M_PI / 180.0;
     yaw_slip_factor_  = declare_parameter("yaw_slip_factor",  1.0);
     wrap_threshold_m_ = declare_parameter("wrap_reset_threshold_m", 1000.0);
+    hardware_articulation_topic_ = declare_parameter("hardware_articulation_topic", std::string("/hardware/articulation_angle"));
+    hardware_articulation_timeout_s_ = declare_parameter("hardware_articulation_timeout_seconds", 0.5);
+    lidar_articulation_timeout_s_ = declare_parameter("lidar_articulation_timeout_seconds", 0.5);
     motion_model_params_.wheelbase_m = declare_parameter("model_wheelbase_m", wheelbase_m_);
     motion_model_params_.max_articulation_rad =
       declare_parameter("model_max_articulation_deg", VehicleParams::max_articulation_deg) * M_PI / 180.0;
@@ -93,6 +97,8 @@ public:
     // ── Publishers ────────────────────────────────────────────────────
     odom_pub_        = create_publisher<nav_msgs::msg::Odometry>("mtt_odometry", 10);
     articulation_pub_ = create_publisher<std_msgs::msg::Float64>("mtt_articulation_angle", 10);
+    articulation_state_pub_ = create_publisher<mtt_msgs::msg::MttArticulationState>(
+      "mtt/articulation_state", rclcpp::SensorDataQoS());
     if (publish_runtime_joint_states_) {
       joint_state_pub_ = create_publisher<sensor_msgs::msg::JointState>(
         runtime_joint_states_topic_, 10);
@@ -108,6 +114,12 @@ public:
     cmd_vel_sub_ = create_subscription<geometry_msgs::msg::TwistStamped>(
       cmd_vel_topic_, 10,
       [this](const geometry_msgs::msg::TwistStamped::SharedPtr msg){ on_cmd_vel(msg); });
+    hardware_articulation_sub_ = create_subscription<std_msgs::msg::Float64>(
+      hardware_articulation_topic_, 10,
+      [this](const std_msgs::msg::Float64::SharedPtr msg){ on_hardware_articulation(msg); });
+    lidar_articulation_sub_ = create_subscription<std_msgs::msg::Float64>(
+      "trailer/articulation_angle", rclcpp::SensorDataQoS(),
+      [this](const std_msgs::msg::Float64::SharedPtr msg){ on_lidar_articulation(msg); });
 
     // ── Services ────────────────────────────────────────────────────────────
     reset_srv_ = create_service<std_srvs::srv::Trigger>(
@@ -117,7 +129,7 @@ public:
         std_srvs::srv::Trigger::Response::SharedPtr res
       ){ on_reset(req, res); });
     steer_mode_srv_ = create_service<mtt_interfaces::srv::SetSteerControlMode>(
-      "mtt/set_steer_control_mode",
+      "mtt/odometry/set_steer_control_mode",
       [this](
         const mtt_interfaces::srv::SetSteerControlMode::Request::SharedPtr req,
         mtt_interfaces::srv::SetSteerControlMode::Response::SharedPtr res
@@ -180,7 +192,16 @@ private:
   double   runtime_joint_articulation_sign_{1.0};
   double   runtime_joint_articulation_offset_rad_{0.0};
   double   min_speed_turn_, yaw_slip_factor_, wrap_threshold_m_, cmd_vel_timeout_s_;
+  double   hardware_articulation_timeout_s_{0.5};
+  double   lidar_articulation_timeout_s_{0.5};
   double   current_angular_cmd_{0.0};
+  double   hardware_articulation_rad_{0.0};
+  bool     has_hardware_articulation_{false};
+  std::chrono::steady_clock::time_point last_hardware_articulation_time_{};
+  std::string hardware_articulation_topic_;
+  double   lidar_articulation_rad_{0.0};
+  bool     has_lidar_articulation_{false};
+  std::chrono::steady_clock::time_point last_lidar_articulation_time_{};
   logic::CommandMotionParams motion_model_params_{};
   std::chrono::steady_clock::time_point last_tacho_time_{};
   std::chrono::steady_clock::time_point last_cmd_vel_time_{};
@@ -196,11 +217,14 @@ private:
   // ── ROS I/O ───────────────────────────────────────────────────────
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_pub_;
   rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr  articulation_pub_;
+  rclcpp::Publisher<mtt_msgs::msg::MttArticulationState>::SharedPtr articulation_state_pub_;
   rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr joint_state_pub_;
   rclcpp::Subscription<mtt_msgs::msg::MttTachometerData>::SharedPtr tacho_sub_;
   rclcpp::Subscription<mtt_msgs::msg::MttDrivingMode>::SharedPtr    mode_sub_;
   rclcpp::TimerBase::SharedPtr tf_fallback_timer_;
   rclcpp::Subscription<geometry_msgs::msg::TwistStamped>::SharedPtr cmd_vel_sub_;
+  rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr hardware_articulation_sub_;
+  rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr lidar_articulation_sub_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr  reset_srv_;
   rclcpp::Service<mtt_interfaces::srv::SetSteerControlMode>::SharedPtr steer_mode_srv_;
   std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
@@ -242,6 +266,20 @@ private:
   }
 
   // ── Callbacks ─────────────────────────────────────────────────────
+  void on_hardware_articulation(const std_msgs::msg::Float64::SharedPtr msg) {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    hardware_articulation_rad_ = msg->data;
+    last_hardware_articulation_time_ = std::chrono::steady_clock::now();
+    has_hardware_articulation_ = true;
+  }
+
+  void on_lidar_articulation(const std_msgs::msg::Float64::SharedPtr msg) {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    lidar_articulation_rad_ = msg->data;
+    last_lidar_articulation_time_ = std::chrono::steady_clock::now();
+    has_lidar_articulation_ = true;
+  }
+
   void on_cmd_vel(const geometry_msgs::msg::TwistStamped::SharedPtr msg) {
     std::lock_guard<std::mutex> lock(state_mutex_);
     current_angular_cmd_ = msg->twist.angular.z;
@@ -325,7 +363,23 @@ private:
     input.dt               = dt;
     input.synthetic_model_valid = msg->model_state_valid;
     input.articulation_command_rad = msg->model_articulation_command_rad;
-    input.articulation_effective_rad = msg->model_articulation_effective_rad;
+
+    // Prioritize hardware feedback over model-estimated articulation
+    bool hardware_is_fresh = false;
+    double hardware_angle = 0.0;
+    {
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      hardware_is_fresh = has_hardware_articulation_ &&
+        std::chrono::duration<double>(wall_now - last_hardware_articulation_time_).count() <= hardware_articulation_timeout_s_;
+      hardware_angle = hardware_articulation_rad_;
+    }
+
+    if (hardware_is_fresh) {
+      input.articulation_effective_rad = hardware_angle;
+    } else {
+      input.articulation_effective_rad = msg->model_articulation_effective_rad;
+    }
+
     input.curvature_nominal_m_inv = msg->model_curvature_nominal_m_inv;
     input.curvature_effective_m_inv = msg->model_curvature_effective_m_inv;
     input.yaw_rate_nominal_rad_s = msg->model_yaw_rate_nominal_rad_s;
@@ -368,6 +422,33 @@ private:
       articulation_pub_->publish(artic);
     }
     publish_runtime_joint_state(odom.header.stamp, out.articulation_angle);
+
+    // Publish unified articulation state (mtt/articulation_state)
+    {
+      double lidar_rad = 0.0;
+      bool lidar_detected = false;
+      {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        lidar_detected = has_lidar_articulation_ &&
+          std::chrono::duration<double>(wall_now - last_lidar_articulation_time_).count() <= lidar_articulation_timeout_s_;
+        lidar_rad = lidar_articulation_rad_;
+      }
+
+      mtt_msgs::msg::MttArticulationState state_msg;
+      state_msg.header = odom.header;
+      state_msg.command_rad = msg->model_articulation_command_rad;
+      state_msg.command_valid = msg->model_state_valid;
+      state_msg.hardware_rad = hardware_angle;
+      state_msg.hardware_fresh = hardware_is_fresh;
+      state_msg.effective_rad = input.articulation_effective_rad;
+      state_msg.effective_source = hardware_is_fresh ? "hardware" : "model";
+      state_msg.lidar_rad = lidar_rad;
+      state_msg.lidar_detected = lidar_detected;
+      state_msg.command_residual_rad = state_msg.command_rad - state_msg.effective_rad;
+      state_msg.hardware_lidar_residual_rad =
+        (hardware_is_fresh && lidar_detected) ? (hardware_angle - lidar_rad) : 0.0;
+      articulation_state_pub_->publish(state_msg);
+    }
 
     // TF broadcast
     if (broadcast_tf_ && tf_broadcaster_) {

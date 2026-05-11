@@ -15,6 +15,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/MttBmsData.msg"
   "msg/MttCanFrame.msg"
   "msg/MttHealthState.msg"
+  "msg/MttArticulationState.msg"
   DEPENDENCIES std_msgs
 )
 

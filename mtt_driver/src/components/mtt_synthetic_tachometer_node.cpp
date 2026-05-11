@@ -12,6 +12,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_components/register_node_macro.hpp>
 #include <geometry_msgs/msg/twist_stamped.hpp>
+#include <std_msgs/msg/float64.hpp>
 #include <mtt_msgs/msg/mtt_aux_command.hpp>
 #include <mtt_msgs/msg/mtt_tachometer_data.hpp>
 #include <mtt_msgs/msg/mtt_vehicle_status.hpp>
@@ -89,6 +90,8 @@ public:
     tacho_pub_ = create_publisher<mtt_msgs::msg::MttTachometerData>(
       tacho_topic_, rclcpp::SensorDataQoS());
     status_pub_ = create_publisher<mtt_msgs::msg::MttVehicleStatus>(status_topic_, 10);
+    articulation_cmd_pub_ = create_publisher<std_msgs::msg::Float64>(
+      "mtt/articulation_cmd", rclcpp::SensorDataQoS());
 
     const auto period = std::chrono::duration<double>(1.0 / std::max(1.0, publish_rate_hz_));
     timer_ = create_wall_timer(
@@ -129,6 +132,7 @@ private:
   rclcpp::Subscription<mtt_msgs::msg::MttAuxCommand>::SharedPtr aux_cmd_sub_;
   rclcpp::Publisher<mtt_msgs::msg::MttTachometerData>::SharedPtr tacho_pub_;
   rclcpp::Publisher<mtt_msgs::msg::MttVehicleStatus>::SharedPtr status_pub_;
+  rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr articulation_cmd_pub_;
   rclcpp::TimerBase::SharedPtr timer_;
 
   void on_cmd_vel(const geometry_msgs::msg::TwistStamped::SharedPtr msg)
@@ -267,6 +271,10 @@ private:
     tacho.model_yaw_rate_effective_rad_s = state.yaw_rate_effective_rad_s;
 
     tacho_pub_->publish(tacho);
+
+    std_msgs::msg::Float64 artic_cmd_msg;
+    artic_cmd_msg.data = state.phi_command_rad;
+    articulation_cmd_pub_->publish(artic_cmd_msg);
 
     const double throttle_norm =
       std::clamp(std::abs(effective_linear_command_ms_) / max_linear_speed_ms_, 0.0, 1.0);

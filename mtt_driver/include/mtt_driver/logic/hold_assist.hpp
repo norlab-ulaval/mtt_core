@@ -23,6 +23,16 @@ struct HoldAssistParams {
   bool dither_enabled{false};
   double dither_amplitude{0.02};
   double dither_frequency_hz{6.0};
+
+  // ── Active-decel phase (counter-thrust when coasting after release) ──
+  // Requires tachometer_mode: real.  Disabled by default.
+  // When |measured_speed| > active_decel_entry_speed_ms AND command ≈ 0,
+  // applies a pure-P counter-thrust (kp * speed) up to active_decel_output_limit.
+  // Integrator is NOT accumulated during this phase.
+  // Below active_decel_entry_speed_ms the normal PI hold takes over.
+  bool   active_decel_enabled{false};
+  double active_decel_entry_speed_ms{0.15};  // m/s — switch to PI hold below this
+  double active_decel_output_limit{0.60};    // m/s — max counter-thrust
 };
 
 struct HoldAssistInput {
@@ -83,6 +93,28 @@ public:
       return last_output_;
     }
 
+    // ── Active-decel phase: pure-P counter-thrust at higher speeds ───────
+    // Precondition: eligible AND should_hold (already verified above).
+    // Uses kp only (no integrator), with a higher output limit, to brake
+    // proportionally to measured speed.  Integrator is reset so there is
+    // no overshoot once PI hold takes over below active_decel_entry_speed_ms.
+    if (params_.active_decel_enabled &&
+        speed_abs_ms >= params_.active_decel_entry_speed_ms) {
+      integral_ = 0.0;
+      dither_phase_rad_ = 0.0;
+      double correction_speed_ms = params_.kp * (-measured_speed_ms);
+      correction_speed_ms = std::clamp(
+        correction_speed_ms,
+        -params_.active_decel_output_limit,
+        params_.active_decel_output_limit);
+      last_output_.active = std::abs(correction_speed_ms) > 1e-6;
+      last_output_.dither_active = false;
+      last_output_.correction_speed_ms = last_output_.active ? correction_speed_ms : 0.0;
+      last_output_.mode = last_output_.active ? "decel" : "off";
+      return last_output_;
+    }
+
+    // ── Normal PI hold phase ─────────────────────────────────────────────
     const double dt = std::clamp(input.dt, 0.0, 1.0);
     const double error_ms = -measured_speed_ms;
     integral_ += error_ms * params_.ki * dt;
@@ -98,11 +130,17 @@ public:
     }
 
     bool dither_active = false;
-    if (params_.dither_enabled && dt > 0.0 && std::abs(correction_speed_ms) > 1e-6) {
+    if (params_.dither_enabled && dt > 0.0) {
       dither_phase_rad_ += 2.0 * M_PI * params_.dither_frequency_hz * dt;
       dither_phase_rad_ = std::fmod(dither_phase_rad_, 2.0 * M_PI);
+      // Square-wave dither added symmetrically around correction.
+      // On level ground (correction ≈ 0) this alternates between
+      // +amplitude and -amplitude, physically rocking the vehicle
+      // forward/backward to defeat the mechanical deadband.
+      // On a slope (large correction) both phases keep the same sign
+      // but vary by ±amplitude — still useful against static friction.
       const double dither_sign = std::sin(dither_phase_rad_) >= 0.0 ? 1.0 : -1.0;
-      correction_speed_ms += std::copysign(params_.dither_amplitude, correction_speed_ms) * dither_sign;
+      correction_speed_ms += params_.dither_amplitude * dither_sign;
       dither_active = true;
     }
 

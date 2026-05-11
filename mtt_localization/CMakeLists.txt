@@ -26,7 +26,12 @@ ament_target_dependencies(factor_graph_node
 )
 target_link_libraries(factor_graph_node gtsam)
 
-install(TARGETS factor_graph_node
+add_executable(offline_reference_solver
+  src/offline_reference_solver.cpp
+)
+target_link_libraries(offline_reference_solver gtsam)
+
+install(TARGETS factor_graph_node offline_reference_solver
   DESTINATION lib/${PROJECT_NAME}
 )
 

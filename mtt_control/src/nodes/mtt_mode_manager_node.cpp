@@ -31,13 +31,13 @@ MttModeManagerNode::MttModeManagerNode(const rclcpp::NodeOptions & options)
     20,
     std::bind(&MttModeManagerNode::on_manual_activity, this, std::placeholders::_1));
   estop_sub_ = create_subscription<std_msgs::msg::Bool>(
-    "teleop_estop",
+    "mtt_control/teleop_estop",
     20,
     std::bind(&MttModeManagerNode::on_estop, this, std::placeholders::_1));
 
   auto latched_qos = rclcpp::QoS(1).transient_local();
-  mode_pub_ = create_publisher<std_msgs::msg::String>("selected_mode", latched_qos);
-  auto_enabled_pub_ = create_publisher<std_msgs::msg::Bool>("auto_mode_enabled", latched_qos);
+  mode_pub_ = create_publisher<std_msgs::msg::String>("mtt_control/selected_mode", latched_qos);
+  auto_enabled_pub_ = create_publisher<std_msgs::msg::Bool>("mtt_control/auto_mode_enabled", latched_qos);
   request_auto_srv_ = create_service<std_srvs::srv::Trigger>(
     request_auto_service_,
     std::bind(

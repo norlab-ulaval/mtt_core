@@ -93,6 +93,11 @@ def generate_launch_description():
             description='Bitrate for real CAN interface (e.g., 250000, 500000).'
         ),
         DeclareLaunchArgument(
+            'articulation_serial_port',
+            default_value='/dev/serial/by-id/usb-STMicroelectronics_STM32_STLink_066EFF373146363143225155-if02',
+            description='Serial port for the STM32 articulation sensor'
+        ),
+        DeclareLaunchArgument(
             'driver_params_file',
             default_value=driver_params_path,
             description='ROS parameter file for mtt_can_node and mtt_odometry_node'
@@ -235,6 +240,15 @@ def generate_launch_description():
                                     ),
                                     'command_timeout_seconds': LaunchConfiguration('command_timeout_seconds'),
                                     'base_frame': LaunchConfiguration('base_frame'),
+                                }],
+                                extra_arguments=[{'use_intra_process_comms': True}],
+                            ),
+                            ComposableNode(
+                                package='mtt_driver',
+                                plugin='mtt::MttArticulationSensorNode',
+                                name='mtt_articulation_sensor_node',
+                                parameters=[LaunchConfiguration('driver_params_file'), {
+                                    'serial_port': LaunchConfiguration('articulation_serial_port'),
                                 }],
                                 extra_arguments=[{'use_intra_process_comms': True}],
                             )

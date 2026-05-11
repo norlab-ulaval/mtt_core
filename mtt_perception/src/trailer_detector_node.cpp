@@ -1,15 +1,19 @@
-// Trailer articulation angle estimator — V1
+// Trailer articulation angle estimator — V1.5
 //
 // Pipeline:
-//   PointCloud2 → crop ROI → optional voxel → 2-D PCA → atan2 → publish
+//   PointCloud2 → crop ROI → optional voxel → 2-D PCA → Kalman 1D → publish
 //
-// The crop and voxel use PCL (already a dep). The PCA is done directly with
-// Eigen on a plain vector of points — no extra PCL passes, no RANSAC.
+// LiDAR measurement convention:
+//   z = normalizeAngle(reference_yaw - yaw_pca)
+//
+// Kalman state: x = [θ, ω]ᵀ  (angle, angular velocity)
+// Prediction uses an optional model-estimated command as a weak input.
+// Motor feedback is prepared but disabled by default.
 
 #include "mtt_perception/trailer_detector_node.hpp"
 
+#include <algorithm>
 #include <cmath>
-#include <limits>
 #include <string>
 #include <vector>
 
@@ -18,7 +22,6 @@
 
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
-#include <pcl/filters/passthrough.h>
 #include <pcl/filters/voxel_grid.h>
 #include <pcl_conversions/pcl_conversions.h>
 
@@ -33,7 +36,7 @@ TrailerDetectorNode::TrailerDetectorNode(const rclcpp::NodeOptions & options)
   // ── Declare parameters ────────────────────────────────────────────────────
   declare_parameter<std::string>("lidar_topic", "/rsairy_ns/points");
 
-  // ROI around the articulation / timon (in cloud frame, verified in CloudCompare)
+  // ROI around the articulation / timon (rsairy frame, verified in CloudCompare)
   declare_parameter<double>("roi_x_min", -0.40);
   declare_parameter<double>("roi_x_max", -0.15);
   declare_parameter<double>("roi_y_min", -0.40);
@@ -41,24 +44,54 @@ TrailerDetectorNode::TrailerDetectorNode(const rclcpp::NodeOptions & options)
   declare_parameter<double>("roi_z_min",  0.40);
   declare_parameter<double>("roi_z_max",  1.20);
 
-  // Voxel downsampling (optionnel, keeps PCA fast on dense clouds)
+  // Voxel downsampling
   declare_parameter<double>("voxel_size",   0.02);
   declare_parameter<bool>  ("enable_voxel", true);
 
   // Detection thresholds
   declare_parameter<int>   ("min_points",    10);
-  declare_parameter<double>("pca_ratio_min", 2.0);   // λ_max/λ_min — elongation
+  declare_parameter<double>("pca_ratio_min", 2.0);
 
-  // Sign disambiguation: hitch (pivot) position in cloud frame
-  // The axis is flipped so it points FROM hitch TOWARD centroid.
+  // Sign disambiguation: hitch position in rsairy frame (sensor origin = good default)
   declare_parameter<double>("hitch_x", 0.0);
   declare_parameter<double>("hitch_y", 0.0);
 
-  // reference_yaw: angle (rad) that corresponds to "straight" articulation = 0.
-  // articulation_angle = normalize(yaw_pca - reference_yaw)
-  // If cloud is in base_link and timon points along -X when straight,
-  // set reference_yaw = M_PI. Default 0.0 keeps the raw PCA angle.
+  // LiDAR measurement: z = normalizeAngle(reference_yaw - yaw_pca)
+  // Set to the raw PCA yaw observed at zero articulation (≈ -π/2 in rsairy frame).
   declare_parameter<double>("reference_yaw", 0.0);
+
+  // Hitch pivot in base_link — used for the Foxglove marker only
+  declare_parameter<double>("hitch_base_x", -1.051);
+  declare_parameter<double>("hitch_base_y", -0.051);
+  declare_parameter<double>("hitch_base_z",  0.301);
+  declare_parameter<double>("marker_length",  0.60);
+
+  // ── Kalman filter tuning ──────────────────────────────────────────────────
+  declare_parameter<double>("kf.q_angle",         0.001);  // rad²/s
+  declare_parameter<double>("kf.q_omega",         0.01);   // rad²/s³
+  declare_parameter<double>("kf.r_lidar_base",    0.005);  // rad²
+  declare_parameter<double>("kf.r_lidar_scale",   0.05);
+  declare_parameter<double>("kf.gate_soft_sigma", 3.0);
+  declare_parameter<double>("kf.gate_hard_sigma", 6.0);
+  declare_parameter<double>("kf.gate_inflation",  2.0);
+
+  // ── Command prediction (optional) ─────────────────────────────────────────
+  // The command topic (model-estimated angle) feeds only the prediction step.
+  // It never replaces the LiDAR measurement.
+  declare_parameter<bool>       ("command.use_prediction", false);
+  declare_parameter<std::string>("command.topic",          "/mtt_articulation_angle");
+  declare_parameter<double>     ("command.gain",           0.5);
+  declare_parameter<double>     ("command.timeout_sec",    0.2);
+
+  // ── Motor feedback (future measurement — disabled by default) ─────────────
+  declare_parameter<bool>       ("motor_feedback.enabled",  false);
+  // Default matches the hardware encoder published by mtt_articulation_sensor_node.
+  // Enable with motor_feedback.enabled: true in the YAML config.
+  declare_parameter<std::string>("motor_feedback.topic",    "/hardware/articulation_angle");
+  declare_parameter<double>     ("motor_feedback.variance", 0.01);
+
+  // ── Sliding ROI (future — disabled by default) ────────────────────────────
+  declare_parameter<bool>("sliding_roi.enabled", false);
 
   // ── Load parameters ───────────────────────────────────────────────────────
   roi_x_min_     = static_cast<float>(get_parameter("roi_x_min").as_double());
@@ -74,8 +107,29 @@ TrailerDetectorNode::TrailerDetectorNode(const rclcpp::NodeOptions & options)
   hitch_x_       = get_parameter("hitch_x").as_double();
   hitch_y_       = get_parameter("hitch_y").as_double();
   reference_yaw_ = get_parameter("reference_yaw").as_double();
+  hitch_base_x_  = get_parameter("hitch_base_x").as_double();
+  hitch_base_y_  = get_parameter("hitch_base_y").as_double();
+  hitch_base_z_  = get_parameter("hitch_base_z").as_double();
+  marker_length_ = get_parameter("marker_length").as_double();
 
-  const auto lidar_topic = get_parameter("lidar_topic").as_string();
+  q_angle_         = get_parameter("kf.q_angle").as_double();
+  q_omega_         = get_parameter("kf.q_omega").as_double();
+  r_lidar_base_    = get_parameter("kf.r_lidar_base").as_double();
+  r_lidar_scale_   = get_parameter("kf.r_lidar_scale").as_double();
+  gate_soft_sigma_ = get_parameter("kf.gate_soft_sigma").as_double();
+  gate_hard_sigma_ = get_parameter("kf.gate_hard_sigma").as_double();
+  gate_inflation_  = get_parameter("kf.gate_inflation").as_double();
+
+  use_command_prediction_ = get_parameter("command.use_prediction").as_bool();
+  command_gain_           = get_parameter("command.gain").as_double();
+  command_timeout_sec_    = get_parameter("command.timeout_sec").as_double();
+
+  use_motor_feedback_       = get_parameter("motor_feedback.enabled").as_bool();
+  motor_feedback_variance_  = get_parameter("motor_feedback.variance").as_double();
+
+  use_sliding_roi_ = get_parameter("sliding_roi.enabled").as_bool();
+
+  const auto lidar_topic   = get_parameter("lidar_topic").as_string();
 
   // ── Publishers (SensorDataQoS = BEST_EFFORT + volatile) ───────────────────
   const auto sq = rclcpp::SensorDataQoS();
@@ -88,35 +142,133 @@ TrailerDetectorNode::TrailerDetectorNode(const rclcpp::NodeOptions & options)
   marker_pub_    = create_publisher<visualization_msgs::msg::Marker>(
                      "trailer/articulation_axis_marker", 10);
 
-  // ── Subscriber ────────────────────────────────────────────────────────────
+  // ── Subscribers ───────────────────────────────────────────────────────────
   cloud_sub_ = create_subscription<sensor_msgs::msg::PointCloud2>(
-    lidar_topic,
-    rclcpp::SensorDataQoS(),
+    lidar_topic, rclcpp::SensorDataQoS(),
     [this](sensor_msgs::msg::PointCloud2::ConstSharedPtr msg) {
       cloudCallback(msg);
     });
 
+  // Command prediction subscriber — only created if enabled
+  if (use_command_prediction_) {
+    const auto cmd_topic = get_parameter("command.topic").as_string();
+    cmd_sub_ = create_subscription<std_msgs::msg::Float64>(
+      cmd_topic, rclcpp::SensorDataQoS(),
+      [this](std_msgs::msg::Float64::ConstSharedPtr msg) {
+        commandCallback(msg);
+      });
+    RCLCPP_INFO(get_logger(), "KF command prediction ON  topic=%s  gain=%.2f  timeout=%.2fs",
+      cmd_topic.c_str(), command_gain_, command_timeout_sec_);
+  }
+
+  // Motor feedback subscriber — only created if enabled
+  if (use_motor_feedback_) {
+    const auto fb_topic = get_parameter("motor_feedback.topic").as_string();
+    motor_fb_sub_ = create_subscription<std_msgs::msg::Float64>(
+      fb_topic, rclcpp::SensorDataQoS(),
+      [this](std_msgs::msg::Float64::ConstSharedPtr msg) {
+        motorFeedbackCallback(msg);
+      });
+    RCLCPP_INFO(get_logger(), "KF motor feedback ON  topic=%s  var=%.4f",
+      fb_topic.c_str(), motor_feedback_variance_);
+  }
+
   RCLCPP_INFO(get_logger(),
-    "TrailerDetector ready — topic: %s  "
+    "TrailerDetector V1.5 ready — topic: %s  "
     "ROI x[%.2f,%.2f] y[%.2f,%.2f] z[%.2f,%.2f]  "
-    "voxel %s (%.2fm)  min_pts=%d  pca_ratio≥%.1f",
+    "voxel %s (%.2fm)  min_pts=%d  pca_ratio≥%.1f  "
+    "KF q_θ=%.4f q_ω=%.3f R_base=%.4f",
     lidar_topic.c_str(),
     roi_x_min_, roi_x_max_, roi_y_min_, roi_y_max_, roi_z_min_, roi_z_max_,
     enable_voxel_ ? "ON" : "OFF", voxel_size_,
-    min_points_, pca_ratio_min_);
+    min_points_, pca_ratio_min_,
+    q_angle_, q_omega_, r_lidar_base_);
+}
+
+// ── Command callback ──────────────────────────────────────────────────────────
+// Stores the latest model-estimated command angle for use in KF prediction.
+// This is a prediction input only — it never overrides the LiDAR measurement.
+void TrailerDetectorNode::commandCallback(
+  std_msgs::msg::Float64::ConstSharedPtr msg)
+{
+  last_command_      = msg->data;
+  last_command_time_ = now();
+}
+
+// ── Motor feedback callback (future) ─────────────────────────────────────────
+// Stores the latest motor-side angle feedback for a second KF measurement update.
+// Not used until motor_feedback.enabled = true.
+void TrailerDetectorNode::motorFeedbackCallback(
+  std_msgs::msg::Float64::ConstSharedPtr msg)
+{
+  last_motor_feedback_      = msg->data;
+  last_motor_feedback_time_ = now();
+}
+
+// ── Publish helper ────────────────────────────────────────────────────────────
+void TrailerDetectorNode::publishAngleAndMarker(
+  const std_msgs::msg::Header & header, double angle, bool detected)
+{
+  // Angle
+  std_msgs::msg::Float64 angle_out;
+  angle_out.data = angle;
+  angle_pub_->publish(angle_out);
+
+  // Detected flag
+  std_msgs::msg::Bool det_msg;
+  det_msg.data = detected;
+  detected_pub_->publish(det_msg);
+
+  // Marker (only when subscribed — zero cost otherwise)
+  if (marker_pub_->get_subscription_count() > 0) {
+    // π - angle: visual rotation is mirrored vs the angle convention
+    const double dir_x = std::cos(M_PI - angle);
+    const double dir_y = std::sin(M_PI - angle);
+    const double half  = marker_length_ * 0.5;
+
+    visualization_msgs::msg::Marker mk;
+    mk.header.stamp    = header.stamp;
+    mk.header.frame_id = "base_link";
+    mk.ns       = "trailer_articulation";
+    mk.id       = 0;
+    mk.type     = visualization_msgs::msg::Marker::ARROW;
+    mk.action   = visualization_msgs::msg::Marker::ADD;
+
+    // Arrow centred on the hitch pivot
+    mk.points.resize(2);
+    mk.points[0].x = hitch_base_x_ - dir_x * half;
+    mk.points[0].y = hitch_base_y_ - dir_y * half;
+    mk.points[0].z = hitch_base_z_;
+    mk.points[1].x = hitch_base_x_ + dir_x * half;
+    mk.points[1].y = hitch_base_y_ + dir_y * half;
+    mk.points[1].z = hitch_base_z_;
+
+    mk.scale.x = 0.030;  // shaft diameter
+    mk.scale.y = 0.060;  // head diameter
+    mk.scale.z = 0.060;
+
+    // Orange when LiDAR-confirmed, grey when prediction-only
+    if (detected) {
+      mk.color.r = 1.0f; mk.color.g = 0.5f; mk.color.b = 0.0f;
+    } else {
+      mk.color.r = 0.6f; mk.color.g = 0.6f; mk.color.b = 0.6f;
+    }
+    mk.color.a = 1.0f;
+
+    marker_pub_->publish(mk);
+  }
 }
 
 // ── Cloud callback ────────────────────────────────────────────────────────────
 void TrailerDetectorNode::cloudCallback(
   sensor_msgs::msg::PointCloud2::ConstSharedPtr msg)
 {
-  // ── 1. Decode raw PointCloud2 directly → collect ROI points ──────────────
-  // Using PointCloud2ConstIterator avoids a full pcl::fromROSMsg copy when the
-  // input is large (Hesai + RSAiry merged can be 100k+ points).
-  // We only allocate for the (small) ROI subset.
+  const rclcpp::Time stamp_now = msg->header.stamp;
 
+  // ── 1. Decode raw PointCloud2 → collect ROI points ───────────────────────
+  // PointCloud2ConstIterator avoids a full pcl::fromROSMsg copy for the full cloud.
   std::vector<Eigen::Vector3f> roi_pts;
-  roi_pts.reserve(512);  // articulation zone is compact
+  roi_pts.reserve(512);
 
   sensor_msgs::PointCloud2ConstIterator<float> it_x(*msg, "x");
   sensor_msgs::PointCloud2ConstIterator<float> it_y(*msg, "y");
@@ -131,9 +283,8 @@ void TrailerDetectorNode::cloudCallback(
     roi_pts.emplace_back(x, y, z);
   }
 
-  // ── 2. Optional voxel grid (reduces PCA cost for dense clouds) ────────────
+  // ── 2. Optional voxel grid ────────────────────────────────────────────────
   if (enable_voxel_ && !roi_pts.empty()) {
-    // Build a tiny PCL cloud from the ROI vector (already small) and voxelise.
     pcl::PointCloud<pcl::PointXYZ>::Ptr tmp(new pcl::PointCloud<pcl::PointXYZ>);
     tmp->reserve(roi_pts.size());
     for (const auto & p : roi_pts)
@@ -150,18 +301,53 @@ void TrailerDetectorNode::cloudCallback(
       roi_pts.emplace_back(p.x, p.y, p.z);
   }
 
-  // ── 3. Publish detected=false early if not enough points ─────────────────
-  std_msgs::msg::Bool det_msg;
-  det_msg.data = false;
+  // ── 3. Kalman predict step ────────────────────────────────────────────────
+  // Always predict (when initialized) so the state stays time-consistent
+  // even when PCA fails. If not yet initialized, we wait for the first valid
+  // measurement to seed the state (see measurement update below).
 
+  if (kf_initialized_) {
+    const double dt = std::clamp(
+      (stamp_now - last_predict_time_).seconds(), 0.001, 0.5);
+    last_predict_time_ = stamp_now;
+
+    // F: state transition
+    Eigen::Matrix2d F;
+    F << 1.0, dt,
+         0.0, 1.0;
+
+    // Command input u_cmd (prediction only — never a measurement)
+    double u_cmd = 0.0;
+    if (use_command_prediction_ && last_command_.has_value()) {
+      const double age = (stamp_now - last_command_time_).seconds();
+      if (age < command_timeout_sec_) {
+        u_cmd = last_command_.value();
+      }
+    }
+    const Eigen::Vector2d Bu(command_gain_ * u_cmd * dt, 0.0);
+
+    kf_x_    = F * kf_x_ + Bu;
+    kf_x_(0) = normalizeAngle(kf_x_(0));
+
+    // Process noise Q (scaled by dt)
+    Eigen::Matrix2d Q = Eigen::Matrix2d::Zero();
+    Q(0, 0) = q_angle_ * dt;
+    Q(1, 1) = q_omega_ * dt;
+    kf_P_ = F * kf_P_ * F.transpose() + Q;
+  }
+
+  // ── 4. Sparse ROI → publish predicted angle, no measurement update ────────
   if (static_cast<int>(roi_pts.size()) < min_points_) {
-    detected_pub_->publish(det_msg);
+    if (kf_initialized_) {
+      publishAngleAndMarker(msg->header, kf_x_(0), false);
+    }
     RCLCPP_DEBUG_THROTTLE(get_logger(), *get_clock(), 3000,
-      "ROI too sparse: %zu/%d pts", roi_pts.size(), min_points_);
+      "ROI too sparse: %zu/%d pts — publishing predicted angle",
+      roi_pts.size(), min_points_);
     return;
   }
 
-  // ── 4. Publish ROI cloud (Foxglove debug — only when subscribed) ──────────
+  // ── 5. Publish ROI cloud (Foxglove debug — only when subscribed) ──────────
   if (roi_cloud_pub_->get_subscription_count() > 0) {
     pcl::PointCloud<pcl::PointXYZ> roi_pcl;
     roi_pcl.reserve(roi_pts.size());
@@ -174,81 +360,110 @@ void TrailerDetectorNode::cloudCallback(
     roi_cloud_pub_->publish(roi_out);
   }
 
-  // ── 5. PCA 2D on (x, y) ──────────────────────────────────────────────────
+  // ── 6. PCA 2D on (x, y) ──────────────────────────────────────────────────
   const Eigen::Vector2d hitch(hitch_x_, hitch_y_);
   const PcaResult pca = computePca(roi_pts, hitch);
 
+  // ── 7. Weak PCA → publish predicted angle, no measurement update ──────────
   if (!pca.valid || pca.ratio < pca_ratio_min_) {
-    detected_pub_->publish(det_msg);
+    if (kf_initialized_) {
+      publishAngleAndMarker(msg->header, kf_x_(0), false);
+    }
     RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 3000,
-      "PCA weak: ratio=%.2f n=%zu (min=%.1f)",
+      "PCA weak: ratio=%.2f n=%zu (min=%.1f) — publishing predicted angle",
       pca.ratio, pca.n_points, pca_ratio_min_);
     return;
   }
 
-  // ── 6. Articulation angle relative to MTT forward direction ──────────────
+  // ── 8. LiDAR measurement  z = normalize(reference_yaw − yaw_pca) ─────────
   const double yaw_pca = std::atan2(pca.axis.y(), pca.axis.x());
-  const double angle   = normalizeAngle(yaw_pca - reference_yaw_);
+  const double z_lidar = normalizeAngle(reference_yaw_ - yaw_pca);
 
-  // ── 7. Publish angle + detected ──────────────────────────────────────────
-  det_msg.data = true;
-  detected_pub_->publish(det_msg);
-
-  std_msgs::msg::Float64 angle_out;
-  angle_out.data = angle;
-  angle_pub_->publish(angle_out);
-
-  // ── 8. Axis marker (arrow) for Foxglove 3D panel ─────────────────────────
-  if (marker_pub_->get_subscription_count() > 0) {
-    const double mid_z = 0.5 * (roi_z_min_ + roi_z_max_);
-    const double half  = 0.20;  // half-arrow length in metres
-
-    visualization_msgs::msg::Marker mk;
-    mk.header   = msg->header;
-    mk.ns       = "trailer_articulation";
-    mk.id       = 0;
-    mk.type     = visualization_msgs::msg::Marker::ARROW;
-    mk.action   = visualization_msgs::msg::Marker::ADD;
-
-    // The PCA col(0) axis is the timon longitudinal direction in rsairy XY.
-    // Rotating 90° gives the visual arrow aligned with the timon in Foxglove.
-    const Eigen::Vector2d marker_axis(-pca.axis.y(), pca.axis.x());
-
-    // Arrow: tail → head (from centroid minus half to centroid plus half)
-    mk.points.resize(2);
-    mk.points[0].x = pca.centroid.x() - marker_axis.x() * half;
-    mk.points[0].y = pca.centroid.y() - marker_axis.y() * half;
-    mk.points[0].z = mid_z;
-    mk.points[1].x = pca.centroid.x() + marker_axis.x() * half;
-    mk.points[1].y = pca.centroid.y() + marker_axis.y() * half;
-    mk.points[1].z = mid_z;
-
-    mk.scale.x = 0.025;   // shaft diameter
-    mk.scale.y = 0.050;   // head diameter
-    mk.scale.z = 0.050;
-
-    mk.color.r = 1.0f;  // orange
-    mk.color.g = 0.5f;
-    mk.color.b = 0.0f;
-    mk.color.a = 1.0f;
-
-    marker_pub_->publish(mk);
+  // ── 9. KF — first measurement seeds the state ─────────────────────────────
+  if (!kf_initialized_) {
+    kf_x_(0)         = z_lidar;
+    kf_x_(1)         = 0.0;
+    kf_P_            = Eigen::Matrix2d::Identity() * 0.1;
+    last_predict_time_ = stamp_now;
+    kf_initialized_  = true;
   }
 
-  // ── 9. Throttled debug log with all metrics ───────────────────────────────
+  // ── 10. KF — LiDAR measurement update (adaptive R + soft gating) ──────────
+  // Adaptive R: small when n_points and pca_ratio are high, larger otherwise.
+  const double n_factor = std::clamp(
+    1.0 - static_cast<double>(pca.n_points - min_points_) / 100.0, 0.0, 1.0);
+  const double r_factor = std::clamp(
+    1.0 - (pca.ratio - pca_ratio_min_) / 10.0, 0.0, 1.0);
+  double R_lidar = r_lidar_base_ + r_lidar_scale_ * (n_factor + r_factor);
+
+  // Innovation: angle wrapping handled by normalizeAngle
+  const double innov = normalizeAngle(z_lidar - kf_x_(0));
+
+  // Soft gating: inflate R for large innovations (don't hard-reject unless extreme)
+  const double innov_sigma = std::sqrt(std::max(kf_P_(0, 0) + R_lidar, 1e-9));
+  const double mahal       = std::abs(innov) / innov_sigma;
+
+  if (mahal > gate_soft_sigma_) {
+    R_lidar *= 1.0 + gate_inflation_ * (mahal - gate_soft_sigma_);
+  }
+
+  if (mahal < gate_hard_sigma_) {
+    // H = [1, 0] → S = P(0,0) + R,  K = P.col(0) / S
+    const double         S = kf_P_(0, 0) + R_lidar;
+    const Eigen::Vector2d K = kf_P_.col(0) / S;
+
+    kf_x_    += K * innov;
+    kf_x_(0)  = normalizeAngle(kf_x_(0));
+
+    // Joseph form: P = (I − K·H)·P  (numerically stable)
+    Eigen::Matrix2d I_KH = Eigen::Matrix2d::Identity();
+    I_KH(0, 0) -= K(0);
+    I_KH(1, 0) -= K(1);
+    kf_P_ = I_KH * kf_P_;
+  } else {
+    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
+      "KF hard gate triggered: mahal=%.1f > %.1f — measurement rejected",
+      mahal, gate_hard_sigma_);
+  }
+
+  // ── 11. Motor feedback measurement update (future, disabled by default) ────
+  // When motor_feedback.enabled=true: second KF update with motor angle.
+  // Less trusted than LiDAR initially; variance tuned via motor_feedback.variance.
+  if (use_motor_feedback_ && last_motor_feedback_.has_value()) {
+    const double fb_age = (stamp_now - last_motor_feedback_time_).seconds();
+    if (fb_age < 0.2) {
+      const double innov_m = normalizeAngle(last_motor_feedback_.value() - kf_x_(0));
+      const double S_m     = kf_P_(0, 0) + motor_feedback_variance_;
+      const Eigen::Vector2d K_m = kf_P_.col(0) / S_m;
+
+      kf_x_    += K_m * innov_m;
+      kf_x_(0)  = normalizeAngle(kf_x_(0));
+
+      Eigen::Matrix2d I_KH_m = Eigen::Matrix2d::Identity();
+      I_KH_m(0, 0) -= K_m(0);
+      I_KH_m(1, 0) -= K_m(1);
+      kf_P_ = I_KH_m * kf_P_;
+    }
+  }
+
+  // ── 12. Publish angle + marker (LiDAR-confirmed) ──────────────────────────
+  const double angle = kf_x_(0);
+  publishAngleAndMarker(msg->header, angle, true);
+
+  // ── 13. Throttled debug log ───────────────────────────────────────────────
   RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000,
-    "articulation: %.4f rad (%.1f°)  "
-    "n=%zu  pca_ratio=%.1f  "
-    "centroid (%.3f, %.3f, %.3f)",
+    "articulation: %.4f rad (%.1f°)  ω=%.3f rad/s  "
+    "n=%zu  pca_ratio=%.1f  R=%.4f  innov=%.4f  mahal=%.1f",
     angle, angle * 180.0 / M_PI,
+    kf_x_(1),
     pca.n_points, pca.ratio,
-    pca.centroid.x(), pca.centroid.y(), pca.centroid_z);
+    R_lidar, innov, mahal);
 }
 
 // ── 2-D PCA ───────────────────────────────────────────────────────────────────
 //
 // Computes the principal direction of the X-Y projection of the point set.
-// Eigen2x2 solver is analytical and O(n) — no iterations, no heap allocs.
+// Eigen 2×2 solver is analytical and O(n) — no iterations, no heap allocs.
 //
 TrailerDetectorNode::PcaResult TrailerDetectorNode::computePca(
   const std::vector<Eigen::Vector3f> & pts,
@@ -282,21 +497,20 @@ TrailerDetectorNode::PcaResult TrailerDetectorNode::computePca(
   cov *= inv_n;
 
   // ── Eigen decomposition (symmetric 2×2 — fast, analytical) ───────────────
-  Eigen::SelfAdjointEigenSolver<Eigen::Matrix2d> es(cov,
-    Eigen::ComputeEigenvectors);
+  Eigen::SelfAdjointEigenSolver<Eigen::Matrix2d> es(cov, Eigen::ComputeEigenvectors);
 
   // Eigenvalues sorted ascending → col(0)=min, col(1)=max.
-  // In base_link frame, the timon extends along X-Y → the MAJOR axis (col(1))
-  // is collinear with the articulation direction.
+  // In rsairy frame, the timon's cross-section dominates XY spread → col(1)
+  // is the axis along the timon direction.
   const double lam_max = es.eigenvalues()(1);
   const double lam_min = es.eigenvalues()(0);
-  Eigen::Vector2d axis = es.eigenvectors().col(1);   // major = timon direction
+  Eigen::Vector2d axis = es.eigenvectors().col(1);
 
-  // ── Sign: axis must point FROM hitch TOWARD centroid ─────────────────────
-  const Eigen::Vector2d ref = mu - hitch;  // hitch → centroid direction
+  // Sign: axis must point FROM hitch TOWARD centroid
+  const Eigen::Vector2d ref = mu - hitch;
   if (axis.dot(ref) < 0.0) axis = -axis;
 
-  // ── Linearity ratio (guard for near-zero λ_min) ───────────────────────────
+  // Linearity ratio (guard for near-zero λ_min)
   r.ratio = (lam_min > 1e-9) ? (lam_max / lam_min) : 0.0;
 
   r.axis  = axis;

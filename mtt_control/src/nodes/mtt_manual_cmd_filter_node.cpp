@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <mutex>
 
 namespace mtt_control
 {
@@ -13,10 +14,12 @@ MttManualCmdFilterNode::MttManualCmdFilterNode(const rclcpp::NodeOptions & optio
   output_topic_ = declare_parameter("output_topic", std::string("cmd_vel/manual"));
   input_timeout_s_ = declare_parameter("input_timeout_s", 0.4);
   publish_rate_hz_ = declare_parameter("publish_rate_hz", 50.0);
-  linear_rise_rate_ = declare_parameter("linear_rise_rate", 0.5);
+  linear_rise_rate_ = declare_parameter("linear_rise_rate", 0.3);
   linear_fall_rate_ = declare_parameter("linear_fall_rate", 1.0);
-  angular_rise_rate_ = declare_parameter("angular_rise_rate", 0.8);
+  angular_rise_rate_ = declare_parameter("angular_rise_rate", 0.5);
   angular_fall_rate_ = declare_parameter("angular_fall_rate", 1.2);
+  decel_brake_gain_      = declare_parameter("decel_brake_gain",      0.0);
+  decel_brake_threshold_ = declare_parameter("decel_brake_threshold", 0.05);
   enable_dynamic_filter_ = declare_parameter("enable_dynamic_filter", false);
   linear_omega_n_ = declare_parameter("linear_omega_n", 8.0);
   linear_zeta_ = declare_parameter("linear_zeta", 1.0);
@@ -36,11 +39,11 @@ MttManualCmdFilterNode::MttManualCmdFilterNode(const rclcpp::NodeOptions & optio
     20,
     std::bind(&MttManualCmdFilterNode::on_input, this, std::placeholders::_1));
   mode_sub_ = create_subscription<std_msgs::msg::String>(
-    "selected_mode",
+    "mtt_control/selected_mode",
     20,
     std::bind(&MttManualCmdFilterNode::on_mode, this, std::placeholders::_1));
   estop_sub_ = create_subscription<std_msgs::msg::Bool>(
-    "teleop_estop",
+    "mtt_control/teleop_estop",
     20,
     std::bind(&MttManualCmdFilterNode::on_estop, this, std::placeholders::_1));
   output_pub_ = create_publisher<geometry_msgs::msg::TwistStamped>(output_topic_, 20);
@@ -51,6 +54,7 @@ MttManualCmdFilterNode::MttManualCmdFilterNode(const rclcpp::NodeOptions & optio
 
 void MttManualCmdFilterNode::on_input(const geometry_msgs::msg::TwistStamped::SharedPtr msg)
 {
+  std::lock_guard<std::mutex> lock(state_mutex_);
   target_.linear_x = msg->twist.linear.x;
   target_.angular_z = msg->twist.angular.z;
   last_input_time_ = now();
@@ -59,6 +63,7 @@ void MttManualCmdFilterNode::on_input(const geometry_msgs::msg::TwistStamped::Sh
 
 void MttManualCmdFilterNode::on_mode(const std_msgs::msg::String::SharedPtr msg)
 {
+  std::lock_guard<std::mutex> lock(state_mutex_);
   const auto new_mode = control_mode_from_string(msg->data);
   if (new_mode != current_mode_) {
     current_mode_ = new_mode;
@@ -70,6 +75,7 @@ void MttManualCmdFilterNode::on_mode(const std_msgs::msg::String::SharedPtr msg)
 
 void MttManualCmdFilterNode::on_estop(const std_msgs::msg::Bool::SharedPtr msg)
 {
+  std::lock_guard<std::mutex> lock(state_mutex_);
   estop_active_ = msg->data;
   if (estop_active_) {
     reset_filters();
@@ -100,6 +106,7 @@ void MttManualCmdFilterNode::publish_zero_once(const rclcpp::Time & stamp)
 
 void MttManualCmdFilterNode::on_timer()
 {
+  std::lock_guard<std::mutex> lock(state_mutex_);
   const auto now_stamp = now();
   double dt = (now_stamp - last_update_time_).seconds();
   if (dt <= 1e-6) {
@@ -111,6 +118,20 @@ void MttManualCmdFilterNode::on_timer()
   if (current_mode_ != ControlMode::Manual || estop_active_ || !has_input_ ||
       (now_stamp - last_input_time_).seconds() > input_timeout_s_) {
     effective_target = {};
+  }
+
+  // Feedforward deceleration boost: when operator releases stick (target→0)
+  // but the output is still significant, push the effective target negative
+  // proportionally to the current output.  This makes the rate limiter
+  // overshoot zero and issue brief counter-thrust — no tachometer needed.
+  // Self-regulating: as output decays toward 0, boost decays to 0 too.
+  // Disabled when decel_brake_gain_ == 0 (default: off).
+  if (decel_brake_gain_ > 0.0) {
+    const double prev_linear = linear_limiter_.value();
+    if (std::abs(effective_target.linear_x) < zero_epsilon_ &&
+        prev_linear > decel_brake_threshold_) {
+      effective_target.linear_x = -decel_brake_gain_ * prev_linear;
+    }
   }
 
   double linear = linear_limiter_.update(effective_target.linear_x, dt);

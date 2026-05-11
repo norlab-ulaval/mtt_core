@@ -23,6 +23,7 @@ find_package(tf2_ros REQUIRED)
 find_package(mtt_msgs REQUIRED)
 find_package(mtt_interfaces REQUIRED)
 find_package(std_srvs REQUIRED)
+find_package(Boost REQUIRED COMPONENTS system thread)
 
 # ────────────────────────────────────────────────────────────────────
 # LIBRARY 1: mtt_logic  (pure C++17 — NO ROS, fully unit-testable)
@@ -218,9 +219,32 @@ rclcpp_components_register_node(mtt_joint_state_builder_node
 )
 
 # ────────────────────────────────────────────────────────────────────
+# COMPONENT: mtt_articulation_sensor_node (ROS 2 node — STM32 Articulation)
+# Reads raw ADC bits from USB-STM32 and publishes filtered radians.
+# ────────────────────────────────────────────────────────────────────
+add_library(mtt_articulation_sensor_node SHARED
+  src/components/mtt_articulation_sensor_node.cpp
+)
+target_include_directories(mtt_articulation_sensor_node PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+  ${Boost_INCLUDE_DIRS}
+)
+target_link_libraries(mtt_articulation_sensor_node ${Boost_LIBRARIES})
+ament_target_dependencies(mtt_articulation_sensor_node
+  rclcpp
+  rclcpp_components
+  std_msgs
+)
+rclcpp_components_register_node(mtt_articulation_sensor_node
+  PLUGIN "mtt::MttArticulationSensorNode"
+  EXECUTABLE mtt_articulation_sensor
+)
+
+# ────────────────────────────────────────────────────────────────────
 # Install
 # ────────────────────────────────────────────────────────────────────
-install(TARGETS mtt_logic mtt_hardware mtt_can_node mtt_odometry_node mtt_health_monitor_node mtt_teleop_joy_node teleop_cmd_smoother_node mtt_synthetic_tachometer_node mtt_joint_state_builder_node
+install(TARGETS mtt_logic mtt_hardware mtt_can_node mtt_odometry_node mtt_health_monitor_node mtt_teleop_joy_node teleop_cmd_smoother_node mtt_synthetic_tachometer_node mtt_joint_state_builder_node mtt_articulation_sensor_node
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION bin

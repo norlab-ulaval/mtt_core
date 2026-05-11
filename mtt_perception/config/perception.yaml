@@ -40,20 +40,183 @@ trailer_detector_node:
     # Observed value at straight (0 articulation) ≈ -π/2 in rsairy frame.
     reference_yaw: -1.5708
 
+    # Hitch pivot (yaw joint) in base_link — marker only.
+    # Computed from URDF: pitch_origin + Rx(-π/2) * yaw_origin
+    hitch_base_x: -1.45
+    hitch_base_y: -0.085
+    hitch_base_z:  0.35
+    marker_length:  0.30   # total arrow length (metres)
+
+    # ── Kalman filter (replaces EMA) ─────────────────────────────────────────
+    # Tune q_angle/q_omega higher → trust LiDAR more, less smoothing.
+    # Tune r_lidar_base lower → trust LiDAR more, faster response.
+    kf:
+      q_angle:         0.001   # process noise on angle       (rad²/s)
+      q_omega:         0.01    # process noise on angular vel (rad²/s³)
+      r_lidar_base:    0.005   # base LiDAR measurement variance (rad²)
+      r_lidar_scale:   0.05    # extra variance for poor PCA quality
+      gate_soft_sigma: 3.0     # begin inflating R at this Mahalanobis distance
+      gate_hard_sigma: 6.0     # reject measurement entirely beyond this
+      gate_inflation:  2.0     # R inflation rate per σ beyond soft gate
+
+    # ── Command prediction (optional) ────────────────────────────────────────
+    # The model-estimated angle (/mtt_articulation_angle) feeds only the KF
+    # prediction step. It never replaces the LiDAR measurement.
+    command:
+      use_prediction: false
+      topic: "/mtt_articulation_angle"
+      gain: 0.5            # k_cmd: command contribution to angular rate prediction
+      timeout_sec: 0.2     # ignore commands older than this
+
+    # ── Motor feedback (Badger/STM32 hardware sensor) ────────────────────────
+    # When enabled: second KF measurement update after the LiDAR update.
+    motor_feedback:
+      enabled: true
+      topic: "/hardware/articulation_angle"
+      variance: 0.001       # High confidence measurement (rad²)
+
+    # ── Sliding ROI (future — disabled) ──────────────────────────────────────
+    # When enabled: shift the ROI centre based on the predicted angle.
+    sliding_roi:
+      enabled: false
+
+# ── Trailer 3D pose estimator — V4.0 prior-locked constrained SE(3) ────────
+# Principle:
+#   /trailer/articulation_angle = validated mechanical prior.
+#   /mtt_articulation_angle     = command/debug/fallback only.
+#   The LiDAR cloud applies only small, gated corrections around the prior.
+#
+# Debug in Foxglove:
+#   /trailer/trailer_roi_cloud
+#   /trailer/body_markers
+#   /trailer/pose_prior, /trailer/pose_raw, /trailer/pose
+#   /trailer/yaw_prior, /trailer/yaw_raw, /trailer/yaw_used
+trailer_pose_node:
+  ros__parameters:
+    lidar_topic: "/rsairy_ns/points"
+    angle_topic: "/trailer/articulation_angle"
+    command_angle_topic: "/mtt_articulation_angle"
+
+    # Command is not ground truth. Use only if articulation LiDAR angle is absent.
+    use_command_as_primary: false
+    command_fallback_timeout: 1.0
+
+    # Hitch yaw-pivot in base_link. Keep consistent with trailer_detector_node/URDF.
+    hitch_base_x: -1.45
+    hitch_base_y: -0.085
+    hitch_base_z:  0.35
+
+    # Simple trailer geometry. Lines are drawn hitch -> rear, not center +/- L/2.
+    trailer_body_offset: 0.90
+    trailer_front_offset: 0.05
+    trailer_rear_offset: 1.90
+    trailer_width: 0.80
+    yaw_offset: 0.0
+
+    # Oriented ROI around the prior trailer centre. x=longitudinal, y=lateral, z=vertical.
+    roi_half_x: 0.85
+    roi_half_y: 0.70
+    roi_half_z: 1.10
+    roi_marker_vertical_scale_factor: 0.60
+
+    publish_trailer_roi_cloud: true
+    enable_voxel: true
+    voxel_size: 0.04
+
+    # Local ground removal: h_floor = quantile(h, q), keep h > h_floor + margin.
+    enable_ground_filter: true
+    ground_quantile: 0.10
+    ground_margin: 0.06
+
+    # 2-D PCA centerline gates. The cloud only gives a small yaw correction.
+    min_points: 30
+    min_points_after_ground: 20
+    min_span_s: 0.45
+    min_centerline_pca_ratio: 2.2
+    max_yaw_correction: 0.20     # rad, ~11.5 deg
+    max_yaw_jump: 0.15           # rad, reject sudden residual jumps
+
+    # Position corrections are intentionally small; the prior/cube is the backbone.
+    max_position_correction_s: 0.05
+    max_position_correction_l: 0.08
+    max_position_correction_h: 0.06
+
+    # Pitch is optional and strongly gated. Roll is disabled by default.
+    enable_pitch_estimation: true
+    max_pitch: 0.12              # rad, ~7 deg
+    max_pitch_rms: 0.08
+
+    enable_roll_estimation: false
+    max_roll: 0.08
+    width_tolerance: 0.35
+    min_side_points: 20
+
+    # Filter only residual corrections, never the articulation prior itself.
+    alpha_yaw: 0.25
+    alpha_pitch: 0.02
+    alpha_roll: 0.02
+    alpha_position: 0.20
+    yaw_decay_to_prior: 0.85
+    pitch_decay_to_zero: 0.80
+    roll_decay_to_zero: 0.70
+    position_decay_to_prior: 0.70
+
 # ── Dual-LiDAR merger ────────────────────────────────────────────────────────
+# Architecture: cache-based temporal pairing (replaces message_filters).
+#
+# anchor_sensor="hesai" (default): one merged cloud per Hesai scan (~20 Hz).
+#   Each Hesai frame is paired with the nearest RS-Airy frame in the cache.
+#   The same RS-Airy scan may be reused for two consecutive Hesai frames
+#   (allow_reuse_other_sensor=true) so no Hesai temporal data is lost.
+#
+# anchor_sensor="rsairy": one merged cloud per RS-Airy scan (~10 Hz).
+# anchor_sensor="either": publish on arrival of either sensor (~20-30 Hz,
+#   duplicate pairs are suppressed).
+#
+# normalize_fields=false (default):
+#   When both sources are field-compatible, preserves all original fields
+#   (ring, timestamp, etc.) via the fast byte-copy path.
+#   When fields differ, automatically falls back to the normalized layout
+#   {x,y,z,intensity,sensor_id} with sensor_id=0 (Hesai) / 1 (RS-Airy).
+#   Set to true to always produce the normalized layout.
+#
+# Self-filter bounding boxes only affect /merged_points_filtered.
+# /merged_points_raw and /merged_points are never filtered.
+# publish_filtered must be true for filtered output to be generated.
 cloud_merger_node:
   ros__parameters:
     target_frame: "base_link"
-    sync_tolerance: 0.05      # seconds — drop frame if LiDAR timestamps diverge more
 
-    # Self-filter BB1: tractor chassis (base_link frame: x=forward, y=left, z=up)
-    # The trailer is behind the robot (x < -0.90 m) and is preserved.
-    # Adjust by watching /merged_points vs /merged_points_filtered in Foxglove.
+    # Temporal pairing
+    anchor_sensor: "hesai"          # "hesai" | "rsairy" | "either"
+    max_pair_dt: 0.075              # s — max allowed |dt| between paired scans
+    tf_timeout: 0.05                # s — TF lookup timeout per cloud
+    max_cache_size: 20              # entries per sensor ring buffer
+    allow_reuse_other_sensor: true  # allow RS-Airy reuse across 2 Hesai frames
+
+    # Output format
+    normalize_fields: false         # false → preserve original fields if compatible
+    remove_invalid_points: false    # remove NaN/Inf only when true (path B only)
+
+    # Optional outputs (disabled by default)
+    publish_filtered: false         # enable /merged_points_filtered with bbox filter
+    publish_debug_inputs: false     # enable /hesai_in_base and /rsairy_in_base
+
+    # Self-filter BB1: tractor chassis (base_link: x=forward, y=left, z=up)
+    # The trailer is further in -x and is NOT removed by this box.
+    # Tune by watching /merged_points vs /merged_points_filtered in Foxglove.
     bbox_chassis_x: [-0.90, 0.70]
     bbox_chassis_y: [-0.40, 0.40]
     bbox_chassis_z: [-0.10, 0.80]
 
-    # Self-filter BB2: LiDAR cage/mounting structure (tight box at sensor cluster)
+    # Self-filter BB2: LiDAR cage / mounting structure
     bbox_cage_x: [-0.25, 0.15]
     bbox_cage_y: [-0.20, 0.20]
     bbox_cage_z: [ 0.70, 1.10]
+
+    # Optional mapping-only self-filter for the trailer body. This affects only
+    # /merged_points_filtered; trailer perception still reads /rsairy_ns/points.
+    enable_trailer_bbox_filter: false
+    bbox_trailer_x: [-3.60, -0.95]
+    bbox_trailer_y: [-0.85,  0.85]
+    bbox_trailer_z: [-0.20,  1.30]

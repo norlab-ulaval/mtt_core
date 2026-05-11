@@ -25,13 +25,13 @@ MttCmdArbiterNode::MttCmdArbiterNode(const rclcpp::NodeOptions & options)
   auto_cmd_sub_ = create_subscription<geometry_msgs::msg::TwistStamped>(
     auto_cmd_topic_, 20, std::bind(&MttCmdArbiterNode::on_auto_cmd, this, std::placeholders::_1));
   mode_sub_ = create_subscription<std_msgs::msg::String>(
-    "selected_mode", 20, std::bind(&MttCmdArbiterNode::on_mode, this, std::placeholders::_1));
+    "mtt_control/selected_mode", 20, std::bind(&MttCmdArbiterNode::on_mode, this, std::placeholders::_1));
   auto_enabled_sub_ = create_subscription<std_msgs::msg::Bool>(
-    "auto_mode_enabled", 20, std::bind(&MttCmdArbiterNode::on_auto_enabled, this, std::placeholders::_1));
+    "mtt_control/auto_mode_enabled", 20, std::bind(&MttCmdArbiterNode::on_auto_enabled, this, std::placeholders::_1));
   deadman_sub_ = create_subscription<std_msgs::msg::Bool>(
-    "teleop_deadman", 20, std::bind(&MttCmdArbiterNode::on_deadman, this, std::placeholders::_1));
+    "mtt_control/teleop_deadman", 20, std::bind(&MttCmdArbiterNode::on_deadman, this, std::placeholders::_1));
   estop_sub_ = create_subscription<std_msgs::msg::Bool>(
-    "teleop_estop", 20, std::bind(&MttCmdArbiterNode::on_estop, this, std::placeholders::_1));
+    "mtt_control/teleop_estop", 20, std::bind(&MttCmdArbiterNode::on_estop, this, std::placeholders::_1));
 
   output_pub_ = create_publisher<geometry_msgs::msg::TwistStamped>(output_cmd_topic_, 20);
   source_pub_ = create_publisher<std_msgs::msg::String>(source_topic_, rclcpp::QoS(1).transient_local());
@@ -42,18 +42,21 @@ MttCmdArbiterNode::MttCmdArbiterNode(const rclcpp::NodeOptions & options)
 
 void MttCmdArbiterNode::on_manual_cmd(const geometry_msgs::msg::TwistStamped::SharedPtr msg)
 {
+  std::lock_guard<std::mutex> lock(state_mutex_);
   last_manual_cmd_ = *msg;
   has_manual_cmd_ = true;
 }
 
 void MttCmdArbiterNode::on_auto_cmd(const geometry_msgs::msg::TwistStamped::SharedPtr msg)
 {
+  std::lock_guard<std::mutex> lock(state_mutex_);
   last_auto_cmd_ = *msg;
   has_auto_cmd_ = true;
 }
 
 void MttCmdArbiterNode::on_mode(const std_msgs::msg::String::SharedPtr msg)
 {
+  std::lock_guard<std::mutex> lock(state_mutex_);
   const auto new_mode = control_mode_from_string(msg->data);
   if (new_mode != current_mode_) {
     current_mode_ = new_mode;
@@ -64,16 +67,19 @@ void MttCmdArbiterNode::on_mode(const std_msgs::msg::String::SharedPtr msg)
 
 void MttCmdArbiterNode::on_auto_enabled(const std_msgs::msg::Bool::SharedPtr msg)
 {
+  std::lock_guard<std::mutex> lock(state_mutex_);
   auto_enabled_ = msg->data;
 }
 
 void MttCmdArbiterNode::on_deadman(const std_msgs::msg::Bool::SharedPtr msg)
 {
+  std::lock_guard<std::mutex> lock(state_mutex_);
   deadman_active_ = msg->data;
 }
 
 void MttCmdArbiterNode::on_estop(const std_msgs::msg::Bool::SharedPtr msg)
 {
+  std::lock_guard<std::mutex> lock(state_mutex_);
   estop_active_ = msg->data;
 }
 
@@ -103,6 +109,7 @@ void MttCmdArbiterNode::publish_cmd(const geometry_msgs::msg::TwistStamped & msg
 
 void MttCmdArbiterNode::on_timer()
 {
+  std::lock_guard<std::mutex> lock(state_mutex_);
   geometry_msgs::msg::TwistStamped output;
   output.header.stamp = now();
   std::string source = "STOP";

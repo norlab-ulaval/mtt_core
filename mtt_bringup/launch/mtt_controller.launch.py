@@ -31,10 +31,18 @@ def generate_launch_description():
             description="Spawn the Gazebo joint_state_broadcaster",
         )
     )
+    declared_arguments.append(
+        launch.actions.DeclareLaunchArgument(
+            name="spawn_motion_controllers",
+            default_value="true",
+            description="Spawn wheel and yaw controllers if they are not already managed by Gazebo startup",
+        )
+    )
     
     # Initialize Arguments
     gui = LaunchConfiguration("gui")
     enable_joint_state_broadcaster = LaunchConfiguration("enable_joint_state_broadcaster")
+    spawn_motion_controllers = LaunchConfiguration("spawn_motion_controllers")
 
 
     # joint state broadcaster
@@ -49,14 +57,16 @@ def generate_launch_description():
         package="controller_manager",
         executable="spawner",
         arguments=["wheel_group_controller", "--param-file", ros2controlPath],
-        output="screen"
+        output="screen",
+        condition=launch.conditions.IfCondition(spawn_motion_controllers),
     )
 
     yaw_controller_spawner = launch_ros.actions.Node(
         package="controller_manager",
         executable="spawner",
         arguments=["yaw_controller", "--param-file", ros2controlPath],
-        output="screen"
+        output="screen",
+        condition=launch.conditions.IfCondition(spawn_motion_controllers),
     )
 
     mtt_controller_interface = launch_ros.actions.Node(

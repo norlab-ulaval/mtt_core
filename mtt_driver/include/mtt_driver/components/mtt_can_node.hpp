@@ -14,7 +14,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include <geometry_msgs/msg/twist_stamped.hpp>
 #include <std_msgs/msg/bool.hpp>
-#include <std_msgs/msg/u_int8.hpp>
+#include <std_msgs/msg/float64.hpp>
 
 #include <mtt_msgs/msg/mtt_tachometer_data.hpp>
 #include <mtt_msgs/msg/mtt_vehicle_status.hpp>
@@ -24,6 +24,7 @@
 #include <mtt_msgs/msg/mtt_can_frame.hpp>
 #include <mtt_interfaces/srv/set_vehicule_type_srv.hpp>
 #include <mtt_interfaces/srv/get_vehicule_type_srv.hpp>
+#include <mtt_interfaces/srv/set_steer_control_mode.hpp>
 
 #include "mtt_driver/hardware/can_interface.hpp"
 #include "mtt_driver/hardware/linux_socket_can.hpp"
@@ -103,12 +104,15 @@ private:
   rclcpp::Publisher<mtt_msgs::msg::MttTachometerData>::SharedPtr tachometer_pub_;
   rclcpp::Publisher<mtt_msgs::msg::MttVehicleStatus>::SharedPtr  status_pub_;
   rclcpp::Publisher<mtt_msgs::msg::MttDrivingMode>::SharedPtr    driving_mode_pub_;
-  rclcpp::Publisher<std_msgs::msg::UInt8>::SharedPtr             steer_cmd_pub_;
+  // mtt/articulation_cmd: commanded articulation angle in rad (standalone, SensorDataQoS).
+  // Mirrors mtt_tachometer.model_articulation_command_rad for direct Foxglove/rqt monitoring.
+  rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr           articulation_cmd_pub_;
   rclcpp::Publisher<mtt_msgs::msg::MttBmsData>::SharedPtr        bms_pub_;
   rclcpp::Publisher<mtt_msgs::msg::MttCanFrame>::SharedPtr       can_debug_pub_;
 
   rclcpp::Service<mtt_interfaces::srv::SetVehiculeTypeSrv>::SharedPtr set_mode_srv_;
   rclcpp::Service<mtt_interfaces::srv::GetVehiculeTypeSrv>::SharedPtr get_mode_srv_;
+  rclcpp::Service<mtt_interfaces::srv::SetSteerControlMode>::SharedPtr set_steer_mode_srv_;
 
   rclcpp::TimerBase::SharedPtr control_timer_;
   rclcpp::TimerBase::SharedPtr can_send_timer_;
@@ -143,6 +147,9 @@ private:
   void on_get_mode(
     const mtt_interfaces::srv::GetVehiculeTypeSrv::Request::SharedPtr req,
     mtt_interfaces::srv::GetVehiculeTypeSrv::Response::SharedPtr res);
+  void on_set_steer_mode(
+    const mtt_interfaces::srv::SetSteerControlMode::Request::SharedPtr req,
+    mtt_interfaces::srv::SetSteerControlMode::Response::SharedPtr res);
 };
 
 }  // namespace mtt

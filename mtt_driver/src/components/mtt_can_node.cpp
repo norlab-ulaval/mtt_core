@@ -58,6 +58,12 @@ MttCanNode::MttCanNode(const rclcpp::NodeOptions& options)
   hold_assist_params_.dither_amplitude = declare_parameter("hold_assist_dither_amplitude", 0.02);
   hold_assist_params_.dither_frequency_hz =
     declare_parameter("hold_assist_dither_frequency_hz", 6.0);
+  hold_assist_params_.active_decel_enabled =
+    declare_parameter("hold_assist_active_decel_enabled", false);
+  hold_assist_params_.active_decel_entry_speed_ms =
+    declare_parameter("hold_assist_active_decel_entry_speed_ms", 0.15);
+  hold_assist_params_.active_decel_output_limit =
+    declare_parameter("hold_assist_active_decel_output_limit", 0.60);
   base_frame_          = declare_parameter("base_frame",           std::string("base_footprint"));
   cmd_angular_mode_    = declare_parameter("cmd_angular_mode",     std::string("normalized_steer"));
   steer_control_mode_  = declare_parameter("steer_control_mode",   std::string("closed_loop"));
@@ -111,10 +117,11 @@ MttCanNode::MttCanNode(const rclcpp::NodeOptions& options)
   init_can_interface();
 
   // ── Publishers ───────────────────────────────────────────────────────
-  tachometer_pub_   = create_publisher<mtt_msgs::msg::MttTachometerData>("mtt_tachometer", 10);
+  // SensorDataQoS (BEST_EFFORT) matches all subscribers (mtt_odometry, joint_state_builder, health).
+  tachometer_pub_   = create_publisher<mtt_msgs::msg::MttTachometerData>("mtt_tachometer", rclcpp::SensorDataQoS());
   status_pub_       = create_publisher<mtt_msgs::msg::MttVehicleStatus>("mtt_status", 10);
   driving_mode_pub_ = create_publisher<mtt_msgs::msg::MttDrivingMode>("mtt_driving_mode", 10);
-  steer_cmd_pub_    = create_publisher<std_msgs::msg::UInt8>("mtt_steer_cmd", 10);
+  articulation_cmd_pub_ = create_publisher<std_msgs::msg::Float64>("mtt/articulation_cmd", rclcpp::SensorDataQoS());
   bms_pub_          = create_publisher<mtt_msgs::msg::MttBmsData>("mtt_battery/status", 10);
   if (publish_can_debug_) {
     can_debug_pub_ = create_publisher<mtt_msgs::msg::MttCanFrame>(can_debug_topic_, 50);
@@ -128,10 +135,10 @@ MttCanNode::MttCanNode(const rclcpp::NodeOptions& options)
     "mtt_aux_cmd", 10,
     [this](const mtt_msgs::msg::MttAuxCommand::SharedPtr msg){ on_aux_cmd(msg); });
   estop_sub_ = create_subscription<std_msgs::msg::Bool>(
-    "teleop_estop", 10,
+    "mtt_control/teleop_estop", 10,
     [this](const std_msgs::msg::Bool::SharedPtr msg){ on_estop(msg); });
   deadman_sub_ = create_subscription<std_msgs::msg::Bool>(
-    "teleop_deadman", 10,
+    "mtt_control/teleop_deadman", 10,
     [this](const std_msgs::msg::Bool::SharedPtr msg){ on_deadman(msg); });
 
   // ── Services ─────────────────────────────────────────────────────────
@@ -147,6 +154,12 @@ MttCanNode::MttCanNode(const rclcpp::NodeOptions& options)
       const mtt_interfaces::srv::GetVehiculeTypeSrv::Request::SharedPtr req,
       mtt_interfaces::srv::GetVehiculeTypeSrv::Response::SharedPtr res
     ){ on_get_mode(req, res); });
+  set_steer_mode_srv_ = create_service<mtt_interfaces::srv::SetSteerControlMode>(
+    "mtt/set_steer_control_mode",
+    [this](
+      const mtt_interfaces::srv::SetSteerControlMode::Request::SharedPtr req,
+      mtt_interfaces::srv::SetSteerControlMode::Response::SharedPtr res
+    ){ on_set_steer_mode(req, res); });
 
   // ── Timers ───────────────────────────────────────────────────────────
   using ms = std::chrono::duration<double, std::milli>;
@@ -662,6 +675,12 @@ void MttCanNode::publish_vehicle_data()
     tacho_msg.model_yaw_rate_nominal_rad_s = synthetic_model_yaw_rate_nominal_rad_s;
     tacho_msg.model_yaw_rate_effective_rad_s = synthetic_model_yaw_rate_effective_rad_s;
     tachometer_pub_->publish(tacho_msg);
+
+    // Publish commanded articulation angle as a standalone observable topic.
+    // Same value as tacho_msg.model_articulation_command_rad but directly plottable.
+    std_msgs::msg::Float64 artic_cmd_msg;
+    artic_cmd_msg.data = synthetic_model_articulation_command_rad;
+    articulation_cmd_pub_->publish(artic_cmd_msg);
   }
 
   // Status message (always published for safety monitoring)
@@ -721,11 +740,6 @@ void MttCanNode::publish_vehicle_data()
   status_msg.battery_hardware_revision_raw = versions_snap.battery_hardware_revision_raw;
   status_msg.battery_software_revision_raw = versions_snap.battery_software_revision_raw;
   status_pub_->publish(status_msg);
-
-  // Steer raw feedback
-  std_msgs::msg::UInt8 steer_fb;
-  steer_fb.data = static_cast<uint8_t>(steer_raw);
-  steer_cmd_pub_->publish(steer_fb);
 
   // BMS message (published at control rate; skips if no BMS frames received yet)
   if (bms_snap.has_soc ||
@@ -846,6 +860,30 @@ void MttCanNode::on_get_mode(
   res->vehicule_type = static_cast<uint8_t>(current_driving_mode_);
   res->type_name = (current_driving_mode_ >= 0 && current_driving_mode_ < 3)
                    ? names[current_driving_mode_] : "UNKNOWN";
+}
+
+void MttCanNode::on_set_steer_mode(
+  const mtt_interfaces::srv::SetSteerControlMode::Request::SharedPtr req,
+  mtt_interfaces::srv::SetSteerControlMode::Response::SharedPtr res)
+{
+  if (req->control_mode != "open_loop" && req->control_mode != "closed_loop") {
+    res->success = false;
+    res->message = "Invalid control_mode. Use 'open_loop' or 'closed_loop'";
+    return;
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(frame_mutex_);
+    steer_control_mode_ = req->control_mode;
+    command_frame_.set_steering_mode(
+      steer_control_mode_ == "closed_loop"
+        ? can::SteeringMode::CloseLoop
+        : can::SteeringMode::OpenLoop);
+  }
+
+  res->success = true;
+  res->message = "Steer control mode set to " + steer_control_mode_;
+  RCLCPP_INFO(get_logger(), "CAN steer mode → %s", steer_control_mode_.c_str());
 }
 
 }  // namespace mtt

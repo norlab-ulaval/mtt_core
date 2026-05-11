@@ -33,12 +33,17 @@ MttTeleopJoyNode::MttTeleopJoyNode(const rclcpp::NodeOptions & options)
   // We publish on cmd_vel_raw typically
   cmd_vel_pub_ = this->create_publisher<geometry_msgs::msg::TwistStamped>("cmd_vel_raw", 10);
   aux_cmd_pub_ = this->create_publisher<mtt_msgs::msg::MttAuxCommand>("mtt_aux_cmd", 10);
-  estop_pub_ = this->create_publisher<std_msgs::msg::Bool>("teleop_estop", 10);
-  deadman_pub_ = this->create_publisher<std_msgs::msg::Bool>("teleop_deadman", 10);
+  estop_pub_ = this->create_publisher<std_msgs::msg::Bool>("mtt_control/teleop_estop", 10);
+  deadman_pub_ = this->create_publisher<std_msgs::msg::Bool>("mtt_control/teleop_deadman", 10);
 
   joy_sub_ = this->create_subscription<sensor_msgs::msg::Joy>(
     "joy", 10, std::bind(&MttTeleopJoyNode::joy_callback, this, std::placeholders::_1));
 
+  RCLCPP_WARN(
+    this->get_logger(),
+    "mtt_teleop_joy_node is DEPRECATED. Use mtt_operator_input_node instead. "
+    "This node publishes on 'cmd_vel_raw' which is NOT connected to the control pipeline. "
+    "It will be removed in a future release.");
   RCLCPP_INFO(this->get_logger(), "MTT Teleop C++ Node started.");
 }
 

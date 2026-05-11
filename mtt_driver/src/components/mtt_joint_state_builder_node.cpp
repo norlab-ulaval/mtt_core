@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cmath>
 #include <memory>
+#include <mutex>
 #include <utility>
 
 #include "rclcpp_components/register_node_macro.hpp"
@@ -74,11 +75,13 @@ MttJointStateBuilderNode::MttJointStateBuilderNode(const rclcpp::NodeOptions & o
 
 void MttJointStateBuilderNode::on_articulation(const std_msgs::msg::Float64::SharedPtr msg)
 {
+  std::lock_guard<std::mutex> lock(state_mutex_);
   articulation_rad_ = msg->data;
 }
 
 void MttJointStateBuilderNode::on_tachometer(const mtt_msgs::msg::MttTachometerData::SharedPtr msg)
 {
+  std::lock_guard<std::mutex> lock(state_mutex_);
   const auto stamp = message_stamp_or_now(msg->header);
   if (last_tacho_stamp_) {
     const double dt = (stamp - *last_tacho_stamp_).seconds();
@@ -91,6 +94,7 @@ void MttJointStateBuilderNode::on_tachometer(const mtt_msgs::msg::MttTachometerD
 
 void MttJointStateBuilderNode::publish_joint_states()
 {
+  std::lock_guard<std::mutex> lock(state_mutex_);
   bool use_sim_time = false;
   (void)get_parameter("use_sim_time", use_sim_time);
   const auto stamp = now();

@@ -49,7 +49,7 @@ mtt_joint_state_builder_node:
     tachometer_topic: mtt_tachometer
     joint_state_topic: joint_states
     pitch_rest_rad: -1.5707963267948966
-    yaw_rest_rad: 1.5707963267948966
+    yaw_rest_rad: 0.0
     roll_rest_rad: -1.5707963267948966
     articulation_sign: 1.0
     max_articulation_deg: 60.0
@@ -60,3 +60,16 @@ mtt_joint_state_builder_node:
     trailer_wheel_radius_m: 0.0508
     left_wheel_rotation_sign: 1.0
     right_wheel_rotation_sign: 1.0
+
+mtt_articulation_sensor_node:
+  ros__parameters:
+    serial_port: "/dev/serial/by-id/usb-STMicroelectronics_STM32_STLink_066EFF373146363143225155-if02"
+    baud_rate: 921600
+    publish_rate_hz: 50.0
+    filter_window_size: 50
+    # Convention: positive = LEFT turn (CCW/REP-103), negative = RIGHT.
+    # LUT already encodes this correctly (low bits→+48°, high bits→-49°).
+    invert_sign: false
+    angle_offset_rad: 0.0
+    bit_coords: [82, 214, 313, 430, 510, 600, 723, 831, 929, 1028, 1128, 1201, 1306, 1410, 1529, 1628, 1737, 1826, 1906, 2016, 2119, 2226, 2337, 2443, 2520, 2617, 2716, 2815, 2908, 3052, 3106, 3258, 3323, 3408]
+    angle_coords_deg: [48, 43, 40, 36, 35, 32, 29, 25, 23, 20, 18, 15, 12, 9, 5, 2, 0, -2, -4, -7, -8, -10, -14, -18, -20, -21, -28, -26, -30, -35, -40, -43, -45, -49]

@@ -4,6 +4,9 @@
       action_name: "/follow_path"
       odom_topic: "/mapping/icp_odom"
       cmd_vel_topic: "controller/cmd_vel"
+      # WILN dynamic control plan — MUST match wiln_node's control_local_plan_topic.
+      # This is NOT diagnostic-only: the follower prioritises this topic over the global path.
+      local_plan_topic: "/wiln/control/local_plan"
       control_rate_hz: 20.0
       default_speed_ms: 0.60
       max_speed_ms: 0.80

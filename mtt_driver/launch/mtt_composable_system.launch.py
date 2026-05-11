@@ -49,6 +49,10 @@ def generate_launch_description():
         DeclareLaunchArgument("base_frame", default_value="base_footprint"),
         DeclareLaunchArgument("odom_frame", default_value="odom"),
         DeclareLaunchArgument("odometry_broadcast_tf", default_value="true"),
+        DeclareLaunchArgument(
+            "articulation_serial_port",
+            default_value="/dev/serial/by-id/usb-STMicroelectronics_STM32_STLink_066EFF373146363143225155-if02",
+        ),
         DeclareLaunchArgument("publish_runtime_joint_states", default_value="false"),
         DeclareLaunchArgument("runtime_joint_states_topic", default_value="runtime_joint_states"),
         DeclareLaunchArgument("use_rviz", default_value="true"),
@@ -83,6 +87,7 @@ def generate_launch_description():
         "base_frame",
         "odom_frame",
         "odometry_broadcast_tf",
+        "articulation_serial_port",
         "publish_runtime_joint_states",
         "runtime_joint_states_topic",
         "use_rviz",

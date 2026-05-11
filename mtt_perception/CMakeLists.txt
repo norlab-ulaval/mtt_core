@@ -39,13 +39,26 @@ add_executable(cloud_merger_node
   src/cloud_merger_node.cpp
 )
 ament_target_dependencies(cloud_merger_node
-  rclcpp sensor_msgs tf2 tf2_ros tf2_sensor_msgs message_filters pcl_conversions
+  rclcpp sensor_msgs geometry_msgs tf2 tf2_ros tf2_sensor_msgs
 )
-target_link_libraries(cloud_merger_node ${PCL_LIBRARIES})
+
+# --- Trailer Pose Node (3D body pose from rear LiDAR + articulation angle) ---
+add_executable(trailer_pose_node
+  src/trailer_pose_node.cpp
+)
+ament_target_dependencies(trailer_pose_node
+  rclcpp sensor_msgs geometry_msgs std_msgs visualization_msgs
+  tf2 tf2_ros tf2_geometry_msgs pcl_conversions
+)
+target_link_libraries(trailer_pose_node
+  ${PCL_LIBRARIES}
+  Eigen3::Eigen
+)
 
 install(TARGETS
   trailer_detector_node
   cloud_merger_node
+  trailer_pose_node
   DESTINATION lib/${PROJECT_NAME}
 )
 

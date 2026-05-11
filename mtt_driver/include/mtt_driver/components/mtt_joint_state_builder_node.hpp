@@ -2,6 +2,7 @@
 #define MTT_DRIVER__COMPONENTS__MTT_JOINT_STATE_BUILDER_NODE_HPP_
 
 #include <array>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <vector>
@@ -43,6 +44,8 @@ private:
   double trailer_wheel_radius_m_{0.0508};
   double left_wheel_rotation_sign_{1.0};
   double right_wheel_rotation_sign_{1.0};
+
+  mutable std::mutex state_mutex_;
 
   double articulation_rad_{0.0};
   double cumulative_distance_m_{0.0};
