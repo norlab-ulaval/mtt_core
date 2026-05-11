@@ -44,6 +44,16 @@ struct SensorNoiseParams {
   // Visual odometry
   gtsam::Vector6 visual_odom_noise =
       (gtsam::Vector6() << 0.1, 0.1, 0.1, 0.02, 0.02, 0.02).finished();
+
+  // Articulation (hitch yaw φ)
+  double phi_sigma_hardware{0.008};  // rad — encoder fresh (≈ ±0.5°)
+  double phi_sigma_model{0.035};     // rad — model / stale encoder
+  double phi_sigma_dynamics{0.015};  // rad — random-walk per keyframe
+  double phi_prior_sigma{0.5};       // rad — initial prior on φ at k=0
+
+  // Trailer LiDAR pose factor (TrailerPoseFactor)
+  double trailer_sigma_rot{0.04};    // rad base noise (scaled by 1/√confidence)
+  double trailer_sigma_trans{0.10};  // m   base noise
 };
 
 }  // namespace mtt_loc

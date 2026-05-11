@@ -44,3 +44,50 @@ localization:
     # Output rate (Hz)
     publish_rate: 50.0
     min_imu_samples_per_update: 10
+
+    # Articulation factor graph extensions
+    use_articulation: true         # fuse encoder φ into ISAM2 as H(k) state
+    use_trailer_pose: true         # fuse trailer/pose (LiDAR RANSAC) as TrailerPoseFactor
+
+    # Articulation noise (φ = hitch yaw angle)
+    phi_sigma_hardware: 0.008      # rad — fresh encoder  (≈ ±0.5°)
+    phi_sigma_model: 0.035         # rad — stale / model fallback
+    phi_sigma_dynamics: 0.015      # rad — random-walk between keyframes
+    phi_prior_sigma: 0.5           # rad — initial prior at k=0
+
+    # TrailerPoseFactor noise (LiDAR RANSAC trailer pose in base_link)
+    trailer_sigma_rot: 0.04        # rad base noise (scaled by 1/√confidence)
+    trailer_sigma_trans: 0.10      # m   base noise
+    trailer_min_confidence: 0.10   # skip factor below this LiDAR confidence
+
+    # Covariance: extract ISAM2 marginal and publish on localization/odom
+    extract_covariance: true
+
+# ─── Trailer Localizer ──────────────────────────────────────────────────────
+# Computes trailer pose in map frame via SE(3) URDF kinematics.
+# Prefers ISAM2-optimised φ (localization/articulation_angle) when fresh.
+# Falls back to /mtt/articulation_state with fusion_mode logic.
+mtt_trailer_localizer_node:
+  ros__parameters:
+    publish_rate: 50.0             # Hz
+
+    # φ source selection (used only when ISAM2 φ is stale/unavailable)
+    #   hardware: effective_rad from articulation_state
+    #   lidar:    lidar_rad when lidar_detected, else hardware fallback
+    #   fused:    inverse-variance weighted average of hardware + lidar
+    fusion_mode: "fused"
+
+    # φ uncertainty (feeds covariance propagation)
+    sigma_phi_hardware: 0.008      # rad — encoder fresh
+    sigma_phi_lidar: 0.035         # rad — LiDAR RANSAC
+
+    # Tractor pose covariance fallback (used when ISAM2 publishes zeros)
+    default_tractor_sigma_xyz: 0.05  # m
+    default_tractor_sigma_rpy: 0.01  # rad
+
+    # ISAM2 φ freshness gate (prefer ISAM2 φ within this window)
+    articulation_timeout: 0.5      # s
+
+    # TF output
+    trailer_tf_frame: "trailer_body"  # child frame (NOT MTT_remorque — avoids URDF conflict)
+    broadcast_tf: true
