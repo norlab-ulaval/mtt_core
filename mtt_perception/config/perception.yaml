@@ -210,9 +210,12 @@ cloud_merger_node:
     bbox_chassis_y: [-0.40, 0.40]
     bbox_chassis_z: [-0.10, 0.80]
 
-    # Self-filter BB2: LiDAR cage / mounting structure
+    # Self-filter BB2: sensor pod — covers BOTH the Hesai XT-32 cage and the
+    # RS-Airy mount (calibrated 2026-04-21: rsairy @ x=-0.04 y=+0.80 z=0.86 in base_link).
+    # y extends to 0.95 so the Hesai does not see the RS-Airy housing as
+    # phantom static structure in the merged cloud.
     bbox_cage_x: [-0.25, 0.15]
-    bbox_cage_y: [-0.20, 0.20]
+    bbox_cage_y: [-0.20, 0.95]
     bbox_cage_z: [ 0.70, 1.10]
 
     # Trailer self-filter for /merged_points_filtered only.
