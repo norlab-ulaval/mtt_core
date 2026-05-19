@@ -12,6 +12,7 @@ class MotionModelParams:
     max_articulation_rad: float
     min_turn_speed_ms: float
     use_slip_heuristic: bool
+    yaw_response_gain: float
     yaw_slip_base: float
     yaw_slip_speed_gain: float
     yaw_slip_articulation_gain: float
@@ -38,11 +39,11 @@ def articulation_from_curvature(curvature_m_inv: float, params: MotionModelParam
 
 def slip_scale(speed_ms: float, articulation_rad: float, params: MotionModelParams) -> float:
     if not params.use_slip_heuristic:
-        return 1.0
+        return clamp(params.yaw_response_gain, params.yaw_slip_min_scale, 1.0)
 
     normalized_articulation = abs(articulation_rad) / max(params.max_articulation_rad, 1e-6)
     scale = (
-        1.0
+        params.yaw_response_gain
         - params.yaw_slip_base
         - params.yaw_slip_speed_gain * abs(speed_ms)
         - params.yaw_slip_articulation_gain * normalized_articulation

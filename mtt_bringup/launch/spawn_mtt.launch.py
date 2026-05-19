@@ -25,7 +25,8 @@ def launch_setup(context, *args, **kwargs):
 
     bridge_args = [
         '/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock',
-        f'/model/{robot_name}/pose@geometry_msgs/msg/TransformStamped[gz.msgs.Pose',
+        f'/model/{robot_name}/pose@geometry_msgs/msg/PoseStamped[gz.msgs.Pose',
+        # LaserScan (2-D)
         f'/world/default/model/{robot_name}/link/center_lidar_link/sensor/center_lidar/scan@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan',
         f'/world/default/model/{robot_name}/link/front_lidar_link/sensor/front_lidar/scan@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan',
         f'/world/default/model/{robot_name}/link/rear_lidar_link/sensor/rear_lidar/scan@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan',
@@ -51,6 +52,32 @@ def launch_setup(context, *args, **kwargs):
         output='screen',
     )
 
+    # Separate bridge for PointCloud2 — isolated so a failure here
+    # does not crash the clock/LaserScan/pose bridge above.
+    pc2_bridge_args = [
+        f'/world/default/model/{robot_name}/link/center_lidar_link/sensor/center_lidar/scan/points@sensor_msgs/msg/PointCloud2[gz.msgs.PointCloudPacked',
+        f'/world/default/model/{robot_name}/link/front_lidar_link/sensor/front_lidar/scan/points@sensor_msgs/msg/PointCloud2[gz.msgs.PointCloudPacked',
+        f'/world/default/model/{robot_name}/link/rear_lidar_link/sensor/rear_lidar/scan/points@sensor_msgs/msg/PointCloud2[gz.msgs.PointCloudPacked',
+    ]
+    pc2_remappings = [
+        (f'/world/default/model/{robot_name}/link/center_lidar_link/sensor/center_lidar/scan/points', 'center_lidar/points'),
+        (f'/world/default/model/{robot_name}/link/front_lidar_link/sensor/front_lidar/scan/points', 'front_lidar/points'),
+        (f'/world/default/model/{robot_name}/link/rear_lidar_link/sensor/rear_lidar/scan/points', 'rear_lidar/points'),
+    ]
+    pc2_bridge = Node(
+        package='ros_gz_bridge',
+        executable='parameter_bridge',
+        name='pc2_bridge',
+        namespace=namespace,
+        parameters=[{
+            'expand_gz_topic_names': True,
+            'use_sim_time': True,
+        }],
+        arguments=pc2_bridge_args,
+        remappings=pc2_remappings,
+        output='screen',
+    )
+
     spawn_model = Node(
         package='ros_gz_sim',
         executable='create',
@@ -65,7 +92,7 @@ def launch_setup(context, *args, **kwargs):
             '-R', pose['R'], '-P', pose['P'], '-Y', pose['Y']]
     )
 
-    return [bridge, spawn_model]
+    return [bridge, pc2_bridge, spawn_model]
 
 
 def generate_launch_description():
@@ -80,8 +107,8 @@ def generate_launch_description():
         description='Full path to the robot xacro file used to spawn the robot in Gazebo')
     
     pose_args = [
-        DeclareLaunchArgument('x_pose', default_value='-2.00'),
-        DeclareLaunchArgument('y_pose', default_value='-0.50'),
+        DeclareLaunchArgument('x_pose', default_value='0.00'),
+        DeclareLaunchArgument('y_pose', default_value='0.00'),
         DeclareLaunchArgument('z_pose', default_value='0.01'),
         DeclareLaunchArgument('roll', default_value='0.00'),
         DeclareLaunchArgument('pitch', default_value='0.00'),

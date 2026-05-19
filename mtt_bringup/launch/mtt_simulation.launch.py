@@ -82,7 +82,7 @@ def launch_sim_description(context, *args, **kwargs):
                 'joy_deadzone': LaunchConfiguration('joy_deadzone'),
                 'base_frame': LaunchConfiguration('base_frame'),
                 'odom_frame': LaunchConfiguration('odom_frame'),
-                'odometry_broadcast_tf': 'true',
+                'odometry_broadcast_tf': 'false',
                 'publish_runtime_joint_states': 'true',
                 'runtime_joint_states_topic': 'joint_states',
                 'use_rviz': 'false',
@@ -130,8 +130,8 @@ def generate_launch_description():
     ground_truth_odom_topic = LaunchConfiguration('ground_truth_odom_topic')
     world = LaunchConfiguration('world')
     pose = {
-        'x': LaunchConfiguration('x_pose', default='-2.00'),
-        'y': LaunchConfiguration('y_pose', default='-0.50'),
+        'x': LaunchConfiguration('x_pose', default='0.00'),
+        'y': LaunchConfiguration('y_pose', default='0.00'),
         'z': LaunchConfiguration('z_pose', default='0.01'),
         'R': LaunchConfiguration('roll', default='0.00'),
         'P': LaunchConfiguration('pitch', default='0.00'),
@@ -409,8 +409,8 @@ def generate_launch_description():
             'namespace': namespace,
             'use_namespace': use_namespace,
             'use_sim_time': use_sim_time,
-            'enable_joint_state_broadcaster': 'false',
-            'spawn_motion_controllers': 'false',
+            'enable_joint_state_broadcaster': 'true',
+            'spawn_motion_controllers': 'true',
         }.items(),
     )
 
@@ -428,7 +428,7 @@ def generate_launch_description():
                 'pose_topic': 'gz_pose',
                 'source_child_frame': robot_name,
                 'source_frame': 'default',
-                'broadcast_tf': False,
+                'broadcast_tf': True,
             }
         ],
     )

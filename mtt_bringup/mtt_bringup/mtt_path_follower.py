@@ -71,6 +71,7 @@ class MttPathFollower(Node):
         self._local_plan_received_time: Optional[float] = None
         self._local_plan_received = False
         self._active_goal = False
+        self._path_lost_since: Optional[float] = None
 
         self.declare_parameter("action_name", "/follow_path")
         self.declare_parameter("odom_topic", "/mapping/icp_odom")
@@ -94,7 +95,13 @@ class MttPathFollower(Node):
         self.declare_parameter("waypoint_tolerance_m", 0.35)
         self.declare_parameter("final_heading_tolerance_rad", 0.35)
         self.declare_parameter("odom_timeout_s", 2.5)
+        self.declare_parameter("max_start_distance_m", 2.0)
+        self.declare_parameter("max_lateral_error_m", 1.25)
+        self.declare_parameter("max_heading_error_rad", 1.20)
+        self.declare_parameter("max_target_distance_m", 4.0)
+        self.declare_parameter("tracking_error_grace_s", 1.0)
         self.declare_parameter("model_use_slip_heuristic", True)
+        self.declare_parameter("model_yaw_response_gain", 0.65)
         self.declare_parameter("model_yaw_slip_base", 0.10)
         self.declare_parameter("model_yaw_slip_speed_gain", 0.05)
         self.declare_parameter("model_yaw_slip_articulation_gain", 0.15)
@@ -120,11 +127,17 @@ class MttPathFollower(Node):
         self._waypoint_tolerance_m = float(self.get_parameter("waypoint_tolerance_m").value)
         self._final_heading_tolerance_rad = float(self.get_parameter("final_heading_tolerance_rad").value)
         self._odom_timeout_s = float(self.get_parameter("odom_timeout_s").value)
+        self._max_start_distance_m = float(self.get_parameter("max_start_distance_m").value)
+        self._max_lateral_error_m = float(self.get_parameter("max_lateral_error_m").value)
+        self._max_heading_error_rad = float(self.get_parameter("max_heading_error_rad").value)
+        self._max_target_distance_m = float(self.get_parameter("max_target_distance_m").value)
+        self._tracking_error_grace_s = float(self.get_parameter("tracking_error_grace_s").value)
         self._motion_model_params = MotionModelParams(
             wheelbase_m=self._l_eq_m,
             max_articulation_rad=self._psi_max_rad,
             min_turn_speed_ms=self._min_speed_ms,
             use_slip_heuristic=bool(self.get_parameter("model_use_slip_heuristic").value),
+            yaw_response_gain=float(self.get_parameter("model_yaw_response_gain").value),
             yaw_slip_base=float(self.get_parameter("model_yaw_slip_base").value),
             yaw_slip_speed_gain=float(self.get_parameter("model_yaw_slip_speed_gain").value),
             yaw_slip_articulation_gain=float(self.get_parameter("model_yaw_slip_articulation_gain").value),
@@ -168,7 +181,10 @@ class MttPathFollower(Node):
         self.get_logger().info(
             f"MTT path follower ready — action={self._action_name}  odom={self._odom_topic}  "
             f"cmd_vel={self._cmd_vel_topic}  local_plan={self._local_plan_topic}  "
-            f"v_max={self._max_speed_ms:.2f} m/s  psi_max={math.degrees(self._psi_max_rad):.1f}°"
+            f"v_max={self._max_speed_ms:.2f} m/s  psi_max={math.degrees(self._psi_max_rad):.1f}°  "
+            f"yaw_response_gain={self._motion_model_params.yaw_response_gain:.2f}  "
+            f"path_error_limits=({self._max_lateral_error_m:.2f} m, "
+            f"{math.degrees(self._max_heading_error_rad):.1f}°)"
         )
 
     def destroy_node(self):
@@ -321,6 +337,25 @@ class MttPathFollower(Node):
         linear_x = speed_mag if forward else -speed_mag
         return linear_x, steering_normalized, psi_cmd
 
+    def _tracking_errors(self, robot_pose, robot_body_yaw: float, target_pose: PoseStamped, forward: bool) -> Tuple[float, float, float]:
+        theta_eff = robot_body_yaw if forward else wrap_to_pi(robot_body_yaw + math.pi)
+        target_body_yaw = yaw_from_quaternion(target_pose.pose.orientation)
+        target_theta_eff = target_body_yaw if forward else wrap_to_pi(target_body_yaw + math.pi)
+
+        dx = target_pose.pose.position.x - robot_pose.position.x
+        dy = target_pose.pose.position.y - robot_pose.position.y
+        lateral_error = -math.sin(theta_eff) * dx + math.cos(theta_eff) * dy
+        heading_error = wrap_to_pi(target_theta_eff - theta_eff)
+        target_distance = math.hypot(dx, dy)
+        return lateral_error, heading_error, target_distance
+
+    def _tracking_error_exceeded(self, lateral_error: float, heading_error: float, target_distance: float) -> bool:
+        return (
+            abs(lateral_error) > self._max_lateral_error_m
+            or abs(heading_error) > self._max_heading_error_rad
+            or target_distance > self._max_target_distance_m
+        )
+
     def _make_result(self, code: int) -> FollowPath.Result:
         result = FollowPath.Result()
         result.result_status.data = code
@@ -330,6 +365,7 @@ class MttPathFollower(Node):
         with self._goal_lock:
             self._active_goal = True
             self._local_plan_received = False
+            self._path_lost_since = None
 
         try:
             segments = self._sanitize_paths(goal_handle.request.path)
@@ -363,6 +399,15 @@ class MttPathFollower(Node):
                     return self._make_result(self.RESULT_STATUS_PATH_LOST)
 
                 waypoint_index = self._find_start_index(segment.poses, odom.pose.pose)
+                start_distance = distance_xy(odom.pose.pose, segment.poses[waypoint_index].pose)
+                if start_distance > self._max_start_distance_m:
+                    self.get_logger().error(
+                        f"Robot is {start_distance:.2f} m from the closest route pose; "
+                        f"limit is {self._max_start_distance_m:.2f} m. Refusing replay."
+                    )
+                    self._publish_zero_command()
+                    goal_handle.abort()
+                    return self._make_result(self.RESULT_STATUS_PATH_LOST)
 
                 while rclpy.ok():
                     if goal_handle.is_cancel_requested:
@@ -404,6 +449,31 @@ class MttPathFollower(Node):
                         target_pose = global_target_pose
 
                     self._publish_target_pose(target_pose)
+
+                    lateral_error, heading_error, target_distance = self._tracking_errors(
+                        robot_pose,
+                        robot_body_yaw,
+                        target_pose,
+                        forward,
+                    )
+                    if self._tracking_error_exceeded(lateral_error, heading_error, target_distance):
+                        now_monotonic = time.monotonic()
+                        if self._path_lost_since is None:
+                            self._path_lost_since = now_monotonic
+                        self.get_logger().warn(
+                            "Tracking error high: "
+                            f"e_y={lateral_error:.2f} m, "
+                            f"e_theta={math.degrees(heading_error):.1f}°, "
+                            f"target_dist={target_distance:.2f} m",
+                            throttle_duration_sec=1.0,
+                        )
+                        if now_monotonic - self._path_lost_since > self._tracking_error_grace_s:
+                            self.get_logger().error("Path lost for too long; aborting replay.")
+                            self._publish_zero_command()
+                            goal_handle.abort()
+                            return self._make_result(self.RESULT_STATUS_PATH_LOST)
+                    else:
+                        self._path_lost_since = None
 
                     if waypoint_index == len(segment.poses) - 1 and self._segment_complete(
                         robot_pose,

@@ -375,6 +375,79 @@ Visualization Manager:
                   {}
       Update Interval: 0
       Value: true
+    # ── Center LiDAR ─────────────────────────────────────────────────────────
+    - Class: rviz_default_plugins/LaserScan
+      Name: "Center LiDAR (scan)"
+      Enabled: true
+      Topic:
+        Value: /center_lidar/scan
+        Depth: 5
+        Durability Policy: Volatile
+        Reliability Policy: Best Effort
+      Color Transformer: Intensity
+      Decay Time: 0
+      Size (m): 0.02
+    - Class: rviz_default_plugins/PointCloud2
+      Name: "Center LiDAR (points)"
+      Enabled: true
+      Topic:
+        Value: /center_lidar/points
+        Depth: 5
+        Durability Policy: Volatile
+        Reliability Policy: Best Effort
+      Color Transformer: Intensity
+      Decay Time: 0
+      Size (m): 0.02
+    # ── Front LiDAR ──────────────────────────────────────────────────────────
+    - Class: rviz_default_plugins/LaserScan
+      Name: "Front LiDAR (scan)"
+      Enabled: true
+      Topic:
+        Value: /front_lidar/scan
+        Depth: 5
+        Durability Policy: Volatile
+        Reliability Policy: Best Effort
+      Color Transformer: FlatColor
+      Color: 255; 128; 0
+      Decay Time: 0
+      Size (m): 0.02
+    - Class: rviz_default_plugins/PointCloud2
+      Name: "Front LiDAR (points)"
+      Enabled: true
+      Topic:
+        Value: /front_lidar/points
+        Depth: 5
+        Durability Policy: Volatile
+        Reliability Policy: Best Effort
+      Color Transformer: FlatColor
+      Color: 255; 128; 0
+      Decay Time: 0
+      Size (m): 0.02
+    # ── Rear LiDAR ───────────────────────────────────────────────────────────
+    - Class: rviz_default_plugins/LaserScan
+      Name: "Rear LiDAR (scan)"
+      Enabled: true
+      Topic:
+        Value: /rear_lidar/scan
+        Depth: 5
+        Durability Policy: Volatile
+        Reliability Policy: Best Effort
+      Color Transformer: FlatColor
+      Color: 0; 200; 255
+      Decay Time: 0
+      Size (m): 0.02
+    - Class: rviz_default_plugins/PointCloud2
+      Name: "Rear LiDAR (points)"
+      Enabled: true
+      Topic:
+        Value: /rear_lidar/points
+        Depth: 5
+        Durability Policy: Volatile
+        Reliability Policy: Best Effort
+      Color Transformer: FlatColor
+      Color: 0; 200; 255
+      Decay Time: 0
+      Size (m): 0.02
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48

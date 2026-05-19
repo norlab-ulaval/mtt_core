@@ -8,21 +8,27 @@
       # This is NOT diagnostic-only: the follower prioritises this topic over the global path.
       local_plan_topic: "/wiln/control/local_plan"
       control_rate_hz: 20.0
-      default_speed_ms: 0.60
-      max_speed_ms: 0.80
+      default_speed_ms: 0.40
+      max_speed_ms: 0.50
       min_speed_ms: 0.25
       slowdown_alpha: 2.0
       k_y: 0.60
       k_theta: 1.20
       l_eq_m: 2.40
       psi_max_rad: 1.0471975512
-      psi_dot_max_rad_s: 0.50
+      psi_dot_max_rad_s: 0.40
       kappa_max: 0.70
       advance_distance_m: 0.35
       waypoint_tolerance_m: 0.35
       final_heading_tolerance_rad: 0.35
       odom_timeout_s: 2.5
+      max_start_distance_m: 2.0
+      max_lateral_error_m: 1.25
+      max_heading_error_rad: 1.20
+      max_target_distance_m: 4.0
+      tracking_error_grace_s: 1.0
       model_use_slip_heuristic: true
+      model_yaw_response_gain: 0.65
       model_yaw_slip_base: 0.10
       model_yaw_slip_speed_gain: 0.05
       model_yaw_slip_articulation_gain: 0.15

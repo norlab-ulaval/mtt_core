@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import rclpy
 from rclpy.node import Node
-from geometry_msgs.msg import TransformStamped
+from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Odometry
 from tf2_ros import TransformBroadcaster
 
@@ -29,14 +29,13 @@ class OdomPublisher(Node):
         self.broadcast_tf = self.get_parameter('broadcast_tf').get_parameter_value().bool_value
 
         self.odom_pub = self.create_publisher(Odometry, self.odom_topic, 10)
-        self.sub = self.create_subscription(TransformStamped, self.pose_topic, self.callback, 10)
+        self.sub = self.create_subscription(PoseStamped, self.pose_topic, self.callback, 10)
 
         self.tf_broadcaster = TransformBroadcaster(self)
 
 
-    def callback(self, pose_msg: TransformStamped):
-        if self.source_child_frame and pose_msg.child_frame_id != self.source_child_frame:
-            return
+    def callback(self, pose_msg: PoseStamped):
+        # PoseStamped doesn't have child_frame_id, so we skip that check
         if self.source_frame and pose_msg.header.frame_id != self.source_frame:
             return
 
@@ -49,10 +48,10 @@ class OdomPublisher(Node):
         t.header.stamp = current_time
         t.header.frame_id = self.odom_frame
         t.child_frame_id = self.robot_frame
-        t.transform.translation.x = pose_msg.transform.translation.x
-        t.transform.translation.y = pose_msg.transform.translation.y
-        t.transform.translation.z = pose_msg.transform.translation.z
-        t.transform.rotation = pose_msg.transform.rotation
+        t.transform.translation.x = pose_msg.pose.position.x
+        t.transform.translation.y = pose_msg.pose.position.y
+        t.transform.translation.z = pose_msg.pose.position.z
+        t.transform.rotation = pose_msg.pose.orientation
         if self.broadcast_tf:
             self.tf_broadcaster.sendTransform(t)
 
@@ -61,10 +60,10 @@ class OdomPublisher(Node):
         odom_msg.header.stamp = current_time
         odom_msg.header.frame_id = self.odom_frame
         odom_msg.child_frame_id = self.robot_frame
-        odom_msg.pose.pose.position.x = pose_msg.transform.translation.x
-        odom_msg.pose.pose.position.y = pose_msg.transform.translation.y
-        odom_msg.pose.pose.position.z = pose_msg.transform.translation.z
-        odom_msg.pose.pose.orientation = pose_msg.transform.rotation
+        odom_msg.pose.pose.position.x = pose_msg.pose.position.x
+        odom_msg.pose.pose.position.y = pose_msg.pose.position.y
+        odom_msg.pose.pose.position.z = pose_msg.pose.position.z
+        odom_msg.pose.pose.orientation = pose_msg.pose.orientation
         odom_msg.pose.covariance = [
         1e-9, 0,    0,    0,    0,    0,
         0,    1e-9, 0,    0,    0,    0,
