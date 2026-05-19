@@ -3,14 +3,16 @@
 /// URDF kinematic chain (base_footprint → MTT_remorque):
 ///   base_footprint → base_link      : fixed, xyz=(0,0,-0.1)
 ///   base_link      → Frame_fix      : pitch joint, xyz=(-1.0512, 0.2125, 0.3578),
-///                                     rpy=(-π/2,0,0), q=-π/2
+///                                     rpy=(-π/2,0,0), q=-π/2+α  ← PITCH VARIABLE
 ///   Frame_fix      → jt_simple      : yaw joint,   xyz=(0, 0.0571, -0.2635),
-///                                     rpy=(-π/2,0,0), q=π/2+φ   ← THE VARIABLE
+///                                     rpy=(-π/2,0,0), q=π/2+φ   ← YAW VARIABLE
 ///   jt_simple      → MTT_remorque   : roll joint,  xyz=(0,0,-0.0571),
 ///                                     rpy=(-π/2,0,-π/2), q=-π/2
 ///
-/// Δ(φ) = T_bf_bl · T_pitch · Trans(xyz_yaw)·RotRPY(rpy_yaw) · Rz(π/2+φ) · T_roll
-///       = A · Rz(π/2+φ) · B     (A,B constant, precomputed at construction)
+/// Δ(φ, α) = A_prefix · Rz(-π/2+α) · A_suffix · Rz(π/2+φ) · B
+///   A_prefix = T_bf_bl · T_pitch_origin   (before pitch rotation)
+///   A_suffix = T_yaw_origin               (between pitch and yaw)
+///   B        = T_roll                     (after yaw, constant)
 
 #include "mtt_localization/trailer_localizer_node.hpp"
 
@@ -123,6 +125,12 @@ TrailerLocalizerNode::TrailerLocalizerNode(const rclcpp::NodeOptions & options)
   sigma_phi_lidar_ =
     declare_parameter("sigma_phi_lidar", 0.035);
 
+  sigma_alpha_hardware_ =
+    declare_parameter("sigma_alpha_hardware", 0.020);
+
+  sigma_alpha_model_ =
+    declare_parameter("sigma_alpha_model", 0.035);
+
   default_tractor_sigma_xyz_ =
     declare_parameter("default_tractor_sigma_xyz", 0.05);
 
@@ -156,46 +164,53 @@ TrailerLocalizerNode::TrailerLocalizerNode(const rclcpp::NodeOptions & options)
   //
   //   pitch: base_link → Frame_fixation_articule
   //     xyz=(-1.0511878376018575, 0.2125028310306423, 0.3577510511469179)
-  //     rpy=(-π/2, 0, 0)   q=-π/2
+  //     rpy=(-π/2, 0, 0)   q = -π/2 + α  ← PITCH VARIABLE (α=0 at rest)
   //
   //   yaw:  Frame_fixation_articule → joint_remorque_simple
   //     xyz=(0, 0.05714999999950, -0.26352500000200)
-  //     rpy=(-π/2, 0, 0)   q = π/2 + φ  ← VARIABLE
+  //     rpy=(-π/2, 0, 0)   q = π/2 + φ  ← YAW VARIABLE
   //
   //   roll: joint_remorque_simple → MTT_remorque
   //     xyz=(0, 0, -0.05714999999985)
   //     rpy=(-π/2, 0, -π/2)   q=-π/2
+  //
+  // Split:
+  //   A_prefix_ = T_bf_bl · T_pitch_origin        (before pitch rotation)
+  //   A_suffix_ = T_yaw_origin                    (between pitch and yaw)
+  //   B_        = T_roll                           (after yaw, constant)
+  //
+  // At runtime: Δ(φ,α) = A_prefix_ · Rz(-π/2+α) · A_suffix_ · Rz(π/2+φ) · B_
 
   // T_base_footprint → base_link (fixed joint, z offset only)
   Eigen::Isometry3d T_bf_bl = Eigen::Isometry3d::Identity();
   T_bf_bl.translation() << 0.0, 0.0, -0.1;
 
-  // T_pitch (full joint at rest: q = -π/2)
-  const Eigen::Isometry3d T_pitch = urdfJoint(
+  // Pitch joint origin ONLY (no rotation — Rz(-π/2+α) applied at runtime)
+  const Eigen::Isometry3d T_pitch_origin = urdfOrigin(
     {-1.0511878376018575, 0.2125028310306423, 0.3577510511469179},
-    {-M_PI_2, 0.0, 0.0},
-    -M_PI_2);
+    {-M_PI_2, 0.0, 0.0});
 
-  // T_yaw origin (no rotation — Rz(π/2+φ) applied at runtime)
+  // Yaw joint origin ONLY (no rotation — Rz(π/2+φ) applied at runtime)
   const Eigen::Isometry3d T_yaw_origin = urdfOrigin(
     {0.0, 0.05714999999950, -0.26352500000200},
     {-M_PI_2, 0.0, 0.0});
 
-  // T_roll (full joint at rest: q = -π/2)
+  // Roll (full joint at rest: q = -π/2, constant)
   const Eigen::Isometry3d T_roll = urdfJoint(
     {0.0, 0.0, -0.05714999999985},
     {-M_PI_2, 0.0, -M_PI_2},
     -M_PI_2);
 
-  // Precompute constant prefix and suffix
-  A_ = T_bf_bl * T_pitch * T_yaw_origin;  // everything before Rz(π/2+φ)
-  B_ = T_roll;                             // everything after  Rz(π/2+φ)
+  // Precompute constant parts
+  A_prefix_ = T_bf_bl * T_pitch_origin;  // before pitch rotation
+  A_suffix_ = T_yaw_origin;              // between pitch and yaw
+  B_ = T_roll;                           // after yaw rotation
 
   RCLCPP_INFO(get_logger(),
-    "TrailerLocalizerNode: A·Rz(π/2)·B → trailer at φ=0: t=[%.3f, %.3f, %.3f]",
-    computeDelta(0.0).translation().x(),
-    computeDelta(0.0).translation().y(),
-    computeDelta(0.0).translation().z());
+    "TrailerLocalizerNode: Δ(φ=0,α=0) → trailer at: t=[%.3f, %.3f, %.3f]",
+    computeDelta(0.0, 0.0).translation().x(),
+    computeDelta(0.0, 0.0).translation().y(),
+    computeDelta(0.0, 0.0).translation().z());
 
   // ── Publishers ──────────────────────────────────────────────────────
   trailer_odom_pub_ = create_publisher<nav_msgs::msg::Odometry>(
@@ -286,7 +301,7 @@ void TrailerLocalizerNode::publishTrailerPose()
     return;  // Stale raw articulation — skip silently
   }
 
-  // ── Select φ ─────────────────────────────────────────────────────────
+  // ── Select φ (yaw) ───────────────────────────────────────────────────
   // Priority: ISAM2-optimised φ (if fresh) → raw articulation_state
   // The ISAM2 φ is the posterior-optimal estimate fusing encoder + LiDAR.
   double phi;
@@ -306,6 +321,17 @@ void TrailerLocalizerNode::publishTrailerPose()
   }
   const double sigma2_phi = sigma_phi * sigma_phi;
 
+  // ── Select α (pitch) ─────────────────────────────────────────────────
+  // Use potentiometer reading when fresh; fall back to α=0 (flat terrain).
+  // σ_α is higher for the fallback to reflect ignorance about pitch.
+  double alpha = 0.0;
+  double sigma_alpha = sigma_alpha_model_;
+  if (articulation.pitch_fresh) {
+    alpha = articulation.pitch_rad;
+    sigma_alpha = sigma_alpha_hardware_;
+  }
+  const double sigma2_alpha = sigma_alpha * sigma_alpha;
+
   // ── Build T_map_tractor from Odometry ───────────────────────────────
   const auto & p = odom.pose.pose.position;
   const auto & q = odom.pose.pose.orientation;
@@ -315,7 +341,7 @@ void TrailerLocalizerNode::publishTrailerPose()
     Eigen::Quaterniond(q.w, q.x, q.y, q.z).toRotationMatrix();
 
   // ── Compute trailer pose ────────────────────────────────────────────
-  const Eigen::Isometry3d delta = computeDelta(phi);
+  const Eigen::Isometry3d delta = computeDelta(phi, alpha);
   const Eigen::Isometry3d T_trailer = T_tractor * delta;
 
   // ── Covariance propagation ──────────────────────────────────────────
@@ -336,9 +362,11 @@ void TrailerLocalizerNode::publishTrailerPose()
   }
 
   const Eigen::Matrix<double, 6, 1> J_phi =
-    computeJacobianPhi(T_tractor, phi);
+    computeJacobianPhi(T_tractor, phi, alpha);
+  const Eigen::Matrix<double, 6, 1> J_alpha =
+    computeJacobianAlpha(T_tractor, phi, alpha);
   const Eigen::Matrix<double, 6, 6> sigma_trailer =
-    propagateCovariance(sigma_tractor, sigma2_phi, J_phi, delta);
+    propagateCovariance(sigma_tractor, sigma2_phi, J_phi, sigma2_alpha, J_alpha, delta);
 
   // ── Build output messages ────────────────────────────────────────────
   const rclcpp::Time stamp(odom.header.stamp);
@@ -390,47 +418,71 @@ void TrailerLocalizerNode::publishTrailerPose()
 // ─────────────────────────────────────────────────────────────────────────────
 // Kinematics
 // ─────────────────────────────────────────────────────────────────────────────
-Eigen::Isometry3d TrailerLocalizerNode::computeDelta(double phi) const
+Eigen::Isometry3d TrailerLocalizerNode::computeDelta(double phi, double alpha) const
 {
-  return A_ *
-         Eigen::Isometry3d(Eigen::AngleAxisd(M_PI_2 + phi, Eigen::Vector3d::UnitZ())) *
-         B_;
+  // Δ(φ, α) = A_prefix · Rz(-π/2+α) · A_suffix · Rz(π/2+φ) · B
+  const Eigen::Isometry3d R_pitch(Eigen::AngleAxisd(-M_PI_2 + alpha, Eigen::Vector3d::UnitZ()));
+  const Eigen::Isometry3d R_yaw(Eigen::AngleAxisd(M_PI_2 + phi, Eigen::Vector3d::UnitZ()));
+  return A_prefix_ * R_pitch * A_suffix_ * R_yaw * B_;
 }
 
 Eigen::Matrix<double, 6, 1> TrailerLocalizerNode::computeJacobianPhi(
-  const Eigen::Isometry3d & T_tractor, double phi) const
+  const Eigen::Isometry3d & T_tractor, double phi, double alpha) const
 {
-  // Central differences: J_φ ≈ (log(T_nom⁻¹ · T_plus)) / eps
-  // Using right perturbation convention, [position; rotation] layout
   constexpr double kEps = 1e-5;
-  const Eigen::Isometry3d T_nom  = T_tractor * computeDelta(phi);
-  const Eigen::Isometry3d T_plus = T_tractor * computeDelta(phi + kEps);
+  const Eigen::Isometry3d T_nom  = T_tractor * computeDelta(phi, alpha);
+  const Eigen::Isometry3d T_plus = T_tractor * computeDelta(phi + kEps, alpha);
+  const Eigen::Isometry3d T_minus = T_tractor * computeDelta(phi - kEps, alpha);
 
-  // Right tangent vector: δT = T_nom⁻¹ · T_plus ≈ Exp(ε · J_φ)
-  const Eigen::Isometry3d dT = T_nom.inverse() * T_plus;
+  // Central differences: (log(T_nom⁻¹ · T_plus) - log(T_nom⁻¹ · T_minus)) / (2ε)
+  const Eigen::Isometry3d dT_p = T_nom.inverse() * T_plus;
+  const Eigen::Isometry3d dT_m = T_nom.inverse() * T_minus;
 
-  Eigen::Matrix<double, 6, 1> J;
-  // Position part [0:3]
-  J.head<3>() = dT.translation() / kEps;
-  // Rotation part [3:6] via angle-axis
-  const Eigen::AngleAxisd aa(dT.rotation());
-  J.tail<3>() = aa.axis() * aa.angle() / kEps;
-  return J;
+  Eigen::Matrix<double, 6, 1> J_p, J_m;
+  J_p.head<3>() = dT_p.translation();
+  J_m.head<3>() = dT_m.translation();
+  const Eigen::AngleAxisd aa_p(dT_p.rotation()), aa_m(dT_m.rotation());
+  J_p.tail<3>() = aa_p.axis() * aa_p.angle();
+  J_m.tail<3>() = aa_m.axis() * aa_m.angle();
+  return (J_p - J_m) / (2.0 * kEps);
+}
+
+Eigen::Matrix<double, 6, 1> TrailerLocalizerNode::computeJacobianAlpha(
+  const Eigen::Isometry3d & T_tractor, double phi, double alpha) const
+{
+  constexpr double kEps = 1e-5;
+  const Eigen::Isometry3d T_nom   = T_tractor * computeDelta(phi, alpha);
+  const Eigen::Isometry3d T_plus  = T_tractor * computeDelta(phi, alpha + kEps);
+  const Eigen::Isometry3d T_minus = T_tractor * computeDelta(phi, alpha - kEps);
+
+  const Eigen::Isometry3d dT_p = T_nom.inverse() * T_plus;
+  const Eigen::Isometry3d dT_m = T_nom.inverse() * T_minus;
+
+  Eigen::Matrix<double, 6, 1> J_p, J_m;
+  J_p.head<3>() = dT_p.translation();
+  J_m.head<3>() = dT_m.translation();
+  const Eigen::AngleAxisd aa_p(dT_p.rotation()), aa_m(dT_m.rotation());
+  J_p.tail<3>() = aa_p.axis() * aa_p.angle();
+  J_m.tail<3>() = aa_m.axis() * aa_m.angle();
+  return (J_p - J_m) / (2.0 * kEps);
 }
 
 Eigen::Matrix<double, 6, 6> TrailerLocalizerNode::propagateCovariance(
   const Eigen::Matrix<double, 6, 6> & sigma_tractor,
   double sigma2_phi,
   const Eigen::Matrix<double, 6, 1> & J_phi,
+  double sigma2_alpha,
+  const Eigen::Matrix<double, 6, 1> & J_alpha,
   const Eigen::Isometry3d & delta) const
 {
   // Right-perturbation convention:
   //   δξ_trailer = Ad(Δ⁻¹) · δξ_tractor    →  J_T = Ad(Δ⁻¹)
   //
-  // Σ_trailer = J_T · Σ_tractor · J_Tᵀ  +  J_φ · σ²_φ · J_φᵀ
+  // Σ_trailer = J_T · Σ_tractor · J_Tᵀ  +  J_φ · σ²_φ · J_φᵀ  +  J_α · σ²_α · J_αᵀ
   const Eigen::Matrix<double, 6, 6> J_T = adjoint6(delta.inverse());
   return J_T * sigma_tractor * J_T.transpose() +
-         sigma2_phi * J_phi * J_phi.transpose();
+         sigma2_phi   * J_phi   * J_phi.transpose() +
+         sigma2_alpha * J_alpha * J_alpha.transpose();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

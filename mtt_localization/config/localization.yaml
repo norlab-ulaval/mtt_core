@@ -55,6 +55,13 @@ localization:
     phi_sigma_dynamics: 0.015      # rad — random-walk between keyframes
     phi_prior_sigma: 0.5           # rad — initial prior at k=0
 
+    # Pitch state (α = hitch pitch angle, P(k) variable)
+    use_pitch_state: true           # add P(k) to ISAM2; use TrailerPoseFactorFull
+    pitch_sigma_hardware: 0.020    # rad — pitch potentiometer ADC1 (8-bit, ±1.1°)
+    pitch_sigma_timon: 0.060       # rad — 3D line ACP on timon (future LiDAR source)
+    pitch_sigma_dynamics: 0.008    # rad — terrain slope changes slowly per keyframe
+    pitch_prior_sigma: 0.20        # rad — flat-terrain prior α≈0 at k=0
+
     # TrailerPoseFactor noise (LiDAR RANSAC trailer pose in base_link)
     trailer_sigma_rot: 0.04        # rad base noise (scaled by 1/√confidence)
     trailer_sigma_trans: 0.10      # m   base noise
@@ -80,6 +87,10 @@ mtt_trailer_localizer_node:
     # φ uncertainty (feeds covariance propagation)
     sigma_phi_hardware: 0.008      # rad — encoder fresh
     sigma_phi_lidar: 0.035         # rad — LiDAR RANSAC
+
+    # α uncertainty (pitch potentiometer, ADC1 8-bit)
+    sigma_alpha_hardware: 0.020    # rad — fresh pitch potentiometer reading
+    sigma_alpha_model: 0.035       # rad — model/stale fallback (flat terrain assumed)
 
     # Tractor pose covariance fallback (used when ISAM2 publishes zeros)
     default_tractor_sigma_xyz: 0.05  # m

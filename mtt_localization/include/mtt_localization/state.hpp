@@ -45,13 +45,20 @@ struct SensorNoiseParams {
   gtsam::Vector6 visual_odom_noise =
       (gtsam::Vector6() << 0.1, 0.1, 0.1, 0.02, 0.02, 0.02).finished();
 
-  // Articulation (hitch yaw φ)
+  // Articulation — hitch yaw φ  (H(k), symbol 'h')
   double phi_sigma_hardware{0.008};  // rad — encoder fresh (≈ ±0.5°)
   double phi_sigma_model{0.035};     // rad — model / stale encoder
   double phi_sigma_dynamics{0.015};  // rad — random-walk per keyframe
   double phi_prior_sigma{0.5};       // rad — initial prior on φ at k=0
 
-  // Trailer LiDAR pose factor (TrailerPoseFactor)
+  // Articulation — hitch pitch α (P(k), symbol 'p')
+  // ADC1 potentiometer (8-bit) + 3D ACP timon from LiDAR
+  double pitch_sigma_hardware{0.020};  // rad — pitch potentiometer (8-bit, less precise)
+  double pitch_sigma_timon{0.060};     // rad — 3D line ACP on timon from LiDAR
+  double pitch_sigma_dynamics{0.008};  // rad — terrain slope changes slowly
+  double pitch_prior_sigma{0.20};      // rad — flat-terrain prior α≈0
+
+  // Trailer LiDAR pose factor (TrailerPoseFactorFull when use_pitch_state=true)
   double trailer_sigma_rot{0.04};    // rad base noise (scaled by 1/√confidence)
   double trailer_sigma_trans{0.10};  // m   base noise
 };

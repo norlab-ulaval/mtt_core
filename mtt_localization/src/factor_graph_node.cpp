@@ -6,25 +6,27 @@
 //   X(k) = Pose3   — tractor pose in map
 //   V(k) = Vector3 — tractor velocity
 //   B(k) = ImuBias — IMU bias
-//   H(k) = double  — hitch yaw angle φ (articulation, symbol 'h')
+//   H(k) = double  — hitch yaw angle φ   (articulation, symbol 'h')
+//   P(k) = double  — hitch pitch angle α  (articulation, symbol 'p', if use_pitch_state)
 //
 // Articulation factors:
-//   1. EncoderFactor     : PriorFactor<double> on H(k)    from hardware encoder
-//   2. ArticulationDyn   : BetweenFactor<double> H(k-1)→H(k)  (random-walk prior)
-//   3. TrailerPoseFactor : custom NoiseModelFactor1<double> from trailer/pose LiDAR
+//   1. EncoderFactor      : PriorFactor<double> on H(k)    from hardware yaw encoder
+//   2. ArticulationDynYaw : BetweenFactor<double> H(k-1)→H(k)  (φ random-walk)
+//   3. PitchEncoder       : PriorFactor<double> on P(k)    from pitch potentiometer (ADC1)
+//   4. ArticulationDynPitch: BetweenFactor<double> P(k-1)→P(k)  (α random-walk, slow)
+//   5. TrailerPoseFactorFull: NoiseModelFactor2<double,double> on (H(k),P(k))
+//      from trailer/pose LiDAR — 6D residual constrains both φ and α simultaneously
 //
 // Bayesian mutual aid (no circular dependency):
 //   • Tractor sensors (IMU/GPS/odom) constrain X(k) independently.
-//   • Encoder + trailer LiDAR constrain H(k) independently.
-//   • The joint posterior p(X(k), H(k) | all_z) is the product of independent
+//   • Encoder + trailer LiDAR constrain H(k) and P(k) independently.
+//   • The joint posterior p(X(k), H(k), P(k) | all_z) is the product of independent
 //     likelihoods — no measurement appears twice.
-//   • The off-diagonal block Σ_{X,H} in the joint marginal encodes the
-//     "corroboration": once H(k) is well-known, X(k)'s heading uncertainty
-//     is further reduced through the ISAM2 Bayes-tree marginalisation.
 //
 // Publishes:
-//   localization/odom              — nav_msgs/Odometry  (map frame, with Σ from ISAM2)
+//   localization/odom               — nav_msgs/Odometry  (map frame, with Σ from ISAM2)
 //   localization/articulation_angle — std_msgs/Float64   (optimised φ for downstream)
+//   localization/articulation_pitch — std_msgs/Float64   (optimised α for downstream)
 
 #include <chrono>
 #include <memory>
@@ -69,6 +71,8 @@ using gtsam::symbol_shorthand::B;
 
 /// Hitch yaw angle symbol — letter 'h' avoids collision with X/V/B
 inline gtsam::Key H_key(uint64_t i) { return gtsam::Symbol('h', i); }
+/// Hitch pitch angle symbol
+inline gtsam::Key P_key(uint64_t i) { return gtsam::Symbol('p', i); }
 
 // WGS84
 static constexpr double kEarthRadius = 6378137.0;
@@ -103,6 +107,7 @@ private:
     declare_parameter("use_visual_odom", false);
     declare_parameter("use_articulation", true);
     declare_parameter("use_trailer_pose", true);
+    declare_parameter("use_pitch_state", true);  // add P(k) pitch angle to ISAM2
 
     declare_parameter("map_frame", "map");
     declare_parameter("odom_frame", "odom");
@@ -139,11 +144,16 @@ private:
     declare_parameter("gps_origin_lat", 0.0);
     declare_parameter("gps_origin_lon", 0.0);
     declare_parameter("gps_origin_alt", 0.0);
-    // Articulation noise
+    // Articulation yaw noise
     declare_parameter("phi_sigma_hardware", 0.008);    // rad — encoder fresh
     declare_parameter("phi_sigma_model", 0.035);       // rad — model/stale
     declare_parameter("phi_sigma_dynamics", 0.015);    // rad — random-walk σ per keyframe
     declare_parameter("phi_prior_sigma", 0.5);         // rad — initial prior on φ
+    // Articulation pitch noise (P(k) state)
+    declare_parameter("pitch_sigma_hardware", 0.020);  // rad — pitch potentiometer (ADC1 8-bit)
+    declare_parameter("pitch_sigma_timon", 0.060);     // rad — 3D line ACP on timon (future)
+    declare_parameter("pitch_sigma_dynamics", 0.008);  // rad — pitch changes slowly between KFs
+    declare_parameter("pitch_prior_sigma", 0.20);      // rad — flat-terrain prior at k=0
     // Trailer LiDAR factor noise
     declare_parameter("trailer_sigma_rot", 0.04);      // rad  base rotation noise
     declare_parameter("trailer_sigma_trans", 0.10);    // m    base translation noise
@@ -159,6 +169,7 @@ private:
     use_visual_odom_ = get_parameter("use_visual_odom").as_bool();
     use_articulation_ = get_parameter("use_articulation").as_bool();
     use_trailer_pose_ = get_parameter("use_trailer_pose").as_bool();
+    use_pitch_state_  = get_parameter("use_pitch_state").as_bool();
     extract_covariance_ = get_parameter("extract_covariance").as_bool();
 
     map_frame_ = get_parameter("map_frame").as_string();
@@ -189,6 +200,10 @@ private:
     noise_.phi_sigma_model = get_parameter("phi_sigma_model").as_double();
     noise_.phi_sigma_dynamics = get_parameter("phi_sigma_dynamics").as_double();
     noise_.phi_prior_sigma = get_parameter("phi_prior_sigma").as_double();
+    noise_.pitch_sigma_hardware = get_parameter("pitch_sigma_hardware").as_double();
+    noise_.pitch_sigma_timon = get_parameter("pitch_sigma_timon").as_double();
+    noise_.pitch_sigma_dynamics = get_parameter("pitch_sigma_dynamics").as_double();
+    noise_.pitch_prior_sigma = get_parameter("pitch_prior_sigma").as_double();
     noise_.trailer_sigma_rot = get_parameter("trailer_sigma_rot").as_double();
     noise_.trailer_sigma_trans = get_parameter("trailer_sigma_trans").as_double();
     trailer_min_confidence_ = get_parameter("trailer_min_confidence").as_double();
@@ -229,6 +244,15 @@ private:
       graph_.addPrior(H_key(0), prior_phi, phi_prior_noise);
       initial_values_.insert(H_key(0), prior_phi);
       current_state_.trailer_angle = prior_phi;
+
+      if (use_pitch_state_) {
+        const double prior_alpha = 0.0;  // flat terrain
+        auto alpha_prior_noise = gtsam::noiseModel::Isotropic::Sigma(
+            1, noise_.pitch_prior_sigma);
+        graph_.addPrior(P_key(0), prior_alpha, alpha_prior_noise);
+        initial_values_.insert(P_key(0), prior_alpha);
+        current_alpha_ = prior_alpha;
+      }
     }
 
     current_state_.pose = prior_pose;
@@ -236,7 +260,8 @@ private:
     current_state_.imu_bias = prior_bias;
     current_state_.key_index = 0;
 
-    RCLCPP_INFO(get_logger(), "ISAM2 initialised (tractor SE(3) + articulation φ)");
+    RCLCPP_INFO(get_logger(), "ISAM2 initialised (tractor SE(3) + articulation φ%s)",
+        (use_articulation_ && use_pitch_state_) ? "+α" : "");
   }
 
   void setup_imu_preintegration() {
@@ -260,6 +285,10 @@ private:
     odom_pub_ = create_publisher<nav_msgs::msg::Odometry>("localization/odom", 10);
     articulation_pub_ = create_publisher<std_msgs::msg::Float64>(
         "localization/articulation_angle", 10);
+    if (use_pitch_state_) {
+      pitch_pub_ = create_publisher<std_msgs::msg::Float64>(
+          "localization/articulation_pitch", 10);
+    }
     tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
   }
 
@@ -527,20 +556,19 @@ private:
     }
 
     // ══════════════════════════════════════════════════════════════════
-    // ARTICULATION FACTORS — extend state with H(curr_key) = φ
+    // ARTICULATION FACTORS — H(curr_key)=φ  [and P(curr_key)=α]
     // ══════════════════════════════════════════════════════════════════
     if (use_articulation_) {
       // Initial value for H(curr_key): propagate from previous optimised φ
-      const double phi_predict = current_state_.trailer_angle;
-      initial_values_.insert(H_key(curr_key), phi_predict);
+      initial_values_.insert(H_key(curr_key), current_state_.trailer_angle);
 
-      // ── Factor 1: ArticulationDynamics ─────────────────────────────
-      // BetweenFactor<double>: penalises large φ changes between keyframes.
-      // Measurement = 0 (zero expected change without command info).
-      // σ_dynamics = random-walk noise (configurable).
-      //
-      // Math: e = (φ_k − φ_{k-1}) − 0 = Δφ
-      //       Jacobians: ∂e/∂φ_{k-1}=−1,  ∂e/∂φ_k=+1
+      // Initial value for P(curr_key): propagate from previous optimised α
+      if (use_pitch_state_) {
+        initial_values_.insert(P_key(curr_key), current_alpha_);
+      }
+
+      // ── Yaw dynamics: BetweenFactor H(prev)→H(curr) ───────────────
+      // Penalises large φ changes between keyframes (random-walk prior).
       {
         auto dyn_noise = gtsam::noiseModel::Isotropic::Sigma(
             1, noise_.phi_sigma_dynamics);
@@ -548,49 +576,58 @@ private:
             H_key(prev_key), H_key(curr_key), 0.0, dyn_noise));
       }
 
-      // ── Factor 2: EncoderFactor ────────────────────────────────────
-      // PriorFactor<double> on H(curr_key) from the hardware encoder.
-      // σ switches between σ_hw (encoder fresh, ±0.5°) and σ_model (stale).
-      //
-      // Information flow: encoder → constrains φ directly, independent of X.
+      // ── Pitch dynamics: BetweenFactor P(prev)→P(curr) ────────────
+      // Pitch changes slowly (terrain slope); σ_dynamics is tight (~0.5°/KF).
+      if (use_pitch_state_) {
+        auto pitch_dyn_noise = gtsam::noiseModel::Isotropic::Sigma(
+            1, noise_.pitch_sigma_dynamics);
+        graph_.add(gtsam::BetweenFactor<double>(
+            P_key(prev_key), P_key(curr_key), 0.0, pitch_dyn_noise));
+      }
+
       if (has_pending_articulation_) {
         const auto & art = pending_articulation_;
+
+        // ── Yaw encoder: PriorFactor on H(curr_key) ──────────────────
         const double phi_meas =
             art.hardware_fresh ? art.hardware_rad : art.effective_rad;
         const double sigma_enc =
             art.hardware_fresh ? noise_.phi_sigma_hardware : noise_.phi_sigma_model;
-
         graph_.addPrior(H_key(curr_key), phi_meas,
             gtsam::noiseModel::Isotropic::Sigma(1, sigma_enc));
 
-        // ── Factor 3: TrailerPoseFactor ──────────────────────────────
-        // Custom 6D factor: residual = Pose3::Logmap(Δ(φ)⁻¹ · T_measured)
+        // ── Pitch encoder: PriorFactor on P(curr_key) ─────────────────
+        // Only when potentiometer reading is fresh (ADC1, 8-bit).
+        if (use_pitch_state_ && art.pitch_fresh) {
+          graph_.addPrior(P_key(curr_key), art.pitch_rad,
+              gtsam::noiseModel::Isotropic::Sigma(1, noise_.pitch_sigma_hardware));
+        }
+
+        // ── Trailer LiDAR pose factor ──────────────────────────────────
+        // TrailerPoseFactorFull (joint φ+α) when pitch state enabled,
+        // TrailerPoseFactor (φ only) when not.
         // Noise scaled by 1/√confidence — bad detections contribute little.
-        //
-        // Information flow: trailer LiDAR → constrains φ via full SE(3) geometry.
-        // The 6D residual is overdetermined for 1D φ; GTSAM resolves via
-        // weighted least-squares on the Bayes tree.
-        //
-        // Independence guarantee: trailer/pose uses the encoder prior only for
-        // ROI selection (weak geometric hint), not as a direct measurement.
-        // The actual measurement is the LiDAR point cloud — statistically
-        // independent from the encoder.
         if (use_trailer_pose_ && has_pending_trailer_pose_) {
           const double conf = std::clamp(latest_trailer_confidence_, 0.01, 1.0);
 
           if (conf >= trailer_min_confidence_) {
-            // Scale noise by 1/√confidence: high confidence → tight noise
             const double scale = 1.0 / std::sqrt(conf);
             const double sr = noise_.trailer_sigma_rot   * scale;
             const double st = noise_.trailer_sigma_trans * scale;
 
-            // 6D diagonal noise model [ω; v] = [rx, ry, rz, tx, ty, tz]
             auto trailer_noise = gtsam::noiseModel::Diagonal::Sigmas(
                 (gtsam::Vector6() << sr, sr, sr, st, st, st).finished());
 
             const gtsam::Pose3 T_meas = stamped_to_pose3(pending_trailer_pose_);
-            graph_.add(mtt_loc::TrailerPoseFactor(
-                H_key(curr_key), T_meas, trailer_noise));
+
+            if (use_pitch_state_) {
+              // 6D residual constrains both φ and α simultaneously
+              graph_.add(mtt_loc::TrailerPoseFactorFull(
+                  H_key(curr_key), P_key(curr_key), T_meas, trailer_noise));
+            } else {
+              graph_.add(mtt_loc::TrailerPoseFactor(
+                  H_key(curr_key), T_meas, trailer_noise));
+            }
           }
           has_pending_trailer_pose_ = false;
         }
@@ -614,6 +651,9 @@ private:
 
       if (use_articulation_) {
         current_state_.trailer_angle = result.at<double>(H_key(curr_key));
+        if (use_pitch_state_) {
+          current_alpha_ = result.at<double>(P_key(curr_key));
+        }
       }
 
       // ── Extract marginal covariances ─────────────────────────────
@@ -623,9 +663,12 @@ private:
         try {
           // Tractor pose covariance (6×6)
           cov_pose_ = isam2_->marginalCovariance(X(curr_key));
-          // Articulation variance (1×1)
+          // Articulation variances (1×1 each)
           if (use_articulation_) {
             cov_phi_ = isam2_->marginalCovariance(H_key(curr_key));
+            if (use_pitch_state_) {
+              cov_alpha_ = isam2_->marginalCovariance(P_key(curr_key));
+            }
           }
           has_covariance_ = true;
         } catch (const std::exception & e) {
@@ -648,6 +691,7 @@ private:
 
     publish_odometry();
     publish_articulation();
+    publish_pitch();
     publish_tf();
   }
 
@@ -690,12 +734,20 @@ private:
     odom_pub_->publish(msg);
   }
 
-  // ─── Publish optimised articulation angle ─────────────────────────
+  // ─── Publish optimised yaw angle ─────────────────────────────────
   void publish_articulation() {
     if (!use_articulation_) return;
     std_msgs::msg::Float64 msg;
     msg.data = current_state_.trailer_angle;
     articulation_pub_->publish(msg);
+  }
+
+  // ─── Publish optimised pitch angle ───────────────────────────────
+  void publish_pitch() {
+    if (!use_articulation_ || !use_pitch_state_ || !pitch_pub_) return;
+    std_msgs::msg::Float64 msg;
+    msg.data = current_alpha_;
+    pitch_pub_->publish(msg);
   }
 
   // ─── TF broadcast: map → odom ────────────────────────────────────
@@ -728,8 +780,9 @@ private:
   std::unique_ptr<gtsam::ISAM2> isam2_;
   gtsam::NonlinearFactorGraph graph_;
   gtsam::Values initial_values_;
-  gtsam::Matrix66 cov_pose_ = gtsam::Matrix66::Zero();
-  gtsam::Matrix11 cov_phi_  = gtsam::Matrix11::Zero();
+  gtsam::Matrix66 cov_pose_  = gtsam::Matrix66::Zero();
+  gtsam::Matrix11 cov_phi_   = gtsam::Matrix11::Zero();
+  gtsam::Matrix11 cov_alpha_ = gtsam::Matrix11::Zero();
   bool has_covariance_{false};
 
   // IMU
@@ -740,6 +793,7 @@ private:
   // Optimised state
   mtt_loc::NavState current_state_;
   mtt_loc::SensorNoiseParams noise_;
+  double current_alpha_{0.0};           ///< optimised pitch angle α (from P(k))
   double trailer_min_confidence_{0.20};
 
   // Pending sensor data (tractor)
@@ -768,7 +822,7 @@ private:
   // Feature flags
   bool use_imu_, use_odom_, use_gps_, use_gps_heading_;
   bool use_lidar_odom_, use_visual_odom_;
-  bool use_articulation_, use_trailer_pose_;
+  bool use_articulation_, use_trailer_pose_, use_pitch_state_;
   bool extract_covariance_;
 
   // Frame IDs / topics
@@ -781,6 +835,7 @@ private:
   // ROS interfaces
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_pub_;
   rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr articulation_pub_;
+  rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr pitch_pub_;
   std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
 
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_;

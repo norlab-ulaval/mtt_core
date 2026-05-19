@@ -17,6 +17,7 @@
 // Published topics:
 //   /merged_points_raw        — always raw fusion, no self-filter
 //   /merged_points            — alias (backward compat)
+//   /merged_points_reliable   — optional raw fusion with reliable QoS for mappers
 //   /merged_points_filtered   — only when publish_filtered=true
 //   /hesai_in_base            — only when publish_debug_inputs=true
 //   /rsairy_in_base           — only when publish_debug_inputs=true
@@ -360,6 +361,34 @@ static void bboxFilterInplace(PointCloud2 & cloud,
   cloud.row_step = step * n_out;
 }
 
+static PointCloud2 strideSampleCloud(const PointCloud2 & cloud, int stride)
+{
+  if (stride <= 1 || cloud.point_step == 0) return cloud;
+
+  const uint32_t n_in = countPoints(cloud);
+  const uint32_t n_out = (n_in + static_cast<uint32_t>(stride) - 1u) /
+                         static_cast<uint32_t>(stride);
+
+  PointCloud2 out = cloud;
+  out.height = 1;
+  out.width = n_out;
+  out.row_step = out.point_step * out.width;
+  out.data.resize(static_cast<size_t>(out.row_step));
+
+  const uint8_t * src = cloud.data.data();
+  uint8_t * dst = out.data.data();
+  uint32_t written = 0;
+  for (uint32_t i = 0; i < n_in; i += static_cast<uint32_t>(stride)) {
+    std::memcpy(dst, src + static_cast<size_t>(i) * cloud.point_step, cloud.point_step);
+    dst += cloud.point_step;
+    ++written;
+  }
+  out.width = written;
+  out.row_step = out.point_step * out.width;
+  out.data.resize(static_cast<size_t>(out.row_step));
+  return out;
+}
+
 // ─── node ─────────────────────────────────────────────────────────────────────
 
 class CloudMergerNode : public rclcpp::Node
@@ -382,9 +411,14 @@ public:
     max_cache_size_           = declare_parameter<int>        ("max_cache_size",          20);
     allow_reuse_other_sensor_ = declare_parameter<bool>       ("allow_reuse_other_sensor", true);
     publish_filtered_         = declare_parameter<bool>       ("publish_filtered",         false);
+    publish_reliable_raw_     = declare_parameter<bool>       ("publish_reliable_raw_for_mapping", false);
     publish_debug_inputs_     = declare_parameter<bool>       ("publish_debug_inputs",     false);
     normalize_fields_         = declare_parameter<bool>       ("normalize_fields",         true);
     remove_invalid_points_    = declare_parameter<bool>       ("remove_invalid_points",    false);
+    enable_self_bbox_filter_  = declare_parameter<bool>       ("enable_self_bbox_filter",  true);
+    hesai_stride_             = declare_parameter<int>        ("hesai_stride",             1);
+    rsairy_stride_            = declare_parameter<int>        ("rsairy_stride",            1);
+    rsairy_inject_every_n_    = declare_parameter<int>        ("rsairy_inject_every_n",    1);
 
     // Bounding-box self-filter parameters
     // (Only affect /merged_points_filtered — raw output is never touched)
@@ -395,9 +429,9 @@ public:
     bbox_cage_y_    = declare_parameter<std::vector<double>>("bbox_cage_y",    {-0.20, 0.20});
     bbox_cage_z_    = declare_parameter<std::vector<double>>("bbox_cage_z",    { 0.70, 1.10});
     enable_trailer_bbox_filter_ = declare_parameter<bool>("enable_trailer_bbox_filter", false);
-    bbox_trailer_x_ = declare_parameter<std::vector<double>>("bbox_trailer_x", {-3.60, -0.95});
-    bbox_trailer_y_ = declare_parameter<std::vector<double>>("bbox_trailer_y", {-0.85, 0.85});
-    bbox_trailer_z_ = declare_parameter<std::vector<double>>("bbox_trailer_z", {-0.20, 1.30});
+    bbox_trailer_x_ = declare_parameter<std::vector<double>>("bbox_trailer_x", {-4.20, -0.75});
+    bbox_trailer_y_ = declare_parameter<std::vector<double>>("bbox_trailer_y", {-1.35, 1.35});
+    bbox_trailer_z_ = declare_parameter<std::vector<double>>("bbox_trailer_z", {-0.35, 2.50});
 
     // Parse anchor mode
     if      (anchor_sensor_str_ == "hesai")  anchor_mode_ = AnchorMode::HESAI;
@@ -424,6 +458,9 @@ public:
     // ── Publishers ─────────────────────────────────────────────────────────
     pub_raw_  = create_publisher<PointCloud2>("merged_points_raw", sensor_qos);
     pub_full_ = create_publisher<PointCloud2>("merged_points",     sensor_qos);  // compat alias
+
+    if (publish_reliable_raw_)
+      pub_reliable_raw_ = create_publisher<PointCloud2>("merged_points_reliable", reliable_qos);
 
     if (publish_filtered_)
       pub_filtered_ = create_publisher<PointCloud2>("merged_points_filtered", reliable_qos);
@@ -456,14 +493,18 @@ public:
     RCLCPP_INFO(get_logger(),
       "[cloud_merger] ready — target_frame=%s anchor=%s "
       "max_pair_dt=%.3fs tf_timeout=%.3fs max_cache=%d "
-      "reuse=%s normalize=%s filtered=%s debug_inputs=%s remove_invalid=%s",
+      "reuse=%s normalize=%s filtered=%s reliable_raw=%s self_filter=%s "
+      "debug_inputs=%s remove_invalid=%s stride(H=%d R=%d) rsairy_inject_every_n=%d",
       target_frame_.c_str(), anchor_sensor_str_.c_str(),
       max_pair_dt_, tf_timeout_, max_cache_size_,
       allow_reuse_other_sensor_ ? "true" : "false",
       normalize_fields_         ? "true" : "false",
       publish_filtered_         ? "true" : "false",
+      publish_reliable_raw_     ? "true" : "false",
+      enable_self_bbox_filter_  ? "true" : "false",
       publish_debug_inputs_     ? "true" : "false",
-      remove_invalid_points_    ? "true" : "false");
+      remove_invalid_points_    ? "true" : "false",
+      hesai_stride_, rsairy_stride_, rsairy_inject_every_n_);
   }
 
 private:
@@ -512,27 +553,33 @@ private:
                           uint64_t anchor_seq)
   {
     const rclcpp::Time anchor_stamp(anchor_msg->header.stamp);
+    const bool request_rsairy =
+      (anchor_id != SensorId::HESAI) ||
+      (rsairy_inject_every_n_ <= 1) ||
+      (anchor_seq % static_cast<uint64_t>(rsairy_inject_every_n_) == 0);
 
     // ── 1. Find nearest matching cloud from the other sensor ───────────────
     CachedCloud other;
-    if (!findNearestInCache(anchor_stamp, anchor_id, other)) {
+    bool has_other = findNearestInCache(anchor_stamp, anchor_id, other);
+    if (!has_other && (anchor_id != SensorId::HESAI || request_rsairy)) {
       ++no_pair_drop_count_;
       RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
-        "[cloud_merger] no pair within %.3fs for anchor=%s t=%.3f — dropping frame "
+        "[cloud_merger] no pair within %.3fs for anchor=%s t=%.3f — using anchor only when possible "
         "(no_pair_drops=%lu)",
         max_pair_dt_,
         anchor_id == SensorId::HESAI ? "hesai" : "rsairy",
         anchor_stamp.seconds(),
         no_pair_drop_count_.load());
-      return;
     }
+    if (!has_other && anchor_id != SensorId::HESAI) return;
 
-    const double dt = std::abs((anchor_stamp - other.stamp).seconds());
+    bool include_rsairy = (anchor_id == SensorId::HESAI) && request_rsairy && has_other;
+    const double dt = has_other ? std::abs((anchor_stamp - other.stamp).seconds()) : 0.0;
 
     // ── 2. Deduplicate in "either" mode ────────────────────────────────────
     // Build a canonical pair hash: high 32 bits = hesai seq, low 32 = rsairy seq.
     // Prevents publishing the same physical pair twice when both sensors trigger.
-    if (anchor_mode_ == AnchorMode::EITHER) {
+    if (has_other && anchor_mode_ == AnchorMode::EITHER) {
       const uint64_t h_seq = (anchor_id == SensorId::HESAI) ? anchor_seq : other.seq_id;
       const uint64_t r_seq = (anchor_id == SensorId::RSAIRY) ? anchor_seq : other.seq_id;
       const uint64_t pair_hash = (h_seq << 32u) | (r_seq & 0xFFFF'FFFFull);
@@ -546,7 +593,7 @@ private:
 
     // ── 3. Reuse tracking (single-anchor modes only) ───────────────────────
     bool reused_other = false;
-    if (anchor_mode_ != AnchorMode::EITHER) {
+    if (has_other && include_rsairy && anchor_mode_ != AnchorMode::EITHER) {
       std::lock_guard<std::mutex> lk(reuse_mtx_);
       if (last_used_other_seq_ == other.seq_id) {
         reused_other = true;
@@ -563,18 +610,24 @@ private:
 
     // ── 4. Resolve which pointer is Hesai and which is RS-Airy ────────────
     const PointCloud2::ConstSharedPtr & hesai_msg  =
-      (anchor_id == SensorId::HESAI) ? anchor_msg : other.msg;
-    const PointCloud2::ConstSharedPtr & rsairy_msg =
-      (anchor_id == SensorId::RSAIRY) ? anchor_msg : other.msg;
+      (anchor_id == SensorId::HESAI || !has_other) ? anchor_msg : other.msg;
+    const PointCloud2::ConstSharedPtr rsairy_msg =
+      include_rsairy ? ((anchor_id == SensorId::RSAIRY) ? anchor_msg : other.msg) : nullptr;
 
     // ── 5. Transform both into target_frame ───────────────────────────────
     // SE(3) transform: p_B = R_BL * p_L + t_BL  (see file header for full math)
     PointCloud2 hesai_tf, rsairy_tf;
-    if (!transformCloud(*hesai_msg,  hesai_tf) ||
-        !transformCloud(*rsairy_msg, rsairy_tf)) {
+    if (!transformCloud(*hesai_msg, hesai_tf)) {
       ++tf_drop_count_;
       return;  // transformCloud already emitted a throttled warning
     }
+    if (include_rsairy && (!rsairy_msg || !transformCloud(*rsairy_msg, rsairy_tf))) {
+      include_rsairy = false;
+      ++tf_drop_count_;
+    }
+    if (hesai_stride_ > 1) hesai_tf = strideSampleCloud(hesai_tf, hesai_stride_);
+    if (include_rsairy && rsairy_stride_ > 1)
+      rsairy_tf = strideSampleCloud(rsairy_tf, rsairy_stride_);
 
     // ── 6. Concatenate ─────────────────────────────────────────────────────
     // Build the output header once: stamp = anchor scan time (always correct
@@ -583,9 +636,12 @@ private:
     out_header.frame_id = target_frame_;
 
     PointCloud2 merged;
-    const bool compatible = fieldsCompatible(hesai_tf, rsairy_tf);
+    const bool compatible = include_rsairy && fieldsCompatible(hesai_tf, rsairy_tf);
 
-    if (compatible && !normalize_fields_) {
+    if (!include_rsairy) {
+      merged = hesai_tf;
+      merged.header = out_header;
+    } else if (compatible && !normalize_fields_) {
       // Path A: field-identical sources — single-allocation byte copy.
       // All original fields (ring, timestamp, etc.) are preserved.
       merged = concatCompatible(hesai_tf, rsairy_tf, out_header);
@@ -605,15 +661,17 @@ private:
 
     // ── 7. Diagnostics ─────────────────────────────────────────────────────
     const uint32_t n_hesai  = countPoints(hesai_tf);
-    const uint32_t n_rsairy = countPoints(rsairy_tf);
+    const uint32_t n_rsairy = include_rsairy ? countPoints(rsairy_tf) : 0u;
     const uint32_t n_merged = countPoints(merged);
 
     uint64_t pub_snap, np_snap, tf_snap, ru_snap;
     double   avg_dt_snap, max_dt_snap;
     {
       std::lock_guard<std::mutex> lk(diag_mtx_);
-      pair_dt_sum_ += dt;
-      if (dt > pair_dt_max_) pair_dt_max_ = dt;
+      if (include_rsairy) {
+        pair_dt_sum_ += dt;
+        if (dt > pair_dt_max_) pair_dt_max_ = dt;
+      }
       pub_snap    = ++published_count_;
       np_snap     = no_pair_drop_count_.load();
       tf_snap     = tf_drop_count_.load();
@@ -642,6 +700,8 @@ private:
       pub_raw_->publish(merged);
     if (pub_full_->get_subscription_count() > 0)
       pub_full_->publish(merged);
+    if (pub_reliable_raw_ && pub_reliable_raw_->get_subscription_count() > 0)
+      pub_reliable_raw_->publish(merged);
 
     // ── 9. Debug: individual transformed clouds ────────────────────────────
     if (publish_debug_inputs_) {
@@ -656,25 +716,27 @@ private:
         pub_filtered_->get_subscription_count() > 0) {
       PointCloud2 filtered = merged;  // deep copy — raw output remains clean
 
-      // BB1: tractor chassis (x=forward, y=left, z=up in base_link).
-      // The trailer is further in -x and is not removed by this box.
-      bboxFilterInplace(filtered,
-        static_cast<float>(bbox_chassis_x_[0]), static_cast<float>(bbox_chassis_x_[1]),
-        static_cast<float>(bbox_chassis_y_[0]), static_cast<float>(bbox_chassis_y_[1]),
-        static_cast<float>(bbox_chassis_z_[0]), static_cast<float>(bbox_chassis_z_[1]));
-
-      // BB2: LiDAR cage / mounting structure (tight box at sensor cluster height)
-      bboxFilterInplace(filtered,
-        static_cast<float>(bbox_cage_x_[0]), static_cast<float>(bbox_cage_x_[1]),
-        static_cast<float>(bbox_cage_y_[0]), static_cast<float>(bbox_cage_y_[1]),
-        static_cast<float>(bbox_cage_z_[0]), static_cast<float>(bbox_cage_z_[1]));
-
-      // BB3: optional trailer/self-articulation mask for mapping input.
-      if (enable_trailer_bbox_filter_) {
+      if (enable_self_bbox_filter_) {
+        // BB1: tractor chassis (x=forward, y=left, z=up in base_link).
+        // The trailer is further in -x and is not removed by this box.
         bboxFilterInplace(filtered,
-          static_cast<float>(bbox_trailer_x_[0]), static_cast<float>(bbox_trailer_x_[1]),
-          static_cast<float>(bbox_trailer_y_[0]), static_cast<float>(bbox_trailer_y_[1]),
-          static_cast<float>(bbox_trailer_z_[0]), static_cast<float>(bbox_trailer_z_[1]));
+          static_cast<float>(bbox_chassis_x_[0]), static_cast<float>(bbox_chassis_x_[1]),
+          static_cast<float>(bbox_chassis_y_[0]), static_cast<float>(bbox_chassis_y_[1]),
+          static_cast<float>(bbox_chassis_z_[0]), static_cast<float>(bbox_chassis_z_[1]));
+
+        // BB2: LiDAR cage / mounting structure (tight box at sensor cluster height)
+        bboxFilterInplace(filtered,
+          static_cast<float>(bbox_cage_x_[0]), static_cast<float>(bbox_cage_x_[1]),
+          static_cast<float>(bbox_cage_y_[0]), static_cast<float>(bbox_cage_y_[1]),
+          static_cast<float>(bbox_cage_z_[0]), static_cast<float>(bbox_cage_z_[1]));
+
+        // BB3: optional trailer/self-articulation mask for mapping input.
+        if (enable_trailer_bbox_filter_) {
+          bboxFilterInplace(filtered,
+            static_cast<float>(bbox_trailer_x_[0]), static_cast<float>(bbox_trailer_x_[1]),
+            static_cast<float>(bbox_trailer_y_[0]), static_cast<float>(bbox_trailer_y_[1]),
+            static_cast<float>(bbox_trailer_z_[0]), static_cast<float>(bbox_trailer_z_[1]));
+        }
       }
 
       RCLCPP_DEBUG(get_logger(),
@@ -772,9 +834,14 @@ private:
   int                 max_cache_size_;
   bool                allow_reuse_other_sensor_;
   bool                publish_filtered_;
+  bool                publish_reliable_raw_;
   bool                publish_debug_inputs_;
   bool                normalize_fields_;
   bool                remove_invalid_points_;
+  bool                enable_self_bbox_filter_;
+  int                 hesai_stride_;
+  int                 rsairy_stride_;
+  int                 rsairy_inject_every_n_;
   std::vector<double> bbox_chassis_x_, bbox_chassis_y_, bbox_chassis_z_;
   std::vector<double> bbox_cage_x_,    bbox_cage_y_,    bbox_cage_z_;
   bool enable_trailer_bbox_filter_{false};
@@ -787,6 +854,7 @@ private:
   // Publishers
   rclcpp::Publisher<PointCloud2>::SharedPtr pub_raw_;
   rclcpp::Publisher<PointCloud2>::SharedPtr pub_full_;
+  rclcpp::Publisher<PointCloud2>::SharedPtr pub_reliable_raw_;
   rclcpp::Publisher<PointCloud2>::SharedPtr pub_filtered_;
   rclcpp::Publisher<PointCloud2>::SharedPtr pub_hesai_in_base_;
   rclcpp::Publisher<PointCloud2>::SharedPtr pub_rsairy_in_base_;

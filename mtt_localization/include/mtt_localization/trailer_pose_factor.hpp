@@ -70,33 +70,54 @@ inline gtsam::Pose3 urdfJoint(
     gtsam::Pose3{gtsam::Rot3::Rz(q), gtsam::Point3::Zero()});
 }
 
-/// Δ(φ) = A · Rz(π/2 + φ) · B   (SE(3), base_footprint → MTT_remorque)
-inline gtsam::Pose3 computeDelta(double phi)
+/// Δ(φ, α=0) — yaw-only, pitch at rest position (backward compat).
+/// Δ(φ, α)   — full 3D: pitch joint deviated by α from rest (-π/2).
+///
+/// URDF chain (base_footprint → MTT_remorque):
+///   T_bf_bl   : fixed,  xyz=(0,0,-0.1)
+///   T_pitch(α): revolute xyz=(-1.0512,0.2125,0.3578) rpy=(-π/2,0,0) q=-π/2+α
+///   T_yaw_origin: fixed origin, xyz=(0,0.0571,-0.2635) rpy=(-π/2,0,0)
+///   Rz(π/2+φ): yaw rotation
+///   T_roll    : revolute xyz=(0,0,-0.0571) rpy=(-π/2,0,-π/2) q=-π/2 (fixed at rest)
+///
+/// A_prefix = T_bf_bl · T_pitch_origin   (before pitch rotation)
+/// A_suffix = T_yaw_origin               (between pitch and yaw rotations)
+/// B        = T_roll                     (after yaw rotation, constant)
+///
+/// Δ(φ, α) = A_prefix · Rz(-π/2 + α) · A_suffix · Rz(π/2 + φ) · B
+inline gtsam::Pose3 computeDelta(double phi, double alpha = 0.0)
 {
-  // base_footprint → base_link (fixed, xyz=(0,0,-0.1))
+  // base_footprint → base_link (fixed)
   static const gtsam::Pose3 T_bf_bl{gtsam::Rot3(), gtsam::Point3(0, 0, -0.1)};
 
-  // pitch: xyz=(-1.0512,0.2125,0.3578), rpy=(-π/2,0,0), q=-π/2
-  static const gtsam::Pose3 T_pitch = urdfJoint(
+  // Pitch joint origin (without rotation): Trans(xyz) · RotRPY(rpy)
+  static const gtsam::Pose3 T_pitch_origin = urdfOrigin(
     -1.0511878376018575, 0.2125028310306423, 0.3577510511469179,
-    -M_PI_2, 0.0, 0.0, -M_PI_2);
+    -M_PI_2, 0.0, 0.0);
 
-  // yaw origin (no q yet): xyz=(0,0.0571,-0.2635), rpy=(-π/2,0,0)
+  // Yaw joint origin (without rotation): Trans(xyz) · RotRPY(rpy)
   static const gtsam::Pose3 T_yaw_origin = urdfOrigin(
     0.0, 0.05714999999950, -0.26352500000200,
     -M_PI_2, 0.0, 0.0);
 
-  // A = T_bf_bl · T_pitch · T_yaw_origin  (constant prefix)
-  static const gtsam::Pose3 kA =
-    T_bf_bl.compose(T_pitch).compose(T_yaw_origin);
+  // Constant prefix: T_bf_bl · T_pitch_origin
+  static const gtsam::Pose3 kA_prefix = T_bf_bl.compose(T_pitch_origin);
 
-  // roll: xyz=(0,0,-0.0571), rpy=(-π/2,0,-π/2), q=-π/2  (constant suffix)
+  // Constant suffix after yaw: roll at rest  xyz=(0,0,-0.0571) rpy=(-π/2,0,-π/2) q=-π/2
   static const gtsam::Pose3 kB = urdfJoint(
     0.0, 0.0, -0.05714999999985,
     -M_PI_2, 0.0, -M_PI_2, -M_PI_2);
 
-  return kA
-    .compose(gtsam::Pose3{gtsam::Rot3::Rz(M_PI_2 + phi), gtsam::Point3::Zero()})
+  // Pitch rotation: Rz(-π/2 + α)  — rest = -π/2, deviation α from potentiometer
+  const gtsam::Pose3 R_pitch{gtsam::Rot3::Rz(-M_PI_2 + alpha), gtsam::Point3::Zero()};
+
+  // Yaw rotation: Rz(π/2 + φ)
+  const gtsam::Pose3 R_yaw{gtsam::Rot3::Rz(M_PI_2 + phi), gtsam::Point3::Zero()};
+
+  return kA_prefix
+    .compose(R_pitch)
+    .compose(T_yaw_origin)
+    .compose(R_yaw)
     .compose(kB);
 }
 
@@ -151,6 +172,80 @@ public:
   gtsam::NonlinearFactor::shared_ptr clone() const override
   {
     return gtsam::NonlinearFactor::shared_ptr(new TrailerPoseFactor(*this));
+  }
+
+private:
+  gtsam::Pose3 measured_;
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TrailerPoseFactorFull — joint factor on (φ, α)
+// ─────────────────────────────────────────────────────────────────────────────
+/// 2-variable factor constraining BOTH hitch yaw H(k)=φ and pitch P(k)=α
+/// from a single 6D trailer/pose measurement.
+///
+/// State variables:
+///   key_phi   → H(k)  hitch yaw   (symbol 'h')
+///   key_alpha → P(k)  hitch pitch (symbol 'p')
+///
+/// Residual: e(φ, α) = Pose3::Logmap( Δ(φ, α)⁻¹ · T_measured )
+///
+/// Jacobian: 6×2 matrix
+///   H_phi   = ∂e/∂φ   (column 0) — central differences
+///   H_alpha = ∂e/∂α   (column 1) — central differences
+///
+/// This is more informative than TrailerPoseFactor (1-variable) because the
+/// 6D measurement constrains pitch α through the longitudinal/vertical residual
+/// components — the z translation and rx/ry rotation carry pitch information.
+class TrailerPoseFactorFull : public gtsam::NoiseModelFactor2<double, double>
+{
+public:
+  using Base = gtsam::NoiseModelFactor2<double, double>;
+
+  TrailerPoseFactorFull(
+    gtsam::Key key_phi,
+    gtsam::Key key_alpha,
+    const gtsam::Pose3 & measured,
+    const gtsam::SharedNoiseModel & model)
+  : Base(model, key_phi, key_alpha), measured_(measured)
+  {}
+
+  ~TrailerPoseFactorFull() override = default;
+
+  /// Residual and optional 6×2 Jacobian (two 6×1 columns, one per variable)
+  gtsam::Vector evaluateError(
+    const double & phi,
+    const double & alpha,
+    boost::optional<gtsam::Matrix &> H_phi   = boost::none,
+    boost::optional<gtsam::Matrix &> H_alpha = boost::none) const override
+  {
+    using namespace hitch_kinematics;
+
+    const gtsam::Pose3 pred  = computeDelta(phi, alpha);
+    const gtsam::Vector6 err = gtsam::Pose3::Logmap(pred.inverse().compose(measured_));
+
+    constexpr double kEps = 1e-5;
+    if (H_phi) {
+      const gtsam::Vector6 e_p =
+        gtsam::Pose3::Logmap(computeDelta(phi + kEps, alpha).inverse().compose(measured_));
+      const gtsam::Vector6 e_m =
+        gtsam::Pose3::Logmap(computeDelta(phi - kEps, alpha).inverse().compose(measured_));
+      *H_phi = (e_p - e_m) / (2.0 * kEps);
+    }
+    if (H_alpha) {
+      const gtsam::Vector6 e_p =
+        gtsam::Pose3::Logmap(computeDelta(phi, alpha + kEps).inverse().compose(measured_));
+      const gtsam::Vector6 e_m =
+        gtsam::Pose3::Logmap(computeDelta(phi, alpha - kEps).inverse().compose(measured_));
+      *H_alpha = (e_p - e_m) / (2.0 * kEps);
+    }
+
+    return err;
+  }
+
+  gtsam::NonlinearFactor::shared_ptr clone() const override
+  {
+    return gtsam::NonlinearFactor::shared_ptr(new TrailerPoseFactorFull(*this));
   }
 
 private:
