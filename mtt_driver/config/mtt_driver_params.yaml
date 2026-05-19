@@ -5,7 +5,7 @@ mtt_can_node:
     steer_control_mode: closed_loop
     cmd_angular_mode: normalized_steer
     tachometer_mode: real
-    invert_inferred_tachometer_direction: true
+    invert_inferred_tachometer_direction: false
     max_linear_speed_ms: 1.2
     throttle_deadband: 0.05
     steer_deadband: 0.05
@@ -73,3 +73,27 @@ mtt_articulation_sensor_node:
     angle_offset_rad: 0.0
     bit_coords: [82, 214, 313, 430, 510, 600, 723, 831, 929, 1028, 1128, 1201, 1306, 1410, 1529, 1628, 1737, 1826, 1906, 2016, 2119, 2226, 2337, 2443, 2520, 2617, 2716, 2815, 2908, 3052, 3106, 3258, 3323, 3408]
     angle_coords_deg: [48, 43, 40, 36, 35, 32, 29, 25, 23, 20, 18, 15, 12, 9, 5, 2, 0, -2, -4, -7, -8, -10, -14, -18, -20, -21, -28, -26, -30, -35, -40, -43, -45, -49]
+
+    # ── Pitch (ADC1, 8-bit, 0–255) ──────────────────────────────────────────
+    # Convention: α = 0 at flat terrain (hitch at rest position).
+    #             α > 0 = trailer tilts up (robot climbing), α < 0 = tilts down.
+    #
+    # Calibration method 1 — linear fit (2 measurements sufficient):
+    #   1. On flat terrain → read /hardware/articulation_pitch_bits → note bits_flat
+    #   2. Tilt to known angle θ_deg → read bits → note bits_tilted
+    #   3. pitch_bits_zero   = bits_flat
+    #      pitch_deg_per_bit = θ_deg / (bits_tilted - bits_flat)
+    #      (negative if potentiometer mounted inverted)
+    #
+    # Calibration method 2 — full LUT (like yaw, for non-linear pots):
+    #   Fill pitch_bit_coords + pitch_angle_coords_deg with measured pairs.
+    #   LUT takes priority over linear fit when both are set.
+    #
+    # Both empty / deg_per_bit=0 → pitch_rad=0 published (uncalibrated).
+    # mtt_odometry_node will set pitch_fresh=false → factor graph uses flat prior.
+    pitch_invert_sign: false
+    pitch_angle_offset_rad: 0.0      # fine-tune zero after calibration
+    pitch_bits_zero: 128.0           # TODO: measure ADC1 bits on flat terrain
+    pitch_deg_per_bit: 0.0           # TODO: set once calibrated (deg per ADC count)
+    # pitch_bit_coords: []           # optional: full LUT (overrides linear fit)
+    # pitch_angle_coords_deg: []

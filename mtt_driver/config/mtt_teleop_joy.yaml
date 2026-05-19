@@ -17,7 +17,7 @@
     angular_axis_index: 3     # right stick horizontal
     brake_axis_index: 5       # RT trigger axis
 
-    invert_linear_axis: true
+    invert_linear_axis: false
     invert_angular_axis: false
     enable_brake_axis: true
 

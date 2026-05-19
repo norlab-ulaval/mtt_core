@@ -45,25 +45,11 @@ MttCanNode::MttCanNode(const rclcpp::NodeOptions& options)
     declare_parameter("model_yaw_slip_articulation_gain", 0.15);
   motion_model_params_.yaw_slip_min_scale = declare_parameter("model_yaw_slip_min_scale", 0.55);
   hold_assist_params_.enabled = declare_parameter("hold_assist_enabled", true);
-  hold_assist_params_.entry_speed_ms = declare_parameter("hold_assist_entry_speed_ms", 0.03);
-  hold_assist_params_.release_speed_ms = declare_parameter("hold_assist_release_speed_ms", 0.015);
+  hold_assist_params_.entry_speed_ms = declare_parameter("hold_assist_entry_speed_ms", 0.08);
   hold_assist_params_.exit_command_ms = declare_parameter("hold_assist_exit_command_ms", 0.08);
-  hold_assist_params_.kp = declare_parameter("hold_assist_kp", 1.2);
-  hold_assist_params_.ki = declare_parameter("hold_assist_ki", 0.8);
-  hold_assist_params_.integrator_limit = declare_parameter("hold_assist_integrator_limit", 0.25);
-  hold_assist_params_.output_limit = declare_parameter("hold_assist_output_limit", 0.35);
-  hold_assist_params_.deadband_compensation =
-    declare_parameter("hold_assist_deadband_compensation", 0.12);
-  hold_assist_params_.dither_enabled = declare_parameter("hold_assist_dither_enabled", false);
-  hold_assist_params_.dither_amplitude = declare_parameter("hold_assist_dither_amplitude", 0.02);
-  hold_assist_params_.dither_frequency_hz =
-    declare_parameter("hold_assist_dither_frequency_hz", 6.0);
-  hold_assist_params_.active_decel_enabled =
-    declare_parameter("hold_assist_active_decel_enabled", false);
-  hold_assist_params_.active_decel_entry_speed_ms =
-    declare_parameter("hold_assist_active_decel_entry_speed_ms", 0.15);
-  hold_assist_params_.active_decel_output_limit =
-    declare_parameter("hold_assist_active_decel_output_limit", 0.60);
+  hold_assist_params_.exit_speed_ms = declare_parameter("hold_assist_exit_speed_ms", 0.15);
+  hold_assist_params_.kp = declare_parameter("hold_assist_kp", 2.5);
+  hold_assist_params_.output_limit = declare_parameter("hold_assist_output_limit", 0.40);
   base_frame_          = declare_parameter("base_frame",           std::string("base_footprint"));
   cmd_angular_mode_    = declare_parameter("cmd_angular_mode",     std::string("normalized_steer"));
   steer_control_mode_  = declare_parameter("steer_control_mode",   std::string("closed_loop"));
@@ -112,6 +98,12 @@ MttCanNode::MttCanNode(const rclcpp::NodeOptions& options)
         ? can::SteeringMode::CloseLoop
         : can::SteeringMode::OpenLoop);
   }
+  // NOTE: No startup safety lock — the hardware goes to its failsafe
+  // position (max right) when receiving safety=Locked, even with
+  // steer=127 (center) in the frame. Software safety is ensured by:
+  //  - mtt_cmd_arbiter starts in Stop mode → publishes zero cmd_vel
+  //  - mtt_operator_input zeroes angular when deadman not pressed
+  //  - mtt_manual_cmd_filter publishes zero once at startup
 
   // ── Open CAN interface ───────────────────────────────────────────────
   init_can_interface();
@@ -317,8 +309,18 @@ void MttCanNode::on_estop(const std_msgs::msg::Bool::SharedPtr msg)
 
 void MttCanNode::on_deadman(const std_msgs::msg::Bool::SharedPtr msg)
 {
+  const bool was_active = teleop_deadman_active_;
   teleop_deadman_seen_ = true;
   teleop_deadman_active_ = msg->data;
+
+  // On deadman release: immediately zero commands and reset hold assist.
+  // Defense-in-depth — even if upstream node fails to send zero, CAN node stops the robot.
+  if (was_active && !teleop_deadman_active_) {
+    std::lock_guard<std::mutex> lock(frame_mutex_);
+    current_linear_command_ms_ = 0.0;
+    current_steering_input_ = 0.0;
+    hold_assist_controller_.reset();
+  }
 }
 
 // ── Control loop (publish + timeout watchdog) ─────────────────────────
@@ -333,6 +335,12 @@ void MttCanNode::refresh_command_frame()
 {
   const auto wall_now = std::chrono::steady_clock::now();
   std::lock_guard<std::mutex> lock(frame_mutex_);
+
+  // Defense-in-depth: force zero if deadman released, regardless of upstream state.
+  if (teleop_deadman_seen_ && !teleop_deadman_active_) {
+    current_linear_command_ms_ = 0.0;
+    current_steering_input_ = 0.0;
+  }
 
   double dt = 1.0 / std::max(1e-3, control_freq_hz_);
   if (last_hold_assist_update_.time_since_epoch().count() != 0) {
@@ -461,6 +469,15 @@ void MttCanNode::sync_safety_switch()
     command_frame_.set_throttle(0.0);
     command_frame_.set_brake(1.0);   // full brake on e-stop / deadman release
     current_linear_command_ms_ = 0.0;
+    // Switch to open_loop while locked so the servo holds its current position
+    // instead of driving to the hardware's closed_loop failsafe (max right).
+    command_frame_.set_steering_mode(can::SteeringMode::OpenLoop);
+  } else {
+    // Restore the configured steering mode on unlock.
+    command_frame_.set_steering_mode(
+      steer_control_mode_ == "closed_loop"
+        ? can::SteeringMode::CloseLoop
+        : can::SteeringMode::OpenLoop);
   }
   // On unlock: don't touch brake — on_aux_cmd controls it via RT trigger
 }

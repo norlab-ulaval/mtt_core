@@ -14,52 +14,91 @@ MttArticulationSensorNode::MttArticulationSensorNode(const rclcpp::NodeOptions &
 : rclcpp::Node("mtt_articulation_sensor_node", options)
 {
   // ── Parameters ────────────────────────────────────────────────────────────
-  serial_port_name_ = declare_parameter("serial_port", 
+  serial_port_name_ = declare_parameter("serial_port",
     std::string("/dev/serial/by-id/usb-STMicroelectronics_STM32_STLink_066EFF373146363143225155-if02"));
-  baud_rate_ = declare_parameter("baud_rate", 921600);
-  publish_rate_hz_ = declare_parameter("publish_rate_hz", 100.0);
-  filter_window_size_ = declare_parameter("filter_window_size", 50);
-  // Convention: positive angle = LEFT turn (CCW, REP-103), negative = RIGHT.
-  // The raw LUT (bit_coords → angle_coords_deg) already follows this convention:
-  //   low bits ≈ +48° (left), high bits ≈ -49° (right).
-  // invert_sign should be false.  Only set true if the encoder is physically
-  // mounted in the opposite orientation.
-  invert_sign_ = declare_parameter("invert_sign", false);
-  angle_offset_rad_ = declare_parameter("angle_offset_rad", 0.0);
+  baud_rate_              = declare_parameter("baud_rate", 921600);
+  publish_rate_hz_        = declare_parameter("publish_rate_hz", 100.0);
+  filter_window_size_     = declare_parameter("filter_window_size", 50);
 
-  // Default coordinates from Badger driver
-  std::vector<double> default_bit_coords = {
-    82, 214, 313, 430, 510, 600, 723, 831, 929, 1028, 1128, 1201, 1306, 1410, 1529, 1628,
-    1737, 1826, 1906, 2016, 2119, 2226, 2337, 2443, 2520, 2617, 2716, 2815, 2908, 3052, 3106, 3258, 3323, 3408
-  };
-  std::vector<double> default_angle_coords_deg = {
-    48, 43, 40, 36, 35, 32, 29, 25, 23, 20, 18, 15, 12, 9, 5, 2, 0, -2, -4, -7, -8, -10, -14, -18, -20, -21, -28, -26, -30, -35, -40, -43, -45, -49
-  };
+  // ── Yaw (ADC2, 12-bit, PA6) ────────────────────────────────────────────
+  // Convention: positive = left (CCW, REP-103). LUT from Badger driver.
+  // Low bits ≈ +48° (left), high bits ≈ -49° (right) — do NOT invert by default.
+  yaw_invert_sign_        = declare_parameter("invert_sign", false);
+  yaw_angle_offset_rad_   = declare_parameter("angle_offset_rad", 0.0);
 
-  bit_coords_ = declare_parameter("bit_coords", default_bit_coords);
-  angle_coords_deg_ = declare_parameter("angle_coords_deg", default_angle_coords_deg);
+  // 34-point calibration table — matches Badger steering_interface.py exactly.
+  // bit_coords:       raw ADC2 values (0–4095 range, 12-bit)
+  // angle_coords_deg: corresponding angle in degrees (0 = straight, + = left)
+  yaw_bit_coords_ = declare_parameter("bit_coords", std::vector<double>{
+    82,  214, 313, 430, 510, 600, 723, 831,  929,  1028, 1128, 1201,
+    1306,1410,1529,1628,1737,1826,1906,2016, 2119, 2226, 2337, 2443,
+    2520,2617,2716,2815,2908,3052,3106,3258, 3323, 3408
+  });
+  yaw_angle_coords_deg_ = declare_parameter("angle_coords_deg", std::vector<double>{
+    48, 43, 40, 36, 35, 32, 29, 25, 23, 20, 18, 15,
+    12,  9,  5,  2,  0, -2, -4, -7, -8,-10,-14,-18,
+    -20,-21,-28,-26,-30,-35,-40,-43,-45,-49
+  });
 
-  // ── ROS ───────────────────────────────────────────────────────────────────
-  angle_pub_ = create_publisher<std_msgs::msg::Float64>("/hardware/articulation_angle", 10);
-  
+  // ── Pitch (ADC1, 8-bit, PA0) ───────────────────────────────────────────
+  // Hitch longitudinal / tilt angle.
+  // Two calibration modes (see header). Use whichever is available:
+  //   Mode 1 — full LUT  : pitch_bit_coords + pitch_angle_coords_deg
+  //   Mode 2 — linear fit: pitch_bits_zero + pitch_deg_per_bit
+  pitch_invert_sign_      = declare_parameter("pitch_invert_sign",    false);
+  pitch_angle_offset_rad_ = declare_parameter("pitch_angle_offset_rad", 0.0);
+  pitch_bit_coords_       = declare_parameter("pitch_bit_coords",    std::vector<double>{});
+  pitch_angle_coords_deg_ = declare_parameter("pitch_angle_coords_deg", std::vector<double>{});
+  pitch_bits_zero_        = declare_parameter("pitch_bits_zero",    128.0); // ADC1 bits at α=0
+  pitch_deg_per_bit_      = declare_parameter("pitch_deg_per_bit",    0.0); // deg/bit (0 = uncalibrated)
+
+  const bool pitch_lut_full =
+    !pitch_bit_coords_.empty() && !pitch_angle_coords_deg_.empty() &&
+    pitch_bit_coords_.size() == pitch_angle_coords_deg_.size();
+  const bool pitch_linear = (pitch_deg_per_bit_ != 0.0);
+
+  pitch_lut_available_ = pitch_lut_full || pitch_linear;
+
+  // ── Publishers ────────────────────────────────────────────────────────────
+  // Yaw — primary articulation steering angle (same topic as before)
+  yaw_pub_ = create_publisher<std_msgs::msg::Float64>("/hardware/articulation_angle", 10);
+
+  // Pitch — raw ADC bits (always, useful for offline LUT calibration)
+  pitch_bits_pub_ = create_publisher<std_msgs::msg::Float64>("/hardware/articulation_pitch_bits", 10);
+
+  // Pitch — calibrated radians (ALWAYS published; 0.0 until calibration params are set)
+  pitch_rad_pub_ = create_publisher<std_msgs::msg::Float64>("/hardware/articulation_pitch_rad", 10);
+
+  if (pitch_lut_full) {
+    RCLCPP_INFO(get_logger(), "Pitch: LUT mode (%zu points)", pitch_bit_coords_.size());
+  } else if (pitch_linear) {
+    RCLCPP_INFO(get_logger(),
+      "Pitch: linear mode  bits_zero=%.1f  deg/bit=%.4f  offset=%.4f rad",
+      pitch_bits_zero_, pitch_deg_per_bit_, pitch_angle_offset_rad_);
+  } else {
+    RCLCPP_WARN(get_logger(),
+      "Pitch: UNCALIBRATED — /hardware/articulation_pitch_rad=0.0 until "
+      "pitch_bits_zero + pitch_deg_per_bit (or full LUT) are configured. "
+      "Set in mtt_articulation_sensor_node YAML.");
+  }
+
+  // ── Timer ─────────────────────────────────────────────────────────────────
   const auto timer_period = std::chrono::duration<double>(1.0 / publish_rate_hz_);
   publish_timer_ = create_wall_timer(
     std::chrono::duration_cast<std::chrono::milliseconds>(timer_period),
     std::bind(&MttArticulationSensorNode::publish_timer_callback, this));
 
-  // ── Serial Initialization ─────────────────────────────────────────────────
+  // ── Serial ────────────────────────────────────────────────────────────────
   try {
-    io_context_ = std::make_unique<boost::asio::io_context>();
+    io_context_  = std::make_unique<boost::asio::io_context>();
     serial_port_ = std::make_unique<boost::asio::serial_port>(*io_context_, serial_port_name_);
     serial_port_->set_option(boost::asio::serial_port_base::baud_rate(baud_rate_));
-    
-    running_ = true;
+    running_     = true;
     read_thread_ = std::thread(&MttArticulationSensorNode::read_loop, this);
-    
-    RCLCPP_INFO(get_logger(), "Started articulation sensor node on %s at %d baud", 
+    RCLCPP_INFO(get_logger(), "Articulation sensor on %s @ %d baud",
       serial_port_name_.c_str(), baud_rate_);
   } catch (const std::exception & e) {
-    RCLCPP_ERROR(get_logger(), "Failed to open serial port %s: %s", 
+    RCLCPP_ERROR(get_logger(), "Failed to open serial port %s: %s",
       serial_port_name_.c_str(), e.what());
   }
 }
@@ -75,97 +114,154 @@ MttArticulationSensorNode::~MttArticulationSensorNode()
   }
 }
 
+// ── Serial reader ─────────────────────────────────────────────────────────
+
 void MttArticulationSensorNode::read_loop()
 {
-  uint8_t buffer[1];
+  uint8_t buf[1];
   while (running_ && rclcpp::ok()) {
     try {
       boost::system::error_code ec;
-      size_t len = serial_port_->read_some(boost::asio::buffer(buffer, 1), ec);
+      size_t len = serial_port_->read_some(boost::asio::buffer(buf, 1), ec);
       if (!ec && len > 0) {
-        process_byte(buffer[0]);
+        process_byte(buf[0]);
       }
     } catch (const std::exception & e) {
-      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000, "Serial read error: %s", e.what());
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+        "Serial read error: %s", e.what());
     }
   }
 }
 
+// ── 6-byte frame parser ───────────────────────────────────────────────────
+//
+// STM32 Create_Tx_buffer layout:
+//   byte[0] = 0xAA          (sync)
+//   byte[1] = adc1 & 0xFF   (pitch low)
+//   byte[2] = adc1 >> 8     (pitch high nibble, 0 for 8-bit ADC)
+//   byte[3] = adc2 & 0xFF   (yaw low)
+//   byte[4] = adc2 >> 8     (yaw high nibble)
+//   byte[5] = b[1]^b[2]^b[3]^b[4]  (checksum = XOR of all 4 data bytes)
+//
 void MttArticulationSensorNode::process_byte(uint8_t byte)
 {
   switch (parse_state_) {
-    case 0: // Wait for Sync 0xAA
-      if (byte == 0xAA) {
-        parse_state_ = 1;
-      }
+    case 0:  // Wait for sync
+      if (byte == 0xAA) { parse_state_ = 1; }
       break;
-    case 1: // Low Byte
-      low_byte_ = byte;
+    case 1:  // adc1 low byte (pitch)
+      adc1_low_   = byte;
       parse_state_ = 2;
       break;
-    case 2: // High Nibble
-      high_nibble_ = byte;
+    case 2:  // adc1 high nibble (pitch — always 0 for 8-bit ADC)
+      adc1_high_  = byte;
       parse_state_ = 3;
       break;
-    case 3: // Checksum
-      {
-        uint8_t checksum = byte;
-        if ((low_byte_ ^ high_nibble_) == checksum) {
-          int val = low_byte_ | ((high_nibble_ & 0x0F) << 8);
-          
-          std::lock_guard<std::mutex> lock(data_mutex_);
-          filter_buf_.push_back(val);
-          while (filter_buf_.size() > static_cast<size_t>(filter_window_size_)) {
-            filter_buf_.pop_front();
-          }
-          
-          if (!filter_buf_.empty()) {
-            double sum = std::accumulate(filter_buf_.begin(), filter_buf_.end(), 0.0);
-            current_filtered_bits_ = sum / filter_buf_.size();
-            
-            double angle_deg = get_angle_from_bits(current_filtered_bits_);
-            double angle_rad = angle_deg * (M_PI / 180.0);
-            
-            if (invert_sign_) {
-              angle_rad = -angle_rad;
-            }
-            latest_angle_rad_ = angle_rad + angle_offset_rad_;
-          }
+    case 3:  // adc2 low byte (yaw)
+      adc2_low_   = byte;
+      parse_state_ = 4;
+      break;
+    case 4:  // adc2 high nibble (yaw)
+      adc2_high_  = byte;
+      parse_state_ = 5;
+      break;
+    case 5:  // Checksum — XOR of all 4 data bytes
+    {
+      const uint8_t expected = adc1_low_ ^ adc1_high_ ^ adc2_low_ ^ adc2_high_;
+      if (byte == expected) {
+        // Reconstruct 12-bit values
+        const int pitch_bits = adc1_low_ | ((adc1_high_ & 0x0F) << 8);  // 0–255 (8-bit ADC)
+        const int yaw_bits   = adc2_low_ | ((adc2_high_ & 0x0F) << 8);  // 0–4095 (12-bit ADC)
+
+        std::lock_guard<std::mutex> lock(data_mutex_);
+
+        // ── Yaw (ADC2) ──────────────────────────────────────────────────
+        yaw_filter_buf_.push_back(yaw_bits);
+        while (static_cast<int>(yaw_filter_buf_.size()) > filter_window_size_) {
+          yaw_filter_buf_.pop_front();
         }
-        parse_state_ = 0;
+        if (!yaw_filter_buf_.empty()) {
+          const double filtered = std::accumulate(
+            yaw_filter_buf_.begin(), yaw_filter_buf_.end(), 0.0) / yaw_filter_buf_.size();
+          double angle_rad = interpolate_lut(filtered, yaw_bit_coords_, yaw_angle_coords_deg_)
+                             * (M_PI / 180.0);
+          if (yaw_invert_sign_) { angle_rad = -angle_rad; }
+          latest_yaw_rad_ = angle_rad + yaw_angle_offset_rad_;
+        }
+
+        // ── Pitch (ADC1) ────────────────────────────────────────────────
+        pitch_filter_buf_.push_back(pitch_bits);
+        while (static_cast<int>(pitch_filter_buf_.size()) > filter_window_size_) {
+          pitch_filter_buf_.pop_front();
+        }
+        if (!pitch_filter_buf_.empty()) {
+          latest_pitch_bits_ = std::accumulate(
+            pitch_filter_buf_.begin(), pitch_filter_buf_.end(), 0.0) / pitch_filter_buf_.size();
+
+          // Conversion: LUT (priority) → linear model → 0.0 (uncalibrated)
+          const bool pitch_lut_full =
+            !pitch_bit_coords_.empty() && !pitch_angle_coords_deg_.empty() &&
+            pitch_bit_coords_.size() == pitch_angle_coords_deg_.size();
+
+          double pitch_rad = 0.0;
+          if (pitch_lut_full) {
+            // Mode 1: multi-point LUT (same as yaw)
+            pitch_rad = interpolate_lut(
+              latest_pitch_bits_, pitch_bit_coords_, pitch_angle_coords_deg_)
+              * (M_PI / 180.0);
+          } else if (pitch_deg_per_bit_ != 0.0) {
+            // Mode 2: linear fit  α = (bits - bits_zero) * deg/bit * π/180
+            pitch_rad = (latest_pitch_bits_ - pitch_bits_zero_) * pitch_deg_per_bit_
+                        * (M_PI / 180.0);
+          }
+          if (pitch_invert_sign_) { pitch_rad = -pitch_rad; }
+          latest_pitch_rad_ = pitch_rad + pitch_angle_offset_rad_;
+        }
       }
+      // Back to sync hunt regardless of checksum result
+      parse_state_ = 0;
+      break;
+    }
+    default:
+      parse_state_ = 0;
       break;
   }
 }
 
-double MttArticulationSensorNode::get_angle_from_bits(double bits)
-{
-  if (bit_coords_.empty() || angle_coords_deg_.empty()) return 0.0;
-  if (bits <= bit_coords_.front()) return angle_coords_deg_.front();
-  if (bits >= bit_coords_.back()) return angle_coords_deg_.back();
+// ── LUT interpolation (shared by yaw and pitch) ───────────────────────────
 
-  // Linear interpolation
-  auto it = std::lower_bound(bit_coords_.begin(), bit_coords_.end(), bits);
-  size_t i = std::distance(bit_coords_.begin(), it);
-  
-  if (i == 0) return angle_coords_deg_.front();
-  
-  double x0 = bit_coords_[i - 1];
-  double x1 = bit_coords_[i];
-  double y0 = angle_coords_deg_[i - 1];
-  double y1 = angle_coords_deg_[i];
-  
+double MttArticulationSensorNode::interpolate_lut(
+  double bits,
+  const std::vector<double> & bit_coords,
+  const std::vector<double> & angle_coords_deg) const
+{
+  if (bit_coords.empty()) { return 0.0; }
+  if (bits <= bit_coords.front()) { return angle_coords_deg.front(); }
+  if (bits >= bit_coords.back())  { return angle_coords_deg.back(); }
+
+  auto it = std::lower_bound(bit_coords.begin(), bit_coords.end(), bits);
+  const size_t i = std::distance(bit_coords.begin(), it);
+
+  const double x0 = bit_coords[i - 1],  x1 = bit_coords[i];
+  const double y0 = angle_coords_deg[i - 1], y1 = angle_coords_deg[i];
   return y0 + (bits - x0) * (y1 - y0) / (x1 - x0);
 }
 
+// ── Publish timer ─────────────────────────────────────────────────────────
+
 void MttArticulationSensorNode::publish_timer_callback()
 {
-  std_msgs::msg::Float64 msg;
+  std_msgs::msg::Float64 yaw_msg, pitch_bits_msg, pitch_rad_msg;
   {
     std::lock_guard<std::mutex> lock(data_mutex_);
-    msg.data = latest_angle_rad_;
+    yaw_msg.data        = latest_yaw_rad_;
+    pitch_bits_msg.data = latest_pitch_bits_;
+    pitch_rad_msg.data  = latest_pitch_rad_;
   }
-  angle_pub_->publish(msg);
+
+  yaw_pub_->publish(yaw_msg);
+  pitch_bits_pub_->publish(pitch_bits_msg);
+  pitch_rad_pub_->publish(pitch_rad_msg);  // always published (0.0 until calibrated)
 }
 
 }  // namespace mtt

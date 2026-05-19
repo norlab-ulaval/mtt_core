@@ -117,6 +117,23 @@ public:
     hardware_articulation_sub_ = create_subscription<std_msgs::msg::Float64>(
       hardware_articulation_topic_, 10,
       [this](const std_msgs::msg::Float64::SharedPtr msg){ on_hardware_articulation(msg); });
+    // Pitch potentiometer — raw bits (always available from articulation_sensor_node)
+    pitch_bits_sub_ = create_subscription<std_msgs::msg::Float64>(
+      "/hardware/articulation_pitch_bits", 10,
+      [this](const std_msgs::msg::Float64::SharedPtr msg) {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        hardware_pitch_bits_ = msg->data;
+        has_pitch_ = true;
+        last_pitch_time_ = std::chrono::steady_clock::now();
+      });
+    // Pitch potentiometer — calibrated radians (only when LUT is configured)
+    pitch_rad_sub_ = create_subscription<std_msgs::msg::Float64>(
+      "/hardware/articulation_pitch_rad", 10,
+      [this](const std_msgs::msg::Float64::SharedPtr msg) {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        hardware_pitch_rad_ = msg->data;
+        pitch_rad_calibrated_ = true;
+      });
     lidar_articulation_sub_ = create_subscription<std_msgs::msg::Float64>(
       "trailer/articulation_angle", rclcpp::SensorDataQoS(),
       [this](const std_msgs::msg::Float64::SharedPtr msg){ on_lidar_articulation(msg); });
@@ -202,6 +219,12 @@ private:
   double   lidar_articulation_rad_{0.0};
   bool     has_lidar_articulation_{false};
   std::chrono::steady_clock::time_point last_lidar_articulation_time_{};
+  // Pitch potentiometer (ADC1, 8-bit)
+  double   hardware_pitch_bits_{0.0};
+  double   hardware_pitch_rad_{0.0};
+  bool     has_pitch_{false};
+  bool     pitch_rad_calibrated_{false};
+  std::chrono::steady_clock::time_point last_pitch_time_{};
   logic::CommandMotionParams motion_model_params_{};
   std::chrono::steady_clock::time_point last_tacho_time_{};
   std::chrono::steady_clock::time_point last_cmd_vel_time_{};
@@ -224,6 +247,8 @@ private:
   rclcpp::TimerBase::SharedPtr tf_fallback_timer_;
   rclcpp::Subscription<geometry_msgs::msg::TwistStamped>::SharedPtr cmd_vel_sub_;
   rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr hardware_articulation_sub_;
+  rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr pitch_bits_sub_;
+  rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr pitch_rad_sub_;
   rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr lidar_articulation_sub_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr  reset_srv_;
   rclcpp::Service<mtt_interfaces::srv::SetSteerControlMode>::SharedPtr steer_mode_srv_;
@@ -434,6 +459,17 @@ private:
         lidar_rad = lidar_articulation_rad_;
       }
 
+      double pitch_bits = 0.0, pitch_rad = 0.0;
+      bool pitch_fresh = false;
+      {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        pitch_bits  = hardware_pitch_bits_;
+        pitch_rad   = hardware_pitch_rad_;
+        pitch_fresh = has_pitch_ &&
+          std::chrono::duration<double>(wall_now - last_pitch_time_).count()
+            <= hardware_articulation_timeout_s_;
+      }
+
       mtt_msgs::msg::MttArticulationState state_msg;
       state_msg.header = odom.header;
       state_msg.command_rad = msg->model_articulation_command_rad;
@@ -442,6 +478,12 @@ private:
       state_msg.hardware_fresh = hardware_is_fresh;
       state_msg.effective_rad = input.articulation_effective_rad;
       state_msg.effective_source = hardware_is_fresh ? "hardware" : "model";
+      state_msg.pitch_rad      = pitch_rad_calibrated_ ? pitch_rad : 0.0;
+      state_msg.pitch_bits_raw = pitch_bits;
+      // pitch_fresh requires BOTH fresh bits AND a calibrated LUT.
+      // Without LUT calibration, pitch_rad=0 and marking it "fresh" would
+      // inject a false α=0 prior with hardware precision into the factor graph.
+      state_msg.pitch_fresh    = pitch_fresh && pitch_rad_calibrated_;
       state_msg.lidar_rad = lidar_rad;
       state_msg.lidar_detected = lidar_detected;
       state_msg.command_residual_rad = state_msg.command_rad - state_msg.effective_rad;

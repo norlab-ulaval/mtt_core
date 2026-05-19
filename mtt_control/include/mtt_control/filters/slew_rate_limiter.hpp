@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cmath>
 
 namespace mtt_control
 {
@@ -26,16 +27,17 @@ public:
       return value_;
     }
 
-    const double max_up = std::max(0.0, rise_rate_) * dt;
-    const double max_down = std::max(0.0, fall_rate_) * dt;
     const double delta = input - value_;
+    // Magnitude-based: rise_rate when |input| > |value| (accelerating),
+    // fall_rate when |input| < |value| (decelerating). Symmetric for fwd/rev.
+    const bool accelerating = std::abs(input) > std::abs(value_);
+    const double rate = accelerating ? rise_rate_ : fall_rate_;
+    const double max_change = std::max(0.0, rate) * dt;
 
-    if (delta > max_up) {
-      value_ += max_up;
-    } else if (delta < -max_down) {
-      value_ -= max_down;
-    } else {
+    if (std::abs(delta) <= max_change) {
       value_ = input;
+    } else {
+      value_ += std::copysign(max_change, delta);
     }
     return value_;
   }

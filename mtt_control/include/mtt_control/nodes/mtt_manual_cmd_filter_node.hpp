@@ -65,6 +65,8 @@ private:
   bool estop_active_{false};
   bool last_publish_was_zero_{true};
   bool has_input_{false};
+  bool deadman_active_{false};
+  bool prev_deadman_{false};
 
   SlewRateLimiter linear_limiter_;
   SlewRateLimiter angular_limiter_;
@@ -77,6 +79,7 @@ private:
   rclcpp::Subscription<geometry_msgs::msg::TwistStamped>::SharedPtr input_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr mode_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr estop_sub_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr deadman_sub_;
   rclcpp::Publisher<geometry_msgs::msg::TwistStamped>::SharedPtr output_pub_;
   rclcpp::TimerBase::SharedPtr timer_;
 };

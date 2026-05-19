@@ -46,6 +46,13 @@ MttManualCmdFilterNode::MttManualCmdFilterNode(const rclcpp::NodeOptions & optio
     "mtt_control/teleop_estop",
     20,
     std::bind(&MttManualCmdFilterNode::on_estop, this, std::placeholders::_1));
+  deadman_sub_ = create_subscription<std_msgs::msg::Bool>(
+    "mtt_control/teleop_deadman",
+    20,
+    [this](const std_msgs::msg::Bool::SharedPtr msg) {
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      deadman_active_ = msg->data;
+    });
   output_pub_ = create_publisher<geometry_msgs::msg::TwistStamped>(output_topic_, 20);
   timer_ = create_wall_timer(
     std::chrono::duration<double>(1.0 / std::max(1.0, publish_rate_hz_)),
@@ -120,16 +127,24 @@ void MttManualCmdFilterNode::on_timer()
     effective_target = {};
   }
 
+  // Deadman rising-edge: reset all filter state so the first command after
+  // re-press always ramps from zero (no stale velocity).
+  if (deadman_active_ && !prev_deadman_) {
+    reset_filters();
+  }
+  prev_deadman_ = deadman_active_;
+
   // Feedforward deceleration boost: when operator releases stick (target→0)
   // but the output is still significant, push the effective target negative
   // proportionally to the current output.  This makes the rate limiter
   // overshoot zero and issue brief counter-thrust — no tachometer needed.
   // Self-regulating: as output decays toward 0, boost decays to 0 too.
+  // Bidirectional: works for both forward and reverse.
   // Disabled when decel_brake_gain_ == 0 (default: off).
   if (decel_brake_gain_ > 0.0) {
     const double prev_linear = linear_limiter_.value();
     if (std::abs(effective_target.linear_x) < zero_epsilon_ &&
-        prev_linear > decel_brake_threshold_) {
+        std::abs(prev_linear) > decel_brake_threshold_) {
       effective_target.linear_x = -decel_brake_gain_ * prev_linear;
     }
   }

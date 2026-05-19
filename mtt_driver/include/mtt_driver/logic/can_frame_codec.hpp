@@ -59,18 +59,19 @@ struct CommandFrame {
       data[kGlobalSwitches] &= 0b0111'0111;   // clear both
   }
 
-  // Direction — Bit 5, INVERTED per CAN spec v1.1:
-  //   Bit 5 = 0 → Forward
-  //   Bit 5 = 1 → Reverse
+  // Direction — Bit 5 (0x20) per CAN spec v1.1.
+  // Standardised mapping:
+  //   Bit 5 = 1 → Forward
+  //   Bit 5 = 0 → Reverse
   void set_direction(Direction dir) {
     if (dir == Direction::Forward)
-      data[kGlobalSwitches] &= 0b1101'1111;  // clear bit 5 = Forward
+      data[kGlobalSwitches] |= 0b0010'0000;  // set bit 5 = Forward
     else
-      data[kGlobalSwitches] |= 0b0010'0000;  // set bit 5 = Reverse
+      data[kGlobalSwitches] &= 0b1101'1111;  // clear bit 5 = Reverse
   }
 
   Direction get_direction() const {
-    return (data[kGlobalSwitches] & 0b0010'0000) ? Direction::Reverse : Direction::Forward;
+    return (data[kGlobalSwitches] & 0b0010'0000) ? Direction::Forward : Direction::Reverse;
   }
 
   VehicleType get_vehicle_type() const {

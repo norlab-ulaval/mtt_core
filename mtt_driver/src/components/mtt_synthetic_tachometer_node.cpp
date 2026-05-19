@@ -54,19 +54,11 @@ public:
     motion_model_params_.yaw_slip_min_scale =
       declare_parameter("model_yaw_slip_min_scale", 0.55);
     hold_assist_params_.enabled = declare_parameter("hold_assist_enabled", true);
-    hold_assist_params_.entry_speed_ms = declare_parameter("hold_assist_entry_speed_ms", 0.03);
-    hold_assist_params_.release_speed_ms = declare_parameter("hold_assist_release_speed_ms", 0.015);
+    hold_assist_params_.entry_speed_ms = declare_parameter("hold_assist_entry_speed_ms", 0.08);
     hold_assist_params_.exit_command_ms = declare_parameter("hold_assist_exit_command_ms", 0.08);
-    hold_assist_params_.kp = declare_parameter("hold_assist_kp", 1.2);
-    hold_assist_params_.ki = declare_parameter("hold_assist_ki", 0.8);
-    hold_assist_params_.integrator_limit = declare_parameter("hold_assist_integrator_limit", 0.25);
-    hold_assist_params_.output_limit = declare_parameter("hold_assist_output_limit", 0.35);
-    hold_assist_params_.deadband_compensation =
-      declare_parameter("hold_assist_deadband_compensation", 0.12);
-    hold_assist_params_.dither_enabled = declare_parameter("hold_assist_dither_enabled", false);
-    hold_assist_params_.dither_amplitude = declare_parameter("hold_assist_dither_amplitude", 0.02);
-    hold_assist_params_.dither_frequency_hz =
-      declare_parameter("hold_assist_dither_frequency_hz", 6.0);
+    hold_assist_params_.exit_speed_ms = declare_parameter("hold_assist_exit_speed_ms", 0.15);
+    hold_assist_params_.kp = declare_parameter("hold_assist_kp", 2.5);
+    hold_assist_params_.output_limit = declare_parameter("hold_assist_output_limit", 0.40);
 
     if (cmd_angular_mode_ != "normalized_steer" && cmd_angular_mode_ != "yaw_rate") {
       RCLCPP_WARN(
