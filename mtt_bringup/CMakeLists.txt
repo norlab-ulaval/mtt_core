@@ -34,5 +34,6 @@ install(PROGRAMS
   ${PROJECT_NAME}/mtt_controller_interface.py
   ${PROJECT_NAME}/mtt_path_follower.py
   ${PROJECT_NAME}/mtt_repeat_supervisor.py
+  ${PROJECT_NAME}/mtt_route_manager.py
   DESTINATION lib/${PROJECT_NAME})
 ament_package()

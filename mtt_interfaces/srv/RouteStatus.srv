@@ -1,0 +1,11 @@
+---
+bool success
+string message
+string active_route
+bool route_loaded
+bool route_valid
+bool autonomy_allowed
+string refusal_reason
+float64 route_distance_m
+float64 heading_error_rad
+float64 obstacle_clearance_min_m

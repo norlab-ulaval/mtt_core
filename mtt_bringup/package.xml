@@ -11,13 +11,17 @@
 
   <exec_depend>rclpy</exec_depend>
   <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>mtt_interfaces</exec_depend>
   <exec_depend>mtt_control</exec_depend>
   <exec_depend>mtt_driver</exec_depend>
   <exec_depend>mtt_msgs</exec_depend>
   <exec_depend>nav_msgs</exec_depend>
   <exec_depend>norlab_controllers_msgs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>sensor_msgs_py</exec_depend>
   <exec_depend>std_msgs</exec_depend>
   <exec_depend>std_srvs</exec_depend>
+  <exec_depend>visualization_msgs</exec_depend>
   <exec_depend>wiln</exec_depend>
 
   <test_depend>ament_lint_auto</test_depend>

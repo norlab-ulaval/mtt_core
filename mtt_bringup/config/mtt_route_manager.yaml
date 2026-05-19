@@ -1,0 +1,25 @@
+mtt_route_manager:
+  ros__parameters:
+    routes_dir: "data/wiln_routes"
+    route_file_name: "route.ltr"
+    icp_odom_topic: "/mapping/icp_odom"
+    health_topic: "/mtt_health"
+    selected_mode_topic: "mtt_control/selected_mode"
+    deadman_topic: "teleop_deadman"
+    obstacle_cloud_topic: "/mtt_perception/obstacles"
+    load_map_traj_service: "/load_map_traj"
+    mark_ready_service: "/mtt_repeat/mark_ready"
+    play_line_service: "/mtt_repeat/play_line"
+    cancel_service: "/mtt_repeat/cancel"
+    request_manual_service: "mtt_control/request_manual"
+    icp_timeout_s: 0.75
+    health_timeout_s: 1.0
+    max_start_distance_m: 2.0
+    max_lateral_error_m: 1.25
+    max_heading_error_rad: 1.2
+    route_error_grace_s: 1.0
+    min_obstacle_clearance_m: 0.75
+    obstacle_corridor_half_width_m: 0.75
+    obstacle_lookahead_m: 4.0
+    require_obstacle_clearance: false
+    monitor_rate_hz: 10.0
