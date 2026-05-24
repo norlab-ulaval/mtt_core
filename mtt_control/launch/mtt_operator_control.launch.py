@@ -30,7 +30,7 @@ def generate_launch_description():
                 name="joy_node",
                 parameters=[{
                     "deadzone": LaunchConfiguration("joy_deadzone"),
-                    "device_name": LaunchConfiguration("joy_device"),
+                    "dev": LaunchConfiguration("joy_device"),
                     "autorepeat_rate": 20.0,
                 }],
                 output="screen",

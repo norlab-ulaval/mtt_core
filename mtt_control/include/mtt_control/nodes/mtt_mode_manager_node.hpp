@@ -39,6 +39,12 @@ private:
   ControlMode current_mode_{ControlMode::Stop};
   bool estop_active_{false};
   bool manual_activity_{false};
+  // When true, AUTO was granted by the replay supervisor via service.
+  // manual_activity events are IGNORED while this flag is set so that tiny
+  // stick-drift while holding the deadman cannot flip back to Manual and
+  // abort the replay.  The flag is cleared only by an explicit joystick
+  // button press (manual/stop buttons) or by the request_manual service.
+  bool auto_locked_{false};
   int button_auto_index_{0};
   int button_manual_index_{3};
   int button_stop_index_{1};

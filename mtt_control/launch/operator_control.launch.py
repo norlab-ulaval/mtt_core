@@ -53,7 +53,7 @@ def generate_launch_description():
             parameters=[{
                 "use_sim_time": use_sim_time,
                 "deadzone": joy_deadzone,
-                "device_name": joy_device,
+                "dev": joy_device,
                 "autorepeat_rate": 20.0,
             }],
             output="screen",

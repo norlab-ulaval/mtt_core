@@ -38,6 +38,7 @@ private:
   double articulation_hold_max_speed_ms_{0.25};
   double articulation_hold_release_deadband_{0.08};
   int deadman_button_index_{5};
+
   int light_button_index_{2};
   int articulation_hold_button_index_{6};
   int steer_mode_switch_button_index_{4};
@@ -55,14 +56,21 @@ private:
 
   bool light_state_{false};
   bool previous_deadman_pressed_{false};
+  bool movement_inhibited_{false};
+  bool articulation_hold_mode_default_{false};
   bool articulation_hold_mode_{false};
+  bool parking_brake_mode_{false};
   bool has_held_angular_command_{false};
   double held_angular_command_{0.0};
   std::string current_steer_mode_{"closed_loop"};
 
+  rclcpp::Time rt_press_start_time_;
+  bool rt_is_fully_pressed_{false};
+
   JoystickState joystick_state_;
 
   rclcpp::Subscription<sensor_msgs::msg::Joy>::SharedPtr joy_sub_;
+  rclcpp::TimerBase::SharedPtr publish_timer_;
   rclcpp::Publisher<geometry_msgs::msg::TwistStamped>::SharedPtr manual_raw_pub_;
   rclcpp::Publisher<mtt_msgs::msg::MttAuxCommand>::SharedPtr aux_pub_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr deadman_pub_;

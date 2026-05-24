@@ -92,11 +92,17 @@ void MttManualCmdFilterNode::on_estop(const std_msgs::msg::Bool::SharedPtr msg)
 void MttManualCmdFilterNode::reset_filters()
 {
   target_ = {};
+  reset_filter_state();
+  has_input_ = false;
+}
+
+void MttManualCmdFilterNode::reset_filter_state()
+{
   linear_limiter_.reset(0.0);
   angular_limiter_.reset(0.0);
   linear_filter_.reset(0.0);
   angular_filter_.reset(0.0);
-  has_input_ = false;
+  last_publish_was_zero_ = true;
 }
 
 void MttManualCmdFilterNode::publish_zero_once(const rclcpp::Time & stamp)
@@ -127,10 +133,12 @@ void MttManualCmdFilterNode::on_timer()
     effective_target = {};
   }
 
-  // Deadman rising-edge: reset all filter state so the first command after
-  // re-press always ramps from zero (no stale velocity).
+  // Deadman rising-edge: reset only the filter/output state so the first
+  // command after re-press ramps from zero, but keep the latest joystick target.
+  // Joy and deadman arrive on separate topics; clearing target here can erase
+  // the current axis value when the operator changes direction while released.
   if (deadman_active_ && !prev_deadman_) {
-    reset_filters();
+    reset_filter_state();
   }
   prev_deadman_ = deadman_active_;
 

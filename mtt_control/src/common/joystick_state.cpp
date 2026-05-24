@@ -8,6 +8,7 @@ namespace mtt_control
 
 void JoystickState::update(const sensor_msgs::msg::Joy & joy)
 {
+  current_msg_ = joy;
   previous_buttons_ = current_buttons_;
   current_buttons_ = joy.buttons;
   current_axes_ = joy.axes;

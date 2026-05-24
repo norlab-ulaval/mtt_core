@@ -19,7 +19,10 @@ public:
 
   static double shape_axis(double value, double deadband, double expo);
 
+  const sensor_msgs::msg::Joy & last_msg() const { return current_msg_; }
+
 private:
+  sensor_msgs::msg::Joy current_msg_;
   std::vector<int> previous_buttons_;
   std::vector<int> current_buttons_;
   std::vector<float> current_axes_;

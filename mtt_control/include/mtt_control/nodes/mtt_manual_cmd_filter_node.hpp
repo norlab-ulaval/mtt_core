@@ -32,6 +32,7 @@ private:
   void on_estop(const std_msgs::msg::Bool::SharedPtr msg);
   void on_timer();
   void reset_filters();
+  void reset_filter_state();
   void publish_zero_once(const rclcpp::Time & stamp);
 
   std::string input_topic_;

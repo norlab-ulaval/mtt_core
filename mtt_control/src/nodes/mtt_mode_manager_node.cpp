@@ -96,14 +96,20 @@ void MttModeManagerNode::on_joy(const sensor_msgs::msg::Joy::SharedPtr msg)
   }
 
   if (joystick_state_.button_rising(static_cast<std::size_t>(button_stop_index_))) {
+    // Explicit stop button: always works, even during replay.
+    auto_locked_ = false;
     set_mode(ControlMode::Stop, "stop_button");
     return;
   }
   if (joystick_state_.button_rising(static_cast<std::size_t>(button_manual_index_))) {
+    // Explicit manual button: always works, operator takes back control.
+    auto_locked_ = false;
     set_mode(ControlMode::Manual, "manual_button");
     return;
   }
   if (joystick_state_.button_rising(static_cast<std::size_t>(button_auto_index_))) {
+    // Manual press of auto button: NOT a replay-locked auto, just a direct request.
+    auto_locked_ = false;
     set_mode(ControlMode::Auto, "auto_button");
     return;
   }
@@ -112,7 +118,12 @@ void MttModeManagerNode::on_joy(const sensor_msgs::msg::Joy::SharedPtr msg)
 void MttModeManagerNode::on_manual_activity(const std_msgs::msg::Bool::SharedPtr msg)
 {
   manual_activity_ = msg->data;
-  if (manual_activity_ && !estop_active_) {
+  // Do NOT switch to Manual if the replay supervisor has locked us in AUTO.
+  // The joystick-override safety is handled by the supervisor itself (which
+  // monitors cmd_vel/manual_raw + deadman and calls request_manual explicitly).
+  // Reacting to manual_activity here during a locked AUTO would cause the
+  // false-cancel loop the operator is experiencing.
+  if (manual_activity_ && !estop_active_ && !auto_locked_) {
     set_mode(ControlMode::Manual, "manual_activity");
   }
 }
@@ -121,6 +132,8 @@ void MttModeManagerNode::on_estop(const std_msgs::msg::Bool::SharedPtr msg)
 {
   estop_active_ = msg->data;
   if (estop_active_) {
+    // Emergency stop always overrides everything, including replay lock.
+    auto_locked_ = false;
     set_mode(ControlMode::Stop, "estop");
   }
 }
@@ -139,6 +152,9 @@ void MttModeManagerNode::handle_request_auto(
     response->message = "estop active";
     return;
   }
+  // Mark as replay-locked: manual_activity events will be ignored until
+  // request_manual (or an explicit button press) clears this flag.
+  auto_locked_ = true;
   set_mode(ControlMode::Auto, "service_auto");
   response->success = true;
   response->message = "auto mode enabled";
@@ -153,6 +169,8 @@ void MttModeManagerNode::handle_request_manual(
     response->message = "estop active";
     return;
   }
+  // Clear the replay lock: supervisor is done with AUTO.
+  auto_locked_ = false;
   set_mode(ControlMode::Manual, "service_manual");
   response->success = true;
   response->message = "manual mode enabled";
