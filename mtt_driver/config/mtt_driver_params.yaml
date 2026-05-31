@@ -6,7 +6,9 @@ mtt_can_node:
     cmd_angular_mode: normalized_steer
     tachometer_mode: real
     invert_inferred_tachometer_direction: false
-    max_linear_speed_ms: 1.2
+    # Physical top speed at throttle_byte=230. MUST match speed_servo.yaml max_speed_ms.
+    # Update after running characterization (mode: "characterize" in mtt_speed_servo_node).
+    max_linear_speed_ms: 5.56
     throttle_deadband: 0.05
     steer_deadband: 0.05
     min_steer_speed_ms: 0.1
@@ -71,8 +73,8 @@ mtt_articulation_sensor_node:
     # LUT already encodes this correctly (low bits→+48°, high bits→-49°).
     invert_sign: false
     angle_offset_rad: 0.0
-    bit_coords: [82, 214, 313, 430, 510, 600, 723, 831, 929, 1028, 1128, 1201, 1306, 1410, 1529, 1628, 1737, 1826, 1906, 2016, 2119, 2226, 2337, 2443, 2520, 2617, 2716, 2815, 2908, 3052, 3106, 3258, 3323, 3408]
-    angle_coords_deg: [48, 43, 40, 36, 35, 32, 29, 25, 23, 20, 18, 15, 12, 9, 5, 2, 0, -2, -4, -7, -8, -10, -14, -18, -20, -21, -28, -26, -30, -35, -40, -43, -45, -49]
+    bit_coords: [82.0, 214.0, 313.0, 430.0, 510.0, 600.0, 723.0, 831.0, 929.0, 1028.0, 1128.0, 1201.0, 1306.0, 1410.0, 1529.0, 1628.0, 1737.0, 1826.0, 1906.0, 2016.0, 2119.0, 2226.0, 2337.0, 2443.0, 2520.0, 2617.0, 2716.0, 2815.0, 2908.0, 3052.0, 3106.0, 3258.0, 3323.0, 3408.0]
+    angle_coords_deg: [48.0, 43.0, 40.0, 36.0, 35.0, 32.0, 29.0, 25.0, 23.0, 20.0, 18.0, 15.0, 12.0, 9.0, 5.0, 2.0, 0.0, -2.0, -4.0, -7.0, -8.0, -10.0, -14.0, -18.0, -20.0, -21.0, -28.0, -26.0, -30.0, -35.0, -40.0, -43.0, -45.0, -49.0]
 
     # ── Pitch (ADC1, 8-bit, 0–255) ──────────────────────────────────────────
     # Convention: α = 0 at flat terrain (hitch at rest position).

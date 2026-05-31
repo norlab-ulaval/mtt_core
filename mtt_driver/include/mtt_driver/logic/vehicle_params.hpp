@@ -77,8 +77,8 @@ struct VehicleParams {
   static constexpr double track_grip_coeff     = 0.95;
   static constexpr double carving_factor       = 0.1;
   static constexpr double articulation_response = 0.8;
-  static constexpr double max_yaw_rate_rad_s   = (45.0 * M_PI / 180.0) / 6.0;
-  static constexpr double max_speed_ms         = 2.0;
+  static constexpr double max_yaw_rate_rad_s   = 1.5;  // ~86 deg/s, matches ICP plausibility gate.
+  static constexpr double max_speed_ms         = 5.56;
   static constexpr double slip_speed_factor    = 0.02;
   static constexpr double min_speed_for_steering = 0.1;
 

@@ -20,6 +20,14 @@ enum class DrivingMode : uint8_t {
   DualSerpentine     = 2,
 };
 
+// ── Yaw rate source quality — used to scale heading covariance ────────
+enum class YawRateSource : uint8_t {
+  MODEL_ONLY            = 0,  // open-loop command model, highest uncertainty
+  HARDWARE_CLOSED_LOOP  = 1,  // hardware articulation angle in closed-loop
+  IMU_ONLY              = 2,  // IMU when model is unavailable
+  IMU_BLEND             = 3,  // complementary filter: IMU + model (best)
+};
+
 // ── Input snapshot passed to each odometry calculator ────────────────
 struct OdometryInput {
   double   distance_km{0.0};        // Absolute cumulative distance from tachometer
@@ -36,6 +44,7 @@ struct OdometryInput {
   double curvature_effective_m_inv{0.0};
   double yaw_rate_nominal_rad_s{0.0};
   double yaw_rate_effective_rad_s{0.0};
+  YawRateSource yaw_rate_source{YawRateSource::MODEL_ONLY};
 };
 
 // ── Output pose from each calculator ─────────────────────────────────

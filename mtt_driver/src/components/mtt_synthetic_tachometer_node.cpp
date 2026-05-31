@@ -7,6 +7,7 @@
 #include <cmath>
 #include <memory>
 #include <limits>
+#include <optional>
 #include <string>
 
 #include <rclcpp/rclcpp.hpp>
@@ -117,6 +118,7 @@ private:
   bool has_cmd_vel_{false};
   std::chrono::steady_clock::time_point last_cmd_vel_time_{};
   std::chrono::steady_clock::time_point last_publish_time_{};
+  std::optional<rclcpp::Time> last_publish_stamp_;
   bool publish_initialized_{false};
   can::CommandFrame synthetic_frame_{};
 
@@ -186,12 +188,20 @@ private:
     }
 
     const auto wall_now = std::chrono::steady_clock::now();
+    const auto stamp_now = now();
+    bool use_sim_time = false;
+    (void)get_parameter("use_sim_time", use_sim_time);
+
     double dt = 1.0 / std::max(1.0, publish_rate_hz_);
-    if (publish_initialized_) {
+    if (use_sim_time) {
+      if (last_publish_stamp_) {
+        dt = (stamp_now - *last_publish_stamp_).seconds();
+      }
+      last_publish_stamp_ = stamp_now;
+    } else if (publish_initialized_) {
       dt = std::chrono::duration<double>(wall_now - last_publish_time_).count();
-    } else {
-      publish_initialized_ = true;
     }
+    publish_initialized_ = true;
     last_publish_time_ = wall_now;
     dt = std::clamp(dt, 0.0, 1.0);
 

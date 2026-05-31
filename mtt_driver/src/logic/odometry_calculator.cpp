@@ -16,6 +16,68 @@ double wrap_angle(double angle)
   return std::atan2(std::sin(angle), std::cos(angle));
 }
 
+bool usable_tachometer_delta(double raw_delta_m, const OdometryInput& input)
+{
+  if (!std::isfinite(raw_delta_m) || !std::isfinite(input.dt) || input.dt <= 1e-6) {
+    return false;
+  }
+
+  // The CAN distance field is expected to be an unsigned cumulative encoder
+  // count. Reject resets, wraps, and samples that are incompatible with the
+  // instantaneous speed from the same tachometer message.
+  if (raw_delta_m < 0.0) {
+    return false;
+  }
+
+  constexpr double kMinAllowedSpeedMs = 8.0;
+  constexpr double kSpeedMarginMs = 1.0;
+  const double abs_delta_m = std::abs(raw_delta_m);
+  const double abs_speed_ms = std::abs(input.speed_ms);
+  constexpr double kMovingSpeedThresholdMs = 0.05;
+  constexpr double kStuckDistanceEpsilonM = 1.0e-6;
+  if (abs_speed_ms > kMovingSpeedThresholdMs && abs_delta_m <= kStuckDistanceEpsilonM) {
+    return false;
+  }
+
+  const double implied_speed_ms = abs_delta_m / input.dt;
+  const double max_allowed_speed_ms = std::max(
+    kMinAllowedSpeedMs,
+    std::max(VehicleParams::max_speed_ms * 1.5, abs_speed_ms + kSpeedMarginMs));
+  if (implied_speed_ms > max_allowed_speed_ms) {
+    return false;
+  }
+
+  constexpr double kAbsDeltaMarginM = 0.05;
+  constexpr double kRelativeDeltaMargin = 1.5;
+  const double expected_delta_m = abs_speed_ms * input.dt;
+  const double delta_margin_m = std::max(kAbsDeltaMarginM, kRelativeDeltaMargin * expected_delta_m);
+  return std::abs(abs_delta_m - expected_delta_m) <= delta_margin_m;
+}
+
+struct DistanceStep {
+  double ds{0.0};
+  double speed_ms{0.0};
+};
+
+DistanceStep resolve_distance_step(
+  const OdometryInput& input,
+  const std::optional<double>& raw_delta_m,
+  bool use_distance_delta)
+{
+  DistanceStep step;
+  step.speed_ms = input.speed_ms;
+  step.ds = std::isfinite(input.dt) && input.dt > 0.0
+    ? input.speed_ms * input.dt
+    : 0.0;
+
+  if (use_distance_delta && raw_delta_m && usable_tachometer_delta(*raw_delta_m, input)) {
+    step.ds = *raw_delta_m * static_cast<double>(input.direction_sign);
+    step.speed_ms = input.dt > 1e-6 ? step.ds / input.dt : input.speed_ms;
+  }
+
+  return step;
+}
+
 }  // namespace
 
 // ──────────────────────────────────────────────────────────────────────
@@ -36,14 +98,9 @@ OdometryOutput SingleTrailerOdometry::update(const OdometryInput& input)
 
   last_abs_m_ = cur_abs_m;
 
-  // Signed speed
-  double speed_ms = input.speed_ms;
-  if (use_distance_delta && delta_m && input.dt > 0.001)
-    speed_ms = (*delta_m * input.direction_sign) / input.dt;
-
-  const double ds = (use_distance_delta && delta_m)
-    ? (*delta_m * input.direction_sign)
-    : (speed_ms * input.dt);
+  const DistanceStep distance_step = resolve_distance_step(input, delta_m, use_distance_delta);
+  const double speed_ms = distance_step.speed_ms;
+  const double ds = distance_step.ds;
   const double commanded_phi = input.synthetic_model_valid
     ? input.articulation_command_rad
     : VehicleParams::normalized_steer_to_articulation_rad(input.steer_cmd);
@@ -76,11 +133,24 @@ OdometryOutput SingleTrailerOdometry::update(const OdometryInput& input)
   y_ += ds * std::sin(heading_mid);
   heading_ = final_heading;
 
-  // Covariance increases with speed and articulation
+  // Covariance increases with speed and articulation.
+  // heading_cov is additionally scaled by yaw rate source quality:
+  //   IMU_BLEND             → 0.4× (best: direct measurement + model)
+  //   HARDWARE_CLOSED_LOOP  → 0.6× (hardware articulation feedback)
+  //   IMU_ONLY              → 0.5× (IMU alone, no model cross-check)
+  //   MODEL_ONLY            → 1.0× (worst: open-loop command estimate)
   constexpr double max_v = VehicleParams::max_speed_ms;
   const double speed_factor = std::abs(speed_ms) / std::max(max_v, 1e-6);
   const double artic_factor =
     std::abs(articulation_angle_) / std::max(VehicleParams::max_articulation_rad, 1e-6);
+
+  double source_quality = 1.0;
+  switch (input.yaw_rate_source) {
+    case YawRateSource::IMU_BLEND:            source_quality = 0.4; break;
+    case YawRateSource::HARDWARE_CLOSED_LOOP: source_quality = 0.6; break;
+    case YawRateSource::IMU_ONLY:             source_quality = 0.5; break;
+    case YawRateSource::MODEL_ONLY:           source_quality = 1.0; break;
+  }
 
   OdometryOutput out;
   out.x                 = x_;
@@ -92,7 +162,7 @@ OdometryOutput SingleTrailerOdometry::update(const OdometryInput& input)
     : yaw_rate;
   out.articulation_angle = articulation_angle_;
   out.pos_cov           = 0.02 * (1.0 + speed_factor + artic_factor);
-  out.heading_cov       = 0.05 * (1.0 + 2.0 * artic_factor);
+  out.heading_cov       = 0.05 * (1.0 + 2.0 * artic_factor) * source_quality;
   out.vel_cov           = 0.15 * (1.0 + speed_factor);
   return out;
 }
@@ -142,12 +212,9 @@ OdometryOutput DualDifferentialOdometry::update(const OdometryInput& input)
   const double delta = abs_m - *last_abs_m_;
   last_abs_m_  = abs_m;
 
-  const double speed_ms = use_distance_delta && input.dt > 1e-6
-    ? (delta * input.direction_sign) / input.dt
-    : input.speed_ms;
-  const double ds = use_distance_delta
-    ? delta * input.direction_sign
-    : speed_ms * input.dt;
+  const DistanceStep distance_step = resolve_distance_step(input, std::optional<double>{delta}, use_distance_delta);
+  const double speed_ms = distance_step.speed_ms;
+  const double ds = distance_step.ds;
   const double dtheta = input.angular_velocity * input.dt;
   const double heading_mid = theta_ + 0.5 * dtheta;
 
@@ -193,20 +260,16 @@ OdometryOutput DualSerpentineOdometry::update(const OdometryInput& input)
   const bool use_distance_delta = !input.synthetic_model_valid;
 
   double ds = 0.0;
+  std::optional<double> delta_m{};
   if (!last_abs_m_) {
     last_abs_m_ = cur_abs;
   } else {
-    if (use_distance_delta) {
-      ds = (cur_abs - *last_abs_m_) * input.direction_sign;
-    }
+    delta_m = cur_abs - *last_abs_m_;
     last_abs_m_ = cur_abs;
   }
-  const double speed_ms = use_distance_delta
-    ? (input.direction_sign * std::abs(input.speed_ms))
-    : input.speed_ms;
-  if (!use_distance_delta) {
-    ds = speed_ms * input.dt;
-  }
+  const DistanceStep distance_step = resolve_distance_step(input, delta_m, use_distance_delta);
+  ds = distance_step.ds;
+  const double speed_ms = distance_step.speed_ms;
 
   const double articulation = input.synthetic_model_valid
     ? input.articulation_effective_rad

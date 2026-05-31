@@ -15,6 +15,7 @@
 #include <nav_msgs/msg/odometry.hpp>
 #include <geometry_msgs/msg/twist_stamped.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
+#include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
 #include <std_msgs/msg/float64.hpp>
 #include <tf2_ros/transform_broadcaster.h>
@@ -64,9 +65,24 @@ public:
         VehicleParams::max_articulation_deg) * M_PI / 180.0;
     yaw_slip_factor_  = declare_parameter("yaw_slip_factor",  1.0);
     wrap_threshold_m_ = declare_parameter("wrap_reset_threshold_m", 1000.0);
+    initial_x_m_ = declare_parameter("initial_x_m", 0.0);
+    initial_y_m_ = declare_parameter("initial_y_m", 0.0);
+    initial_heading_rad_ = declare_parameter("initial_heading_rad", 0.0);
     hardware_articulation_topic_ = declare_parameter("hardware_articulation_topic", std::string("/hardware/articulation_angle"));
     hardware_articulation_timeout_s_ = declare_parameter("hardware_articulation_timeout_seconds", 0.5);
+    articulation_state_topic_ = declare_parameter("articulation_state_topic", std::string(""));
+    articulation_state_output_topic_ = declare_parameter("articulation_state_output_topic", std::string("mtt/articulation_state"));
+    articulation_state_timeout_s_ = declare_parameter("articulation_state_timeout_seconds", 0.5);
+    use_articulation_state_lidar_ = declare_parameter("use_articulation_state_lidar", false);
     lidar_articulation_timeout_s_ = declare_parameter("lidar_articulation_timeout_seconds", 0.5);
+    imu_yaw_rate_topic_ = declare_parameter("imu_yaw_rate_topic", std::string(""));
+    imu_yaw_rate_timeout_s_ = declare_parameter("imu_yaw_rate_timeout_seconds", 0.2);
+    imu_yaw_rate_sign_ = declare_parameter("imu_yaw_rate_sign", -1.0);
+    imu_yaw_rate_bias_rad_s_ = declare_parameter("imu_yaw_rate_bias_rad_s", 0.0);
+    // Complementary filter weight for IMU yaw rate.
+    // alpha=1.0 → pure IMU, alpha=0.0 → pure model.
+    // Applied only when both IMU and model are valid simultaneously.
+    imu_complementary_alpha_ = declare_parameter("imu_complementary_alpha", 0.7);
     motion_model_params_.wheelbase_m = declare_parameter("model_wheelbase_m", wheelbase_m_);
     motion_model_params_.max_articulation_rad =
       declare_parameter("model_max_articulation_deg", VehicleParams::max_articulation_deg) * M_PI / 180.0;
@@ -93,12 +109,13 @@ public:
     // ── Initial odometry mode ─────────────────────────────────────────
     calculator_ = logic::OdometryFactory::create(
       logic::DrivingMode::SingleTrailer, track_width_m_, wheelbase_m_);
+    apply_initial_pose();
 
     // ── Publishers ────────────────────────────────────────────────────
     odom_pub_        = create_publisher<nav_msgs::msg::Odometry>("mtt_odometry", 10);
     articulation_pub_ = create_publisher<std_msgs::msg::Float64>("mtt_articulation_angle", 10);
     articulation_state_pub_ = create_publisher<mtt_msgs::msg::MttArticulationState>(
-      "mtt/articulation_state", rclcpp::SensorDataQoS());
+      articulation_state_output_topic_, rclcpp::SensorDataQoS());
     if (publish_runtime_joint_states_) {
       joint_state_pub_ = create_publisher<sensor_msgs::msg::JointState>(
         runtime_joint_states_topic_, 10);
@@ -115,8 +132,22 @@ public:
       cmd_vel_topic_, 10,
       [this](const geometry_msgs::msg::TwistStamped::SharedPtr msg){ on_cmd_vel(msg); });
     hardware_articulation_sub_ = create_subscription<std_msgs::msg::Float64>(
-      hardware_articulation_topic_, 10,
+      hardware_articulation_topic_, rclcpp::SensorDataQoS(),
       [this](const std_msgs::msg::Float64::SharedPtr msg){ on_hardware_articulation(msg); });
+    if (!articulation_state_topic_.empty()) {
+      articulation_state_sub_ = create_subscription<mtt_msgs::msg::MttArticulationState>(
+        articulation_state_topic_, rclcpp::SensorDataQoS(),
+        [this](const mtt_msgs::msg::MttArticulationState::SharedPtr msg) {
+          on_articulation_state(msg);
+        });
+    }
+    if (!imu_yaw_rate_topic_.empty()) {
+      imu_sub_ = create_subscription<sensor_msgs::msg::Imu>(
+        imu_yaw_rate_topic_, rclcpp::SensorDataQoS(),
+        [this](const sensor_msgs::msg::Imu::SharedPtr msg) {
+          on_imu(msg);
+        });
+    }
     // Pitch potentiometer — raw bits (always available from articulation_sensor_node)
     pitch_bits_sub_ = create_subscription<std_msgs::msg::Float64>(
       "/hardware/articulation_pitch_bits", 10,
@@ -191,14 +222,46 @@ public:
 
     RCLCPP_INFO(
       get_logger(),
-      "MttOdometryNode started (mode=SingleTrailer, steer=%s, cmd_angular_mode=%s, cmd_vel=%s, runtime_joint_states=%s)",
+      "MttOdometryNode started (mode=SingleTrailer, steer=%s, cmd_angular_mode=%s, cmd_vel=%s, hardware_articulation=%s, initial=(%.2f, %.2f, %.1f deg), runtime_joint_states=%s)",
       steer_mode_.c_str(),
       cmd_angular_mode_.c_str(),
       cmd_vel_topic_.c_str(),
+      hardware_articulation_topic_.c_str(),
+      initial_x_m_,
+      initial_y_m_,
+      initial_heading_rad_ * 180.0 / M_PI,
       publish_runtime_joint_states_ ? runtime_joint_states_topic_.c_str() : "disabled");
+    if (!articulation_state_topic_.empty()) {
+      RCLCPP_INFO(
+        get_logger(),
+        "Articulation state input enabled: input=%s output=%s lidar_fallback=%s",
+        articulation_state_topic_.c_str(),
+        articulation_state_output_topic_.c_str(),
+        use_articulation_state_lidar_ ? "true" : "false");
+    }
+    if (!imu_yaw_rate_topic_.empty()) {
+      RCLCPP_INFO(
+        get_logger(),
+        "IMU yaw-rate input enabled: topic=%s sign=%.1f bias=%.4f timeout=%.2fs",
+        imu_yaw_rate_topic_.c_str(),
+        imu_yaw_rate_sign_,
+        imu_yaw_rate_bias_rad_s_,
+        imu_yaw_rate_timeout_s_);
+    }
   }
 
 private:
+  void apply_initial_pose()
+  {
+    logic::OdometryPose pose;
+    pose.x = initial_x_m_;
+    pose.y = initial_y_m_;
+    pose.heading = initial_heading_rad_;
+    pose.articulation_angle = 0.0;
+    pose.last_abs_m.reset();
+    calculator_->import_pose(pose);
+  }
+
   // ── State ─────────────────────────────────────────────────────────
   std::string odom_frame_, base_frame_, steer_mode_, cmd_angular_mode_, cmd_vel_topic_, runtime_joint_states_topic_;
   bool     broadcast_tf_, pivot_turn_, publish_runtime_joint_states_;
@@ -209,16 +272,36 @@ private:
   double   runtime_joint_articulation_sign_{1.0};
   double   runtime_joint_articulation_offset_rad_{0.0};
   double   min_speed_turn_, yaw_slip_factor_, wrap_threshold_m_, cmd_vel_timeout_s_;
+  double   initial_x_m_{0.0};
+  double   initial_y_m_{0.0};
+  double   initial_heading_rad_{0.0};
   double   hardware_articulation_timeout_s_{0.5};
+  double   articulation_state_timeout_s_{0.5};
   double   lidar_articulation_timeout_s_{0.5};
+  double   imu_yaw_rate_timeout_s_{0.2};
+  double   imu_yaw_rate_sign_{-1.0};
+  double   imu_yaw_rate_bias_rad_s_{0.0};
   double   current_angular_cmd_{0.0};
   double   hardware_articulation_rad_{0.0};
   bool     has_hardware_articulation_{false};
   std::chrono::steady_clock::time_point last_hardware_articulation_time_{};
   std::string hardware_articulation_topic_;
+  std::string articulation_state_topic_;
+  std::string articulation_state_output_topic_;
+  bool     use_articulation_state_lidar_{false};
+  double   state_articulation_rad_{0.0};
+  bool     has_state_articulation_{false};
+  std::string state_articulation_source_;
+  std::chrono::steady_clock::time_point last_state_articulation_time_{};
   double   lidar_articulation_rad_{0.0};
   bool     has_lidar_articulation_{false};
   std::chrono::steady_clock::time_point last_lidar_articulation_time_{};
+  std::string imu_yaw_rate_topic_;
+  double   imu_yaw_rate_rad_s_{0.0};
+  bool     has_imu_yaw_rate_{false};
+  std::chrono::steady_clock::time_point last_imu_yaw_rate_time_{};
+  double   imu_complementary_alpha_{0.7};
+  logic::YawRateSource yaw_rate_source_snapshot_{logic::YawRateSource::MODEL_ONLY};
   // Pitch potentiometer (ADC1, 8-bit)
   double   hardware_pitch_bits_{0.0};
   double   hardware_pitch_rad_{0.0};
@@ -231,6 +314,7 @@ private:
   bool has_cmd_vel_{false};
   std::optional<rclcpp::Time> last_tacho_stamp_;
   std::optional<std::chrono::steady_clock::time_point> last_tacho_wall_time_;
+  std::optional<double> last_tacho_distance_m_;
 
   std::mutex calc_mutex_;
   std::mutex state_mutex_;
@@ -247,6 +331,8 @@ private:
   rclcpp::TimerBase::SharedPtr tf_fallback_timer_;
   rclcpp::Subscription<geometry_msgs::msg::TwistStamped>::SharedPtr cmd_vel_sub_;
   rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr hardware_articulation_sub_;
+  rclcpp::Subscription<mtt_msgs::msg::MttArticulationState>::SharedPtr articulation_state_sub_;
+  rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_;
   rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr pitch_bits_sub_;
   rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr pitch_rad_sub_;
   rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr lidar_articulation_sub_;
@@ -263,6 +349,15 @@ private:
       motion_model_params_.use_slip_heuristic);
   }
 
+  double articulation_to_yaw_rate(double articulation_rad, double speed_ms) const
+  {
+    return logic::CommandMotionModel::yaw_rate_from_speed_and_articulation(
+      speed_ms,
+      articulation_rad,
+      motion_model_params_,
+      motion_model_params_.use_slip_heuristic);
+  }
+
   double command_to_yaw_rate(double angular_cmd, double speed_ms) const
   {
     if (cmd_angular_mode_ == "yaw_rate") {
@@ -270,6 +365,40 @@ private:
     }
 
     return normalized_steer_to_yaw_rate(angular_cmd, speed_ms);
+  }
+
+  bool tachometer_distance_delta_suspicious(
+    double raw_delta_m,
+    double signed_speed_ms,
+    double dt) const
+  {
+    if (!std::isfinite(raw_delta_m) || !std::isfinite(dt) || dt <= 1e-6) {
+      return true;
+    }
+    if (raw_delta_m < 0.0) {
+      return true;
+    }
+
+    constexpr double kMinAllowedSpeedMs = 8.0;
+    constexpr double kSpeedMarginMs = 1.0;
+    constexpr double kAbsDeltaMarginM = 0.05;
+    constexpr double kRelativeDeltaMargin = 1.5;
+    const double abs_delta_m = std::abs(raw_delta_m);
+    const double abs_speed_ms = std::abs(signed_speed_ms);
+    constexpr double kMovingSpeedThresholdMs = 0.05;
+    constexpr double kStuckDistanceEpsilonM = 1.0e-6;
+    if (abs_speed_ms > kMovingSpeedThresholdMs && abs_delta_m <= kStuckDistanceEpsilonM) {
+      return true;
+    }
+
+    const double implied_speed_ms = abs_delta_m / dt;
+    const double max_allowed_speed_ms = std::max(
+      kMinAllowedSpeedMs,
+      std::max(VehicleParams::max_speed_ms * 1.5, abs_speed_ms + kSpeedMarginMs));
+    const double expected_delta_m = abs_speed_ms * dt;
+    const double delta_margin_m = std::max(kAbsDeltaMarginM, kRelativeDeltaMargin * expected_delta_m);
+    return implied_speed_ms > max_allowed_speed_ms ||
+      std::abs(abs_delta_m - expected_delta_m) > delta_margin_m;
   }
 
   void publish_runtime_joint_state(const builtin_interfaces::msg::Time& stamp, double articulation_angle)
@@ -292,10 +421,46 @@ private:
 
   // ── Callbacks ─────────────────────────────────────────────────────
   void on_hardware_articulation(const std_msgs::msg::Float64::SharedPtr msg) {
+    if (!std::isfinite(msg->data)) {
+      return;
+    }
     std::lock_guard<std::mutex> lock(state_mutex_);
     hardware_articulation_rad_ = msg->data;
     last_hardware_articulation_time_ = std::chrono::steady_clock::now();
     has_hardware_articulation_ = true;
+  }
+
+  void on_articulation_state(const mtt_msgs::msg::MttArticulationState::SharedPtr msg) {
+    double angle = 0.0;
+    const char* source = nullptr;
+
+    if (msg->hardware_fresh && std::isfinite(msg->hardware_rad)) {
+      angle = msg->hardware_rad;
+      source = "state_hardware";
+    } else if (
+      use_articulation_state_lidar_ &&
+      msg->lidar_detected &&
+      std::isfinite(msg->lidar_rad))
+    {
+      angle = msg->lidar_rad;
+      source = "state_lidar";
+    } else if (
+      msg->effective_source == "hardware" &&
+      std::isfinite(msg->effective_rad))
+    {
+      angle = msg->effective_rad;
+      source = "state_effective";
+    }
+
+    if (!source) {
+      return;
+    }
+
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    state_articulation_rad_ = angle;
+    state_articulation_source_ = source;
+    last_state_articulation_time_ = std::chrono::steady_clock::now();
+    has_state_articulation_ = true;
   }
 
   void on_lidar_articulation(const std_msgs::msg::Float64::SharedPtr msg) {
@@ -303,6 +468,17 @@ private:
     lidar_articulation_rad_ = msg->data;
     last_lidar_articulation_time_ = std::chrono::steady_clock::now();
     has_lidar_articulation_ = true;
+  }
+
+  void on_imu(const sensor_msgs::msg::Imu::SharedPtr msg) {
+    const double yaw_rate = imu_yaw_rate_sign_ * msg->angular_velocity.z - imu_yaw_rate_bias_rad_s_;
+    if (!std::isfinite(yaw_rate)) {
+      return;
+    }
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    imu_yaw_rate_rad_s_ = yaw_rate;
+    last_imu_yaw_rate_time_ = std::chrono::steady_clock::now();
+    has_imu_yaw_rate_ = true;
   }
 
   void on_cmd_vel(const geometry_msgs::msg::TwistStamped::SharedPtr msg) {
@@ -332,6 +508,8 @@ private:
     }
 
     double dt = 0.02;
+    bool use_sim_time = false;
+    (void)get_parameter("use_sim_time", use_sim_time);
     if (msg->header.stamp.sec != 0 || msg->header.stamp.nanosec != 0) {
       const auto stamp = rclcpp::Time(msg->header.stamp);
       if (last_tacho_stamp_) {
@@ -339,12 +517,65 @@ private:
       }
       last_tacho_stamp_ = stamp;
     }
-    if ((dt <= 1e-4 || dt > 1.0) && last_tacho_wall_time_) {
+    if (use_sim_time && dt <= 1e-4) {
+      last_tacho_wall_time_ = wall_now;
+      return;
+    }
+    if (!use_sim_time && (dt <= 1e-4 || dt > 1.0) && last_tacho_wall_time_) {
       dt = std::chrono::duration<double>(wall_now - *last_tacho_wall_time_).count();
     }
     last_tacho_wall_time_ = wall_now;
     if (dt <= 1e-4 || dt > 1.0) {
       dt = 0.02;
+    }
+
+    const double cur_tacho_distance_m = msg->distance_km * 1000.0;
+    if (!msg->model_state_valid && last_tacho_distance_m_) {
+      const double raw_delta_m = cur_tacho_distance_m - *last_tacho_distance_m_;
+      if (tachometer_distance_delta_suspicious(raw_delta_m, signed_speed_ms, dt)) {
+        RCLCPP_WARN_THROTTLE(
+          get_logger(),
+          *get_clock(),
+          1000,
+          "Suspicious tachometer cumulative distance delta: raw=%.3fm dt=%.3fs implied=%.1fm/s speed_msg=%.3fm/s. Integrating speed_ms instead.",
+          raw_delta_m,
+          dt,
+          dt > 1e-6 ? std::abs(raw_delta_m) / dt : 0.0,
+          signed_speed_ms);
+      }
+    }
+    last_tacho_distance_m_ = cur_tacho_distance_m;
+
+    // Use measured articulation when available. Direct hardware has priority;
+    // recorded replay bags can provide the same information through the
+    // composite MttArticulationState message.
+    bool direct_hardware_is_fresh = false;
+    double direct_hardware_angle = 0.0;
+    bool measured_articulation_is_fresh = false;
+    double measured_articulation_angle = 0.0;
+    std::string measured_articulation_source = "model";
+    bool imu_yaw_rate_is_fresh = false;
+    double imu_yaw_rate = 0.0;
+    {
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      direct_hardware_is_fresh = has_hardware_articulation_ &&
+        std::chrono::duration<double>(wall_now - last_hardware_articulation_time_).count() <= hardware_articulation_timeout_s_;
+      direct_hardware_angle = hardware_articulation_rad_;
+      const bool state_articulation_is_fresh =
+        has_state_articulation_ &&
+        std::chrono::duration<double>(wall_now - last_state_articulation_time_).count() <= articulation_state_timeout_s_;
+      if (direct_hardware_is_fresh) {
+        measured_articulation_is_fresh = true;
+        measured_articulation_angle = direct_hardware_angle;
+        measured_articulation_source = "hardware";
+      } else if (state_articulation_is_fresh) {
+        measured_articulation_is_fresh = true;
+        measured_articulation_angle = state_articulation_rad_;
+        measured_articulation_source = state_articulation_source_;
+      }
+      imu_yaw_rate_is_fresh = has_imu_yaw_rate_ &&
+        std::chrono::duration<double>(wall_now - last_imu_yaw_rate_time_).count() <= imu_yaw_rate_timeout_s_;
+      imu_yaw_rate = imu_yaw_rate_rad_s_;
     }
 
     // Compute effective angular velocity
@@ -359,7 +590,9 @@ private:
       if (msg->model_state_valid) {
         eff_ang = msg->model_yaw_rate_effective_rad_s;
       } else if (closed_loop) {
-        eff_ang = normalized_steer_to_yaw_rate(steer_cmd, signed_speed_ms);
+        eff_ang = measured_articulation_is_fresh
+          ? articulation_to_yaw_rate(measured_articulation_angle, signed_speed_ms)
+          : normalized_steer_to_yaw_rate(steer_cmd, signed_speed_ms);
       } else {
         cmd_is_fresh =
           has_cmd_vel_ &&
@@ -367,6 +600,27 @@ private:
         current_angular_cmd = current_angular_cmd_;
         eff_ang = cmd_is_fresh ? command_to_yaw_rate(current_angular_cmd, signed_speed_ms) : 0.0;
       }
+      // IMU yaw rate fusion via complementary filter.
+      // When both IMU and model are valid: blend (alpha*IMU + (1-alpha)*model).
+      // When model is invalid but IMU is fresh: use IMU directly.
+      // When IMU is stale: fall through with model/closed-loop estimate.
+      if (imu_yaw_rate_is_fresh) {
+        if (msg->model_state_valid) {
+          eff_ang = imu_complementary_alpha_ * imu_yaw_rate +
+                    (1.0 - imu_complementary_alpha_) * eff_ang;
+        } else {
+          eff_ang = imu_yaw_rate;
+        }
+      }
+      // Track which source was used for covariance scaling downstream
+      yaw_rate_source_snapshot_ =
+        (imu_yaw_rate_is_fresh && msg->model_state_valid)
+          ? logic::YawRateSource::IMU_BLEND
+        : imu_yaw_rate_is_fresh
+          ? logic::YawRateSource::IMU_ONLY
+        : measured_articulation_is_fresh
+          ? logic::YawRateSource::HARDWARE_CLOSED_LOOP
+          : logic::YawRateSource::MODEL_ONLY;
     }
     {
       std::lock_guard<std::mutex> lock(calc_mutex_);
@@ -388,19 +642,10 @@ private:
     input.dt               = dt;
     input.synthetic_model_valid = msg->model_state_valid;
     input.articulation_command_rad = msg->model_articulation_command_rad;
+    input.yaw_rate_source  = yaw_rate_source_snapshot_;
 
-    // Prioritize hardware feedback over model-estimated articulation
-    bool hardware_is_fresh = false;
-    double hardware_angle = 0.0;
-    {
-      std::lock_guard<std::mutex> lock(state_mutex_);
-      hardware_is_fresh = has_hardware_articulation_ &&
-        std::chrono::duration<double>(wall_now - last_hardware_articulation_time_).count() <= hardware_articulation_timeout_s_;
-      hardware_angle = hardware_articulation_rad_;
-    }
-
-    if (hardware_is_fresh) {
-      input.articulation_effective_rad = hardware_angle;
+    if (measured_articulation_is_fresh) {
+      input.articulation_effective_rad = measured_articulation_angle;
     } else {
       input.articulation_effective_rad = msg->model_articulation_effective_rad;
     }
@@ -474,10 +719,12 @@ private:
       state_msg.header = odom.header;
       state_msg.command_rad = msg->model_articulation_command_rad;
       state_msg.command_valid = msg->model_state_valid;
-      state_msg.hardware_rad = hardware_angle;
-      state_msg.hardware_fresh = hardware_is_fresh;
+      state_msg.hardware_rad = direct_hardware_angle;
+      state_msg.hardware_fresh = direct_hardware_is_fresh;
       state_msg.effective_rad = input.articulation_effective_rad;
-      state_msg.effective_source = hardware_is_fresh ? "hardware" : "model";
+      state_msg.effective_source = measured_articulation_is_fresh
+        ? measured_articulation_source
+        : "model";
       state_msg.pitch_rad      = pitch_rad_calibrated_ ? pitch_rad : 0.0;
       state_msg.pitch_bits_raw = pitch_bits;
       // pitch_fresh requires BOTH fresh bits AND a calibrated LUT.
@@ -488,7 +735,7 @@ private:
       state_msg.lidar_detected = lidar_detected;
       state_msg.command_residual_rad = state_msg.command_rad - state_msg.effective_rad;
       state_msg.hardware_lidar_residual_rad =
-        (hardware_is_fresh && lidar_detected) ? (hardware_angle - lidar_rad) : 0.0;
+        (direct_hardware_is_fresh && lidar_detected) ? (direct_hardware_angle - lidar_rad) : 0.0;
       articulation_state_pub_->publish(state_msg);
     }
 
@@ -526,6 +773,8 @@ private:
   {
     std::lock_guard<std::mutex> lock(calc_mutex_);
     calculator_->reset();
+    last_tacho_distance_m_.reset();
+    apply_initial_pose();
     res->success = true;
     res->message = "Odometry reset";
   }
