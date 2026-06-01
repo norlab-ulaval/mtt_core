@@ -4,19 +4,19 @@
       action_name: "/follow_path"
       odom_topic: "/mapping/icp_odom"
       cmd_vel_topic: "controller/cmd_vel"
-      # WILN dynamic control plan — MUST match wiln_node's control_local_plan_topic.
+      # WILN dynamic control plan — MUST match wiln_replay_node's control_local_plan_topic.
       # This is NOT diagnostic-only: the follower prioritises this topic over the global path.
       local_plan_topic: "/wiln/control/local_plan"
       control_rate_hz: 20.0
-      default_speed_ms: 0.40
-      max_speed_ms: 0.50
-      min_speed_ms: 0.25
-      slowdown_alpha: 2.0
+      default_speed_ms: 0.80
+      max_speed_ms: 4.20
+      min_speed_ms: 0.35
+      slowdown_alpha: 1.4
       k_y: 0.60
       k_theta: 1.20
       l_eq_m: 2.40
       psi_max_rad: 1.0471975512
-      psi_dot_max_rad_s: 0.40
+      psi_dot_max_rad_s: 0.80
       kappa_max: 0.70
       advance_distance_m: 0.35
       waypoint_tolerance_m: 0.35
@@ -28,8 +28,21 @@
       max_target_distance_m: 4.0
       tracking_error_grace_s: 1.0
       model_use_slip_heuristic: true
-      model_yaw_response_gain: 0.65
       model_yaw_slip_base: 0.10
       model_yaw_slip_speed_gain: 0.05
       model_yaw_slip_articulation_gain: 0.15
       model_yaw_slip_min_scale: 0.55
+      use_path_curvature_feedforward: true
+      use_adaptive_curvature_bias: false
+      adaptive_kappa_i_gain: 0.02
+      adaptive_kappa_decay: 0.05
+      adaptive_kappa_deadband_m: 0.08
+      adaptive_kappa_bias_limit: 0.10
+      # use_articulation_servo: set true to send /mtt_articulation_setpoint (rad) to the
+      # PD servo node for closed-loop articulation tracking during autonomous path following.
+      # Requires mtt_articulation_servo_node to be running with feedback_topic connected.
+      use_articulation_servo: false
+      # use_speed_servo: set true to send /speed_setpoint (Float64, m/s) to the PI speed
+      # servo node for closed-loop speed tracking using tachometer feedback.
+      # Requires mtt_speed_servo_node to be running with mode: "speed".
+      use_speed_servo: false

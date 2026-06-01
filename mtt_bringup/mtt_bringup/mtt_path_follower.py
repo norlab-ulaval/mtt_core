@@ -8,6 +8,7 @@ from typing import List, Optional, Tuple
 import rclpy
 from geometry_msgs.msg import PoseStamped, TwistStamped
 from nav_msgs.msg import Odometry, Path
+from std_msgs.msg import Float64
 from norlab_controllers_msgs.action import FollowPath
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
 from rclpy.callback_groups import ReentrantCallbackGroup
@@ -101,11 +102,25 @@ class MttPathFollower(Node):
         self.declare_parameter("max_target_distance_m", 4.0)
         self.declare_parameter("tracking_error_grace_s", 1.0)
         self.declare_parameter("model_use_slip_heuristic", True)
-        self.declare_parameter("model_yaw_response_gain", 0.65)
         self.declare_parameter("model_yaw_slip_base", 0.10)
         self.declare_parameter("model_yaw_slip_speed_gain", 0.05)
         self.declare_parameter("model_yaw_slip_articulation_gain", 0.15)
         self.declare_parameter("model_yaw_slip_min_scale", 0.55)
+        self.declare_parameter("use_path_curvature_feedforward", True)
+        self.declare_parameter("use_adaptive_curvature_bias", False)
+        self.declare_parameter("adaptive_kappa_i_gain", 0.03)
+        self.declare_parameter("adaptive_kappa_decay", 0.02)
+        self.declare_parameter("adaptive_kappa_deadband_m", 0.05)
+        self.declare_parameter("adaptive_kappa_bias_limit", 0.18)
+        # use_articulation_servo: if true, publish /mtt_articulation_setpoint (rad) for
+        # closed-loop PD tracking via mtt_articulation_servo_node, and send angular.z=0
+        # in cmd_vel. If false (default), angular.z carries normalized_steer directly.
+        self.declare_parameter("use_articulation_servo", False)
+        # use_speed_servo: if true, publish /speed_setpoint (Float64, m/s) to the
+        # PI speed servo node for closed-loop speed tracking via tachometer feedback.
+        # Requires mtt_speed_servo_node running. cmd_vel.linear.x still carries direction
+        # (sign), but the servo overrides the throttle magnitude in the CAN node output.
+        self.declare_parameter("use_speed_servo", False)
 
         self._action_name = str(self.get_parameter("action_name").value)
         self._odom_topic = str(self.get_parameter("odom_topic").value)
@@ -132,12 +147,19 @@ class MttPathFollower(Node):
         self._max_heading_error_rad = float(self.get_parameter("max_heading_error_rad").value)
         self._max_target_distance_m = float(self.get_parameter("max_target_distance_m").value)
         self._tracking_error_grace_s = float(self.get_parameter("tracking_error_grace_s").value)
+        self._use_path_curvature_feedforward = bool(self.get_parameter("use_path_curvature_feedforward").value)
+        self._use_adaptive_curvature_bias = bool(self.get_parameter("use_adaptive_curvature_bias").value)
+        self._adaptive_kappa_i_gain = float(self.get_parameter("adaptive_kappa_i_gain").value)
+        self._adaptive_kappa_decay = float(self.get_parameter("adaptive_kappa_decay").value)
+        self._adaptive_kappa_deadband_m = float(self.get_parameter("adaptive_kappa_deadband_m").value)
+        self._adaptive_kappa_bias_limit = float(self.get_parameter("adaptive_kappa_bias_limit").value)
+        self._use_articulation_servo = bool(self.get_parameter("use_articulation_servo").value)
+        self._use_speed_servo = bool(self.get_parameter("use_speed_servo").value)
         self._motion_model_params = MotionModelParams(
             wheelbase_m=self._l_eq_m,
             max_articulation_rad=self._psi_max_rad,
             min_turn_speed_ms=self._min_speed_ms,
             use_slip_heuristic=bool(self.get_parameter("model_use_slip_heuristic").value),
-            yaw_response_gain=float(self.get_parameter("model_yaw_response_gain").value),
             yaw_slip_base=float(self.get_parameter("model_yaw_slip_base").value),
             yaw_slip_speed_gain=float(self.get_parameter("model_yaw_slip_speed_gain").value),
             yaw_slip_articulation_gain=float(self.get_parameter("model_yaw_slip_articulation_gain").value),
@@ -167,6 +189,20 @@ class MttPathFollower(Node):
         self._cmd_pub = self.create_publisher(TwistStamped, self._cmd_vel_topic, 20)
         self._reference_path_pub = self.create_publisher(Path, "~/reference_path", transient_qos)
         self._target_pose_pub = self.create_publisher(PoseStamped, "~/target_pose", 20)
+        self._debug_lateral_error_pub = self.create_publisher(Float64, "~/debug/lateral_error_m", 20)
+        self._debug_heading_error_pub = self.create_publisher(Float64, "~/debug/heading_error_rad", 20)
+        self._debug_target_distance_pub = self.create_publisher(Float64, "~/debug/target_distance_m", 20)
+        self._debug_kappa_desired_pub = self.create_publisher(Float64, "~/debug/kappa_desired_m_inv", 20)
+        self._debug_kappa_feedforward_pub = self.create_publisher(Float64, "~/debug/kappa_feedforward_m_inv", 20)
+        self._debug_kappa_adaptive_bias_pub = self.create_publisher(Float64, "~/debug/kappa_adaptive_bias_m_inv", 20)
+        self._debug_kappa_command_pub = self.create_publisher(Float64, "~/debug/kappa_command_m_inv", 20)
+        self._debug_kappa_effective_pub = self.create_publisher(Float64, "~/debug/kappa_effective_est_m_inv", 20)
+        self._debug_slip_scale_pub = self.create_publisher(Float64, "~/debug/slip_scale", 20)
+        self._debug_psi_raw_pub = self.create_publisher(Float64, "~/debug/psi_raw_rad", 20)
+        self._debug_psi_cmd_pub = self.create_publisher(Float64, "~/debug/psi_cmd_rad", 20)
+        self._debug_steering_pub = self.create_publisher(Float64, "~/debug/steering_normalized", 20)
+        self._articulation_pub = self.create_publisher(Float64, "/mtt_articulation_setpoint", 20) if self._use_articulation_servo else None
+        self._speed_setpoint_pub = self.create_publisher(Float64, "/speed_setpoint", 20) if self._use_speed_servo else None
 
         self._action_server = ActionServer(
             self,
@@ -182,7 +218,10 @@ class MttPathFollower(Node):
             f"MTT path follower ready — action={self._action_name}  odom={self._odom_topic}  "
             f"cmd_vel={self._cmd_vel_topic}  local_plan={self._local_plan_topic}  "
             f"v_max={self._max_speed_ms:.2f} m/s  psi_max={math.degrees(self._psi_max_rad):.1f}°  "
-            f"yaw_response_gain={self._motion_model_params.yaw_response_gain:.2f}  "
+            f"path_ff={'ON' if self._use_path_curvature_feedforward else 'OFF'}  "
+            f"adaptive_bias={'ON' if self._use_adaptive_curvature_bias else 'OFF'}  "
+            f"articulation_servo={'ON (/mtt_articulation_setpoint)' if self._use_articulation_servo else 'OFF (normalized_steer)'}  "
+            f"speed_servo={'ON (/speed_setpoint)' if self._use_speed_servo else 'OFF (open-loop)'}  "
             f"path_error_limits=({self._max_lateral_error_m:.2f} m, "
             f"{math.degrees(self._max_heading_error_rad):.1f}°)"
         )
@@ -244,11 +283,28 @@ class MttPathFollower(Node):
         zero.twist.angular.z = 0.0
         self._cmd_pub.publish(zero)
 
-    def _publish_command(self, linear_x: float, steering_normalized: float) -> None:
+    def _publish_command(self, linear_x: float, steering_normalized: float, psi_cmd_rad: float = 0.0) -> None:
+        if self._use_articulation_servo and self._articulation_pub is not None:
+            # Servo mode: send desired articulation setpoint for closed-loop PD tracking.
+            # cmd_vel carries speed only; angular.z = 0 (servo overrides steering in CAN node).
+            servo_msg = Float64()
+            servo_msg.data = psi_cmd_rad
+            self._articulation_pub.publish(servo_msg)
+            angular_z = 0.0
+        else:
+            angular_z = steering_normalized
+
+        if self._use_speed_servo and self._speed_setpoint_pub is not None:
+            # Speed servo mode: publish speed magnitude as setpoint for PI controller.
+            # cmd_vel.linear.x still carries the sign (direction) for the CAN node.
+            speed_msg = Float64()
+            speed_msg.data = abs(linear_x)
+            self._speed_setpoint_pub.publish(speed_msg)
+
         cmd = TwistStamped()
         cmd.header.stamp = self.get_clock().now().to_msg()
         cmd.twist.linear.x = linear_x
-        cmd.twist.angular.z = steering_normalized
+        cmd.twist.angular.z = angular_z
         self._cmd_pub.publish(cmd)
 
     def _publish_target_pose(self, pose: PoseStamped) -> None:
@@ -256,6 +312,39 @@ class MttPathFollower(Node):
         target.header = pose.header
         target.pose = pose.pose
         self._target_pose_pub.publish(target)
+
+    def _publish_debug_value(self, publisher, value: float) -> None:
+        msg = Float64()
+        msg.data = float(value)
+        publisher.publish(msg)
+
+    def _publish_control_debug(
+        self,
+        lateral_error: float,
+        heading_error: float,
+        target_distance: float,
+        kappa_desired: float,
+        kappa_feedforward: float,
+        kappa_adaptive_bias: float,
+        kappa_command: float,
+        kappa_effective_est: float,
+        slip: float,
+        psi_raw: float,
+        psi_cmd: float,
+        steering_normalized: float,
+    ) -> None:
+        self._publish_debug_value(self._debug_lateral_error_pub, lateral_error)
+        self._publish_debug_value(self._debug_heading_error_pub, heading_error)
+        self._publish_debug_value(self._debug_target_distance_pub, target_distance)
+        self._publish_debug_value(self._debug_kappa_desired_pub, kappa_desired)
+        self._publish_debug_value(self._debug_kappa_feedforward_pub, kappa_feedforward)
+        self._publish_debug_value(self._debug_kappa_adaptive_bias_pub, kappa_adaptive_bias)
+        self._publish_debug_value(self._debug_kappa_command_pub, kappa_command)
+        self._publish_debug_value(self._debug_kappa_effective_pub, kappa_effective_est)
+        self._publish_debug_value(self._debug_slip_scale_pub, slip)
+        self._publish_debug_value(self._debug_psi_raw_pub, psi_raw)
+        self._publish_debug_value(self._debug_psi_cmd_pub, psi_cmd)
+        self._publish_debug_value(self._debug_steering_pub, steering_normalized)
 
     def _flatten_path_sequence(self, path_sequence) -> Path:
         path = Path()
@@ -284,6 +373,43 @@ class MttPathFollower(Node):
             index += 1
         return index
 
+    def _path_curvature(self, poses: List[PoseStamped], index: int) -> float:
+        if not self._use_path_curvature_feedforward or len(poses) < 3:
+            return 0.0
+
+        i0 = max(index - 1, 0)
+        i1 = max(min(index, len(poses) - 1), 0)
+        i2 = min(index + 1, len(poses) - 1)
+        if i0 == i1:
+            i2 = min(i1 + 2, len(poses) - 1)
+        if i1 == i2:
+            i0 = max(i1 - 2, 0)
+        if i0 == i1 or i1 == i2:
+            return 0.0
+
+        p0 = poses[i0].pose.position
+        p1 = poses[i1].pose.position
+        p2 = poses[i2].pose.position
+        a = math.hypot(p1.x - p0.x, p1.y - p0.y)
+        b = math.hypot(p2.x - p1.x, p2.y - p1.y)
+        c = math.hypot(p2.x - p0.x, p2.y - p0.y)
+        denom = max(a * b * c, 1e-9)
+        signed_area2 = (p1.x - p0.x) * (p2.y - p0.y) - (p1.y - p0.y) * (p2.x - p0.x)
+        curvature = 2.0 * signed_area2 / denom
+        return clamp(curvature, -self._kappa_max, self._kappa_max)
+
+    def _update_adaptive_kappa_bias(self, lateral_error: float, dt: float, previous_bias: float) -> float:
+        if not self._use_adaptive_curvature_bias:
+            return 0.0
+
+        error_for_integrator = 0.0
+        if abs(lateral_error) > self._adaptive_kappa_deadband_m:
+            error_for_integrator = lateral_error
+
+        decayed_bias = previous_bias * max(0.0, 1.0 - self._adaptive_kappa_decay * max(dt, 0.0))
+        new_bias = decayed_bias + self._adaptive_kappa_i_gain * error_for_integrator * max(dt, 0.0)
+        return clamp(new_bias, -self._adaptive_kappa_bias_limit, self._adaptive_kappa_bias_limit)
+
     def _segment_complete(self, robot_pose, robot_heading_eff: float, target_pose: PoseStamped, forward: bool, final_segment: bool) -> bool:
         if distance_xy(robot_pose, target_pose.pose) > self._waypoint_tolerance_m:
             return False
@@ -304,8 +430,10 @@ class MttPathFollower(Node):
         forward: bool,
         speed_ref_ms: float,
         previous_psi_cmd: float,
+        kappa_feedforward: float,
+        kappa_adaptive_bias: float,
         dt: float,
-    ) -> Tuple[float, float, float]:
+    ) -> Tuple[float, float, float, float, float, float, float, float]:
         theta_eff = robot_body_yaw if forward else wrap_to_pi(robot_body_yaw + math.pi)
         target_body_yaw = yaw_from_quaternion(target_pose.pose.orientation)
         target_theta_eff = target_body_yaw if forward else wrap_to_pi(target_body_yaw + math.pi)
@@ -315,7 +443,8 @@ class MttPathFollower(Node):
         e_y = -math.sin(theta_eff) * dx + math.cos(theta_eff) * dy
         e_theta = wrap_to_pi(target_theta_eff - theta_eff)
 
-        kappa_eff_desired = self._k_y * e_y + self._k_theta * e_theta
+        kappa_feedback = self._k_y * e_y + self._k_theta * e_theta
+        kappa_eff_desired = kappa_feedforward + kappa_feedback + kappa_adaptive_bias
         kappa_eff_desired = clamp(kappa_eff_desired, -self._kappa_max, self._kappa_max)
         kappa_actual = kappa_eff_desired if forward else -kappa_eff_desired
 
@@ -328,6 +457,7 @@ class MttPathFollower(Node):
         max_delta = self._psi_dot_max_rad_s * max(dt, 1e-3)
         psi_cmd = clamp(psi_raw, previous_psi_cmd - max_delta, previous_psi_cmd + max_delta)
         steering_normalized = normalized_steer_from_articulation(psi_cmd, self._motion_model_params)
+        kappa_effective_est = math.tan(psi_cmd) / max(self._l_eq_m, 1e-6) * slip
 
         speed_mag = min(abs(speed_ref_ms), self._max_speed_ms)
         speed_mag = speed_mag / (1.0 + self._slowdown_alpha * abs(kappa_eff_desired))
@@ -335,7 +465,16 @@ class MttPathFollower(Node):
             speed_mag = self._min_speed_ms
 
         linear_x = speed_mag if forward else -speed_mag
-        return linear_x, steering_normalized, psi_cmd
+        return (
+            linear_x,
+            steering_normalized,
+            psi_cmd,
+            kappa_eff_desired,
+            kappa_command,
+            kappa_effective_est,
+            slip,
+            psi_raw,
+        )
 
     def _tracking_errors(self, robot_pose, robot_body_yaw: float, target_pose: PoseStamped, forward: bool) -> Tuple[float, float, float]:
         theta_eff = robot_body_yaw if forward else wrap_to_pi(robot_body_yaw + math.pi)
@@ -385,6 +524,7 @@ class MttPathFollower(Node):
 
             loop_dt = 1.0 / max(self._control_rate_hz, 1.0)
             previous_psi_cmd = 0.0
+            kappa_adaptive_bias = 0.0
             previous_time = time.monotonic()
 
             for segment_index, segment in enumerate(segments):
@@ -438,6 +578,8 @@ class MttPathFollower(Node):
                         local_idx = self._find_start_index(local_plan.poses, robot_pose)
                         local_idx = self._advance_waypoint_index(local_plan.poses, local_idx, robot_pose)
                         target_pose = local_plan.poses[local_idx]
+                        active_poses = local_plan.poses
+                        active_index = local_idx
                     elif self._local_plan_received:
                         # Safety stop if local plan goes stale after being received once
                         self.get_logger().warn("Local plan stale! Stopping for safety.", throttle_duration_sec=2.0)
@@ -447,8 +589,11 @@ class MttPathFollower(Node):
                     else:
                         # Fallback to static global path
                         target_pose = global_target_pose
+                        active_poses = segment.poses
+                        active_index = waypoint_index
 
                     self._publish_target_pose(target_pose)
+                    kappa_feedforward = self._path_curvature(active_poses, active_index)
 
                     lateral_error, heading_error, target_distance = self._tracking_errors(
                         robot_pose,
@@ -487,17 +632,47 @@ class MttPathFollower(Node):
                     now = time.monotonic()
                     dt = max(now - previous_time, loop_dt)
                     previous_time = now
+                    kappa_adaptive_bias = self._update_adaptive_kappa_bias(
+                        lateral_error,
+                        dt,
+                        kappa_adaptive_bias,
+                    )
 
-                    linear_x, steering_normalized, previous_psi_cmd = self._compute_control(
+                    (
+                        linear_x,
+                        steering_normalized,
+                        previous_psi_cmd,
+                        kappa_desired,
+                        kappa_command,
+                        kappa_effective_est,
+                        slip,
+                        psi_raw,
+                    ) = self._compute_control(
                         robot_pose,
                         robot_body_yaw,
                         target_pose,
                         forward,
                         speed_ref_ms,
                         previous_psi_cmd,
+                        kappa_feedforward,
+                        kappa_adaptive_bias,
                         dt,
                     )
-                    self._publish_command(linear_x, steering_normalized)
+                    self._publish_control_debug(
+                        lateral_error,
+                        heading_error,
+                        target_distance,
+                        kappa_desired,
+                        kappa_feedforward,
+                        kappa_adaptive_bias,
+                        kappa_command,
+                        kappa_effective_est,
+                        slip,
+                        psi_raw,
+                        previous_psi_cmd,
+                        steering_normalized,
+                    )
+                    self._publish_command(linear_x, steering_normalized, previous_psi_cmd)
 
                     feedback = FollowPath.Feedback()
                     feedback.feedback_status.data = self.FEEDBACK_STATUS_MOVING

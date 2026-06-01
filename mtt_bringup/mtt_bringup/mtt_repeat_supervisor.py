@@ -10,14 +10,11 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from geometry_msgs.msg import TwistStamped
 from mtt_msgs.msg import MttHealthState
 from nav_msgs.msg import Odometry
-from norlab_controllers_msgs.action import FollowPath
-from rclpy.action import ActionClient
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
-from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile
+from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import Bool, String
-from std_srvs.srv import Empty, Trigger
-from wiln.srv import PlayLoop
+from std_srvs.srv import Trigger
 
 
 class RepeatState(str, Enum):
@@ -35,18 +32,21 @@ class MttRepeatSupervisor(Node):
 
         self.declare_parameter("health_topic", "/mtt_health")
         self.declare_parameter("icp_odom_topic", "/mapping/icp_odom")
+        # teleop_topic: the *filtered* manual cmd_vel — used only during pre-replay checks
+        # (NOT used for override detection during replay — see joystick_topic below)
         self.declare_parameter("teleop_topic", "cmd_vel/manual")
-        self.declare_parameter("deadman_topic", "teleop_deadman")
+        # joystick_topic: the *raw* joystick output (before the rate-limiter filter).
+        # This is what we monitor for intentional operator intervention during replay.
+        # cmd_vel/manual_raw has values only when the operator is actively pushing the stick.
+        self.declare_parameter("joystick_topic", "cmd_vel/manual_raw")
+        self.declare_parameter("deadman_topic", "mtt_control/teleop_deadman")
         self.declare_parameter("controller_cmd_vel_topic", "controller/cmd_vel")
-        self.declare_parameter("selected_mode_topic", "selected_mode")
+        self.declare_parameter("selected_mode_topic", "mtt_control/selected_mode")
+        self.declare_parameter("selected_source_topic", "mtt_control/selected_source")
+        self.declare_parameter("auto_enabled_topic", "mtt_control/auto_mode_enabled")
         self.declare_parameter("state_topic", "mtt_repeat/state")
         self.declare_parameter("ready_topic", "mtt_repeat/ready")
-        self.declare_parameter("follow_path_action_name", "/follow_path")
-        self.declare_parameter("teach_start_service", "/start_recording")
-        self.declare_parameter("teach_stop_service", "/stop_recording")
-        self.declare_parameter("play_line_service", "/play_line")
-        self.declare_parameter("play_loop_service", "/play_loop")
-        self.declare_parameter("cancel_service", "/cancel_trajectory")
+        self.declare_parameter("wiln_command_topic", "/wiln/command")
         self.declare_parameter("request_auto_service", "mtt_control/request_auto")
         self.declare_parameter("request_manual_service", "mtt_control/request_manual")
         self.declare_parameter("health_timeout_s", 1.0)
@@ -60,12 +60,15 @@ class MttRepeatSupervisor(Node):
         self._health_topic = str(self.get_parameter("health_topic").value)
         self._icp_odom_topic = str(self.get_parameter("icp_odom_topic").value)
         self._teleop_topic = str(self.get_parameter("teleop_topic").value)
+        self._joystick_topic = str(self.get_parameter("joystick_topic").value)
         self._deadman_topic = str(self.get_parameter("deadman_topic").value)
         self._controller_cmd_vel_topic = str(self.get_parameter("controller_cmd_vel_topic").value)
         self._selected_mode_topic = str(self.get_parameter("selected_mode_topic").value)
+        self._selected_source_topic = str(self.get_parameter("selected_source_topic").value)
+        self._auto_enabled_topic = str(self.get_parameter("auto_enabled_topic").value)
         self._state_topic = str(self.get_parameter("state_topic").value)
         self._ready_topic = str(self.get_parameter("ready_topic").value)
-        self._follow_path_action_name = str(self.get_parameter("follow_path_action_name").value)
+        self._wiln_command_topic = str(self.get_parameter("wiln_command_topic").value)
         self._request_auto_service = str(self.get_parameter("request_auto_service").value)
         self._request_manual_service = str(self.get_parameter("request_manual_service").value)
         self._health_timeout_s = float(self.get_parameter("health_timeout_s").value)
@@ -89,11 +92,17 @@ class MttRepeatSupervisor(Node):
         self._icp_received_time: Optional[float] = None
         self._last_teleop_cmd: Optional[TwistStamped] = None
         self._last_teleop_received_time: Optional[float] = None
+        # Raw joystick command (cmd_vel/manual_raw) — not rate-limited.
+        # Used for intentional-override detection during replay.
+        self._last_joystick_cmd: Optional[TwistStamped] = None
+        self._last_joystick_received_time: Optional[float] = None
         self._deadman_active: Optional[bool] = None
         self._deadman_received_time: Optional[float] = None
         self._last_controller_cmd: Optional[TwistStamped] = None
         self._last_controller_motion_time: Optional[float] = None
         self._selected_mode: str = "stop"
+        self._selected_source: str = "unknown"
+        self._auto_enabled = False
         self._state = RepeatState.IDLE
         self._state_reason = "waiting"
         self._trajectory_ready = False
@@ -111,14 +120,29 @@ class MttRepeatSupervisor(Node):
         self._teleop_sub = self.create_subscription(
             TwistStamped, self._teleop_topic, self._on_teleop_cmd, 20
         )
+        # Subscribe to raw joystick output (before rate-limiter) for override detection
+        self._joystick_sub = self.create_subscription(
+            TwistStamped, self._joystick_topic, self._on_joystick_cmd, 20
+        )
         self._deadman_sub = self.create_subscription(
             Bool, self._deadman_topic, self._on_deadman, 20
         )
+        best_effort_qos = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST,
+            depth=20,
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+        )
         self._controller_sub = self.create_subscription(
-            TwistStamped, self._controller_cmd_vel_topic, self._on_controller_cmd, 20
+            TwistStamped, self._controller_cmd_vel_topic, self._on_controller_cmd, best_effort_qos
         )
         self._selected_mode_sub = self.create_subscription(
             String, self._selected_mode_topic, self._on_selected_mode, 20
+        )
+        self._selected_source_sub = self.create_subscription(
+            String, self._selected_source_topic, self._on_selected_source, 20
+        )
+        self._auto_enabled_sub = self.create_subscription(
+            Bool, self._auto_enabled_topic, self._on_auto_enabled, 20
         )
 
         latched_qos = QoSProfile(
@@ -128,38 +152,13 @@ class MttRepeatSupervisor(Node):
         )
         self._state_pub = self.create_publisher(String, self._state_topic, latched_qos)
         self._ready_pub = self.create_publisher(Bool, self._ready_topic, latched_qos)
-
-        teach_start_name = str(self.get_parameter("teach_start_service").value)
-        teach_stop_name = str(self.get_parameter("teach_stop_service").value)
-        play_line_name = str(self.get_parameter("play_line_service").value)
-        play_loop_name = str(self.get_parameter("play_loop_service").value)
-        cancel_name = str(self.get_parameter("cancel_service").value)
-
-        self._teach_start_client = self.create_client(
-            Empty, teach_start_name, callback_group=self._client_group
-        )
-        self._teach_stop_client = self.create_client(
-            Empty, teach_stop_name, callback_group=self._client_group
-        )
-        self._play_line_client = self.create_client(
-            Empty, play_line_name, callback_group=self._client_group
-        )
-        self._play_loop_client = self.create_client(
-            PlayLoop, play_loop_name, callback_group=self._client_group
-        )
-        self._cancel_client = self.create_client(
-            Empty, cancel_name, callback_group=self._client_group
-        )
+        self._wiln_command_pub = self.create_publisher(String, self._wiln_command_topic, 10)
         self._request_auto_client = self.create_client(
             Trigger, self._request_auto_service, callback_group=self._client_group
         )
         self._request_manual_client = self.create_client(
             Trigger, self._request_manual_service, callback_group=self._client_group
         )
-        self._follow_path_client = ActionClient(
-            self, FollowPath, self._follow_path_action_name, callback_group=self._client_group
-        )
-
         self._teach_start_srv = self.create_service(
             Trigger,
             "mtt_repeat/teach_start",
@@ -179,7 +178,7 @@ class MttRepeatSupervisor(Node):
             callback_group=self._service_group,
         )
         self._play_loop_srv = self.create_service(
-            PlayLoop,
+            Trigger,
             "mtt_repeat/play_loop",
             self._handle_play_loop,
             callback_group=self._service_group,
@@ -207,9 +206,11 @@ class MttRepeatSupervisor(Node):
 
         self.get_logger().info(
             "MTT repeat supervisor ready "
-            f"(health={self._health_topic}, icp={self._icp_odom_topic}, teleop={self._teleop_topic}, "
+            f"(health={self._health_topic}, icp={self._icp_odom_topic}, "
+            f"teleop={self._teleop_topic}, joystick_raw={self._joystick_topic}, "
             f"deadman={self._deadman_topic}, "
-            f"follow_path={self._follow_path_action_name})"
+            f"mode={self._selected_mode_topic}, source={self._selected_source_topic}, "
+            f"wiln_command={self._wiln_command_topic})"
         )
 
     def _now_seconds(self) -> float:
@@ -241,6 +242,12 @@ class MttRepeatSupervisor(Node):
             self._last_teleop_cmd = msg
             self._last_teleop_received_time = self._now_seconds()
 
+    def _on_joystick_cmd(self, msg: TwistStamped) -> None:
+        """Raw joystick output — published only when deadman is held and stick is moved."""
+        with self._state_lock:
+            self._last_joystick_cmd = msg
+            self._last_joystick_received_time = self._now_seconds()
+
     def _on_deadman(self, msg: Bool) -> None:
         with self._state_lock:
             self._deadman_active = bool(msg.data)
@@ -261,7 +268,49 @@ class MttRepeatSupervisor(Node):
         with self._state_lock:
             self._selected_mode = str(msg.data).strip().lower()
 
+    def _on_selected_source(self, msg: String) -> None:
+        with self._state_lock:
+            self._selected_source = str(msg.data).strip()
+
+    def _on_auto_enabled(self, msg: Bool) -> None:
+        with self._state_lock:
+            self._auto_enabled = bool(msg.data)
+
+    def _joystick_override_active(self) -> bool:
+        """True only when the operator is *intentionally* pushing the joystick.
+
+        Uses cmd_vel/manual_raw (before the rate-limiter) so we are immune to
+        the filter's ramp-down residuals that keep flowing after the stick is
+        released.  We also require the deadman to be freshly active so a stale
+        raw message cannot latch a false override.
+        """
+        with self._state_lock:
+            joy_msg = self._last_joystick_cmd
+            joy_time = self._last_joystick_received_time
+            deadman_active = self._deadman_active
+            deadman_time = self._deadman_received_time
+        now_s = self._now_seconds()
+        # Raw joystick message must be fresh (operator node publishes only when
+        # deadman is active, so >0.3 s stale means deadman was released).
+        if joy_msg is None or joy_time is None:
+            return False
+        if now_s - joy_time > 0.3:
+            return False
+        # Deadman must also be confirmed active and fresh.
+        if deadman_active is None or deadman_time is None:
+            return False
+        if now_s - deadman_time > 0.5:
+            return False
+        if not deadman_active:
+            return False
+        # Non-zero stick movement above threshold = intentional override.
+        return (
+            abs(joy_msg.twist.linear.x) > self._teleop_override_linear_threshold
+            or abs(joy_msg.twist.angular.z) > self._teleop_override_angular_threshold
+        )
+
     def _teleop_override_active(self) -> bool:
+        """Used for pre-replay checks (not during replay — see _joystick_override_active)."""
         with self._state_lock:
             msg = self._last_teleop_cmd
             received_time = self._last_teleop_received_time
@@ -302,51 +351,52 @@ class MttRepeatSupervisor(Node):
         return (now_s - received_time) <= self._icp_timeout_s, msg
 
     def _services_ready(self) -> bool:
-        return (
-            self._teach_start_client.wait_for_service(timeout_sec=0.0)
-            and self._teach_stop_client.wait_for_service(timeout_sec=0.0)
-            and self._play_line_client.wait_for_service(timeout_sec=0.0)
-            and self._cancel_client.wait_for_service(timeout_sec=0.0)
-            and self._play_loop_client.wait_for_service(timeout_sec=0.0)
-        )
+        return self._wiln_command_pub.get_subscription_count() > 0
 
-    def _follow_path_ready(self) -> bool:
-        return self._follow_path_client.wait_for_server(timeout_sec=0.0)
+    def _control_snapshot(self) -> Tuple[str, str, bool, bool]:
+        with self._state_lock:
+            return (
+                self._selected_mode,
+                self._selected_source,
+                self._auto_enabled,
+                self._deadman_active is True,
+            )
+
+    def _debug_suffix(self) -> str:
+        mode, source, auto_enabled, deadman = self._control_snapshot()
+        wiln_subs = self._wiln_command_pub.get_subscription_count()
+        return (
+            f"mode={mode} auto_enabled={auto_enabled} source={source} "
+            f"deadman={deadman} wiln_command_subs={wiln_subs}"
+        )
 
     def _repeat_ready(self) -> Tuple[bool, str]:
         if not self._trajectory_ready:
-            return False, "trajectory not armed"
+            return False, f"trajectory not armed; {self._debug_suffix()}"
         if not self._services_ready():
-            return False, "WILN services unavailable"
-        if not self._follow_path_ready():
-            return False, "follow_path action unavailable"
+            return False, f"WILN command subscribers unavailable; is wiln container running? {self._debug_suffix()}"
         icp_ok, _ = self._icp_fresh()
         if not icp_ok:
-            return False, "ICP odom stale or absent"
+            return False, f"ICP odom stale or absent; {self._debug_suffix()}"
         health_ok, health = self._health_fresh()
         if not health_ok or health is None:
-            return False, "mtt_health stale or absent"
+            return False, f"mtt_health stale or absent; {self._debug_suffix()}"
         if not health.security_unlocked:
-            return False, "driver safety locked"
+            return False, f"driver safety locked; unlock robot safety/e-stop; {self._debug_suffix()}"
         if health.emergency_stop_active:
-            return False, "emergency stop active"
+            return False, f"emergency stop active; release e-stop; {self._debug_suffix()}"
         if self._teleop_override_active():
-            return False, "teleop override currently active"
-        return True, "ready"
+            return False, f"teleop override currently active; release joystick/deadman; {self._debug_suffix()}"
+        return True, f"ready; {self._debug_suffix()}"
 
-    def _call_empty_client(self, client, timeout_s: float = 2.0) -> Tuple[bool, str]:
-        if not client.wait_for_service(timeout_sec=0.0):
-            return False, "service unavailable"
-        future = client.call_async(Empty.Request())
-        event = threading.Event()
-        future.add_done_callback(lambda _: event.set())
-        if not event.wait(timeout_s):
-            return False, "service timeout"
-        try:
-            future.result()
-        except Exception as exc:  # pragma: no cover - runtime safety
-            return False, str(exc)
-        return True, "ok"
+    def _publish_wiln_command(self, command: str) -> Tuple[bool, str]:
+        if self._wiln_command_pub.get_subscription_count() <= 0:
+            return False, "no WILN command subscribers"
+        msg = String()
+        msg.data = command
+        self._wiln_command_pub.publish(msg)
+        self.get_logger().info(f"WILN command published: {command}")
+        return True, f"published {command}"
 
     def _call_trigger_client(self, client, timeout_s: float = 2.0) -> Tuple[bool, str]:
         if not client.wait_for_service(timeout_sec=0.0):
@@ -366,22 +416,6 @@ class MttRepeatSupervisor(Node):
             return False, result.message or "request rejected"
         return True, result.message or "ok"
 
-    def _call_play_loop_client(self, loops: int, timeout_s: float = 2.0) -> Tuple[bool, str]:
-        if not self._play_loop_client.wait_for_service(timeout_sec=0.0):
-            return False, "service unavailable"
-        req = PlayLoop.Request()
-        req.nb_loops.data = max(1, int(loops))
-        future = self._play_loop_client.call_async(req)
-        event = threading.Event()
-        future.add_done_callback(lambda _: event.set())
-        if not event.wait(timeout_s):
-            return False, "service timeout"
-        try:
-            future.result()
-        except Exception as exc:  # pragma: no cover - runtime safety
-            return False, str(exc)
-        return True, "ok"
-
     def _start_replay_tracking(self, mode: str) -> None:
         now_s = self._now_seconds()
         with self._state_lock:
@@ -393,7 +427,7 @@ class MttRepeatSupervisor(Node):
         self._set_state(RepeatState.REPLAYING, mode)
 
     def _cancel_replay(self, reason: str) -> None:
-        ok, detail = self._call_empty_client(self._cancel_client, timeout_s=2.0)
+        ok, detail = self._publish_wiln_command("cancel")
         manual_ok, manual_detail = self._call_trigger_client(self._request_manual_client, timeout_s=2.0)
         with self._state_lock:
             self._replaying = False
@@ -415,15 +449,15 @@ class MttRepeatSupervisor(Node):
             response.success = False
             response.message = manual_detail
             return response
-        ok, detail = self._call_empty_client(self._teach_start_client)
+        ok, detail = self._publish_wiln_command("start_recording")
         if ok:
             with self._state_lock:
                 self._recording = True
                 self._replaying = False
                 self._trajectory_ready = False
-            self._set_state(RepeatState.TEACHING, "recording route")
+            self._set_state(RepeatState.TEACHING, f"recording route; {self._debug_suffix()}")
             response.success = True
-            response.message = "teach started"
+            response.message = f"teach started; {self._debug_suffix()}"
         else:
             self._set_state(RepeatState.FAULTED, f"teach_start failed: {detail}")
             response.success = False
@@ -431,15 +465,15 @@ class MttRepeatSupervisor(Node):
         return response
 
     def _handle_teach_stop(self, _, response: Trigger.Response) -> Trigger.Response:
-        ok, detail = self._call_empty_client(self._teach_stop_client)
+        ok, detail = self._publish_wiln_command("stop_recording")
         if ok:
             self._call_trigger_client(self._request_manual_client)
             with self._state_lock:
                 self._recording = False
                 self._trajectory_ready = True
-            self._set_state(RepeatState.READY, "trajectory recorded")
+            self._set_state(RepeatState.READY, f"trajectory recorded; {self._debug_suffix()}")
             response.success = True
-            response.message = "teach stopped; trajectory armed"
+            response.message = f"teach stopped; trajectory armed; {self._debug_suffix()}"
         else:
             self._set_state(RepeatState.FAULTED, f"teach_stop failed: {detail}")
             response.success = False
@@ -450,9 +484,9 @@ class MttRepeatSupervisor(Node):
         with self._state_lock:
             self._trajectory_ready = True
             self._recording = False
-        self._set_state(RepeatState.READY, "trajectory loaded")
+        self._set_state(RepeatState.READY, f"trajectory loaded; {self._debug_suffix()}")
         response.success = True
-        response.message = "trajectory marked ready"
+        response.message = f"trajectory marked ready; {self._debug_suffix()}"
         return response
 
     def _handle_mark_idle(self, _, response: Trigger.Response) -> Trigger.Response:
@@ -475,15 +509,15 @@ class MttRepeatSupervisor(Node):
             return response
         auto_ok, auto_detail = self._call_trigger_client(self._request_auto_client)
         if not auto_ok:
-            self._set_state(RepeatState.FAULTED, f"replay refused: {auto_detail}")
+            self._set_state(RepeatState.FAULTED, f"replay refused: could not enter AUTO ({auto_detail}); press A or check mtt_mode_manager; {self._debug_suffix()}")
             response.success = False
-            response.message = auto_detail
+            response.message = f"could not enter AUTO: {auto_detail}; {self._debug_suffix()}"
             return response
-        ok, detail = self._call_empty_client(self._play_line_client)
+        ok, detail = self._publish_wiln_command("play")
         if ok:
             self._start_replay_tracking("line replay active")
             response.success = True
-            response.message = "line replay started"
+            response.message = f"line replay started; {self._debug_suffix()}"
         else:
             self._call_trigger_client(self._request_manual_client)
             self._set_state(RepeatState.FAULTED, f"play_line failed: {detail}")
@@ -491,21 +525,29 @@ class MttRepeatSupervisor(Node):
             response.message = detail
         return response
 
-    def _handle_play_loop(self, request: PlayLoop.Request, response: PlayLoop.Response) -> PlayLoop.Response:
+    def _handle_play_loop(self, _, response: Trigger.Response) -> Trigger.Response:
         ready, reason = self._repeat_ready()
         if not ready:
             self._set_state(RepeatState.FAULTED, f"loop replay refused: {reason}")
+            response.success = False
+            response.message = reason
             return response
         auto_ok, auto_detail = self._call_trigger_client(self._request_auto_client)
         if not auto_ok:
             self._set_state(RepeatState.FAULTED, f"loop replay refused: {auto_detail}")
+            response.success = False
+            response.message = auto_detail
             return response
-        ok, detail = self._call_play_loop_client(int(request.nb_loops.data))
+        ok, detail = self._publish_wiln_command("play")
         if ok:
-            self._start_replay_tracking(f"loop replay active ({int(request.nb_loops.data)} loops)")
+            self._start_replay_tracking("single replay active (WILN topic API has no native loop command)")
+            response.success = True
+            response.message = "single replay started"
         else:
             self._call_trigger_client(self._request_manual_client)
             self._set_state(RepeatState.FAULTED, f"play_loop failed: {detail}")
+            response.success = False
+            response.message = detail
         return response
 
     def _handle_cancel(self, _, response: Trigger.Response) -> Trigger.Response:
@@ -533,22 +575,58 @@ class MttRepeatSupervisor(Node):
             recording = self._recording
 
         if replaying:
-            if self._teleop_override_active():
-                self._cancel_replay("teleop override detected")
+            # ----------------------------------------------------------------
+            # Priority-1: intentional joystick override (raw stick, deadman
+            # confirmed active).  This is the SAFETY path that the operator
+            # uses to take back control.  We check the *raw* joystick topic
+            # (cmd_vel/manual_raw) rather than the filtered cmd_vel/manual so
+            # that rate-limiter ramp-down residuals cannot trigger a false
+            # cancel after the stick is released.
+            # ----------------------------------------------------------------
+            if self._joystick_override_active():
+                self.get_logger().warn(
+                    "Joystick override detected during replay — cancelling and returning to manual."
+                )
+                self._cancel_replay("joystick override by operator")
             else:
                 with self._state_lock:
                     selected_mode = self._selected_mode
+                # --------------------------------------------------------
+                # Priority-2: mode changed away from AUTO.
+                # The mode_manager can flip to Manual because of
+                # manual_activity (even tiny stick drift while holding
+                # the deadman).  During an active replay WE requested
+                # AUTO via service, so if mode flipped to manual without
+                # a real joystick override we silently re-request AUTO
+                # instead of cancelling.  A real operator override is
+                # caught above (priority-1) before we ever reach here.
+                # --------------------------------------------------------
                 if selected_mode != "auto":
-                    self._cancel_replay(f"control mode changed to {selected_mode}")
-                    ready, ready_reason = self._repeat_ready()
-                    with self._state_lock:
-                        state = self._state
-                        replaying = self._replaying
-                        replay_started_time = self._replay_started_time
-                        controller_motion_seen = self._controller_motion_seen
-                        last_controller_motion_time = self._last_controller_motion_time
-                        recording = self._recording
+                    self.get_logger().info(
+                        f"Mode drifted to '{selected_mode}' during replay — "
+                        "re-requesting AUTO (no joystick override confirmed)."
+                    )
+                    auto_ok, auto_detail = self._call_trigger_client(
+                        self._request_auto_client, timeout_s=1.0
+                    )
+                    if not auto_ok:
+                        # Could not recover auto — genuine problem, cancel.
+                        self._cancel_replay(
+                            f"could not recover AUTO after mode drift ({auto_detail})"
+                        )
+                        ready, ready_reason = self._repeat_ready()
+                        with self._state_lock:
+                            state = self._state
+                            replaying = self._replaying
+                            replay_started_time = self._replay_started_time
+                            controller_motion_seen = self._controller_motion_seen
+                            last_controller_motion_time = self._last_controller_motion_time
+                            recording = self._recording
+                    # else: auto recovered silently, continue replay
                 else:
+                    # ------------------------------------------------
+                    # Priority-3: safety conditions
+                    # ------------------------------------------------
                     health_ok, health = self._health_fresh()
                     icp_ok, _ = self._icp_fresh()
                     if not health_ok or health is None:
@@ -566,7 +644,9 @@ class MttRepeatSupervisor(Node):
                             and now_s - replay_started_time > self._replay_startup_timeout_s
                             and not controller_motion_seen
                         ):
-                            self._cancel_replay("replay started but controller produced no motion command")
+                            self._cancel_replay(
+                                "replay started but controller produced no motion command"
+                            )
                         elif (
                             controller_motion_seen
                             and last_controller_motion_time is not None

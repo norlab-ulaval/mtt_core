@@ -5,9 +5,11 @@ mtt_route_manager:
     icp_odom_topic: "/mapping/icp_odom"
     health_topic: "/mtt_health"
     selected_mode_topic: "mtt_control/selected_mode"
-    deadman_topic: "teleop_deadman"
-    obstacle_cloud_topic: "/mtt_perception/obstacles"
-    load_map_traj_service: "/load_map_traj"
+    selected_source_topic: "mtt_control/selected_source"
+    auto_enabled_topic: "mtt_control/auto_mode_enabled"
+    deadman_topic: "mtt_control/teleop_deadman"
+    obstacle_cloud_topic: "/wiln/obstacles"
+    wiln_command_topic: "/wiln/command"
     mark_ready_service: "/mtt_repeat/mark_ready"
     play_line_service: "/mtt_repeat/play_line"
     cancel_service: "/mtt_repeat/cancel"
@@ -22,4 +24,9 @@ mtt_route_manager:
     obstacle_corridor_half_width_m: 0.75
     obstacle_lookahead_m: 4.0
     require_obstacle_clearance: false
+    cancel_on_obstacle_clearance: false
+    front_obstacle_stop_topic: "/mtt_obstacle/stop_requested"
+    front_obstacle_clearance_topic: "/mtt_obstacle/front_clearance_m"
+    front_obstacle_status_topic: "/mtt_obstacle/hazard_status"
+    front_obstacle_timeout_s: 1.0
     monitor_rate_hz: 10.0

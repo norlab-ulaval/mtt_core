@@ -1,0 +1,24 @@
+mtt_front_obstacle_monitor:
+  ros__parameters:
+    cloud_topic: "/hesai_lidar/points"
+    target_frame: "base_footprint"
+    publish_rate_hz: 10.0
+    cloud_timeout_s: 0.5
+    tf_timeout_s: 0.08
+    min_range_m: 0.55
+    max_range_m: 8.0
+    z_min_m: -0.05
+    z_max_m: 1.50
+    stop_x_min_m: 0.50
+    stop_x_max_m: 2.00
+    stop_half_width_m: 0.85
+    slow_x_min_m: 2.00
+    slow_x_max_m: 5.00
+    slow_half_width_m: 1.25
+    min_stop_points: 20
+    min_slow_points: 12
+    stop_confirm_frames: 2
+    clear_confirm_frames: 5
+    point_stride: 3
+    max_points: 60000
+    publish_debug_cloud: true

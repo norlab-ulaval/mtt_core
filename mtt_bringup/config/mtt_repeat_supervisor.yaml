@@ -3,24 +3,37 @@
     ros__parameters:
       health_topic: "/mtt_health"
       icp_odom_topic: "/mapping/icp_odom"
+
+      # Filtered cmd_vel — used for pre-replay override check only (rate-limiter included)
       teleop_topic: "cmd_vel/manual"
+
+      # RAW joystick output (before rate-limiter) — used for real-time override detection
+      # during replay. Published by mtt_operator_input_node only when deadman is held.
+      joystick_topic: "cmd_vel/manual_raw"
+
+      # All namespaced topics — must match mtt_operator_input_node and mtt_mode_manager_node
       deadman_topic: "mtt_control/teleop_deadman"
       controller_cmd_vel_topic: "controller/cmd_vel"
       selected_mode_topic: "mtt_control/selected_mode"
+      selected_source_topic: "mtt_control/selected_source"
+      auto_enabled_topic: "mtt_control/auto_mode_enabled"
+
       state_topic: "mtt_repeat/state"
       ready_topic: "mtt_repeat/ready"
-      follow_path_action_name: "/follow_path"
-      teach_start_service: "/start_recording"
-      teach_stop_service: "/stop_recording"
-      play_line_service: "/play_line"
-      play_loop_service: "/play_loop"
-      cancel_service: "/cancel_trajectory"
+      wiln_command_topic: "/wiln/command"
+
       request_auto_service: "mtt_control/request_auto"
       request_manual_service: "mtt_control/request_manual"
+
+      # Timeouts
       health_timeout_s: 1.0
       icp_timeout_s: 0.75
+
+      # Thresholds for intentional joystick override detection (raw stick values)
       teleop_override_linear_threshold: 0.05
       teleop_override_angular_threshold: 0.05
+
+      # Replay monitoring
       replay_idle_timeout_s: 1.0
       replay_startup_timeout_s: 5.0
       monitor_rate_hz: 10.0

@@ -35,6 +35,7 @@ setup(
         'mtt_path_follower = mtt_bringup.mtt_path_follower:main',
         'mtt_repeat_supervisor = mtt_bringup.mtt_repeat_supervisor:main',
         'mtt_route_manager = mtt_bringup.mtt_route_manager:main',
+        'mtt_front_obstacle_monitor = mtt_bringup.mtt_front_obstacle_monitor:main',
         ],
     },   
 )

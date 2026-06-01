@@ -16,11 +16,10 @@ from nav_msgs.msg import Odometry, Path as NavPath
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
-from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile
+from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import Bool, Float32, String
 from std_srvs.srv import Trigger
 from visualization_msgs.msg import Marker
-from wiln.srv import LoadMapTraj
 
 try:
     from sensor_msgs.msg import PointCloud2
@@ -150,9 +149,11 @@ class MttRouteManager(Node):
         self.declare_parameter("icp_odom_topic", "/mapping/icp_odom")
         self.declare_parameter("health_topic", "/mtt_health")
         self.declare_parameter("selected_mode_topic", "mtt_control/selected_mode")
-        self.declare_parameter("deadman_topic", "teleop_deadman")
-        self.declare_parameter("obstacle_cloud_topic", "/mtt_perception/obstacles")
-        self.declare_parameter("load_map_traj_service", "/load_map_traj")
+        self.declare_parameter("selected_source_topic", "mtt_control/selected_source")
+        self.declare_parameter("auto_enabled_topic", "mtt_control/auto_mode_enabled")
+        self.declare_parameter("deadman_topic", "mtt_control/teleop_deadman")
+        self.declare_parameter("obstacle_cloud_topic", "/wiln/obstacles")
+        self.declare_parameter("wiln_command_topic", "/wiln/command")
         self.declare_parameter("mark_ready_service", "/mtt_repeat/mark_ready")
         self.declare_parameter("play_line_service", "/mtt_repeat/play_line")
         self.declare_parameter("cancel_service", "/mtt_repeat/cancel")
@@ -170,6 +171,11 @@ class MttRouteManager(Node):
         self.declare_parameter("obstacle_corridor_half_width_m", 0.75)
         self.declare_parameter("obstacle_lookahead_m", 4.0)
         self.declare_parameter("require_obstacle_clearance", False)
+        self.declare_parameter("cancel_on_obstacle_clearance", False)
+        self.declare_parameter("front_obstacle_stop_topic", "/mtt_obstacle/stop_requested")
+        self.declare_parameter("front_obstacle_clearance_topic", "/mtt_obstacle/front_clearance_m")
+        self.declare_parameter("front_obstacle_status_topic", "/mtt_obstacle/hazard_status")
+        self.declare_parameter("front_obstacle_timeout_s", 1.0)
         self.declare_parameter("monitor_rate_hz", 10.0)
 
         routes_dir = str(self.get_parameter("routes_dir").value)
@@ -193,6 +199,8 @@ class MttRouteManager(Node):
         )
         self._obstacle_lookahead_m = float(self.get_parameter("obstacle_lookahead_m").value)
         self._require_obstacle_clearance = bool(self.get_parameter("require_obstacle_clearance").value)
+        self._cancel_on_obstacle_clearance = bool(self.get_parameter("cancel_on_obstacle_clearance").value)
+        self._front_obstacle_timeout_s = float(self.get_parameter("front_obstacle_timeout_s").value)
         monitor_rate_hz = float(self.get_parameter("monitor_rate_hz").value)
 
         self._group = ReentrantCallbackGroup()
@@ -206,10 +214,16 @@ class MttRouteManager(Node):
         self._health: Optional[MttHealthState] = None
         self._health_received_time: Optional[float] = None
         self._selected_mode = "stop"
+        self._selected_source = "unknown"
+        self._auto_enabled = False
         self._deadman = False
         self._deadman_received_time: Optional[float] = None
         self._obstacle_points: List[Tuple[float, float, float]] = []
         self._obstacle_received_time: Optional[float] = None
+        self._front_obstacle_stop = False
+        self._front_obstacle_clearance = float("nan")
+        self._front_obstacle_status = "unavailable"
+        self._front_obstacle_received_time: Optional[float] = None
         self._last_status = "no route loaded"
         self._last_allowed = False
         self._last_refusal = "no route loaded"
@@ -218,8 +232,8 @@ class MttRouteManager(Node):
         self._last_clearance = float("nan")
         self._last_closest: Optional[RoutePose] = None
 
-        self._load_client = self.create_client(
-            LoadMapTraj, str(self.get_parameter("load_map_traj_service").value), callback_group=self._group
+        self._wiln_command_pub = self.create_publisher(
+            String, str(self.get_parameter("wiln_command_topic").value), 10
         )
         self._mark_ready_client = self.create_client(
             Trigger, str(self.get_parameter("mark_ready_service").value), callback_group=self._group
@@ -243,13 +257,42 @@ class MttRouteManager(Node):
         self.create_subscription(
             String, str(self.get_parameter("selected_mode_topic").value), self._on_mode, 20
         )
+        self.create_subscription(
+            String, str(self.get_parameter("selected_source_topic").value), self._on_source, 20
+        )
+        self.create_subscription(
+            Bool, str(self.get_parameter("auto_enabled_topic").value), self._on_auto_enabled, 20
+        )
         self.create_subscription(Bool, str(self.get_parameter("deadman_topic").value), self._on_deadman, 20)
+        self.create_subscription(
+            Bool,
+            str(self.get_parameter("front_obstacle_stop_topic").value),
+            self._on_front_obstacle_stop,
+            20,
+        )
+        self.create_subscription(
+            Float32,
+            str(self.get_parameter("front_obstacle_clearance_topic").value),
+            self._on_front_obstacle_clearance,
+            20,
+        )
+        self.create_subscription(
+            String,
+            str(self.get_parameter("front_obstacle_status_topic").value),
+            self._on_front_obstacle_status,
+            20,
+        )
         if PointCloud2 is not None:
+            obstacle_qos = QoSProfile(
+                history=HistoryPolicy.KEEP_LAST,
+                depth=5,
+                reliability=ReliabilityPolicy.BEST_EFFORT,
+            )
             self.create_subscription(
                 PointCloud2,
                 str(self.get_parameter("obstacle_cloud_topic").value),
                 self._on_obstacles,
-                5,
+                obstacle_qos,
             )
 
         latched_qos = QoSProfile(
@@ -262,6 +305,7 @@ class MttRouteManager(Node):
         self._start_pub = self.create_publisher(PoseStamped, "/mtt_route/start_pose", latched_qos)
         self._marker_pub = self.create_publisher(Marker, "/mtt_route/error_marker", latched_qos)
         self._status_pub = self.create_publisher(String, "/mtt_route/status_text", latched_qos)
+        self._safety_status_pub = self.create_publisher(String, "/mtt_route/safety_status", latched_qos)
         self._allowed_pub = self.create_publisher(Bool, "/mtt_route/autonomy_allowed", latched_qos)
         self._clearance_pub = self.create_publisher(Float32, "/mtt_route/obstacle_clearance_min", latched_qos)
 
@@ -296,6 +340,14 @@ class MttRouteManager(Node):
         with self._lock:
             self._selected_mode = str(msg.data).strip().lower()
 
+    def _on_source(self, msg: String) -> None:
+        with self._lock:
+            self._selected_source = str(msg.data).strip()
+
+    def _on_auto_enabled(self, msg: Bool) -> None:
+        with self._lock:
+            self._auto_enabled = bool(msg.data)
+
     def _on_deadman(self, msg: Bool) -> None:
         with self._lock:
             self._deadman = bool(msg.data)
@@ -312,6 +364,21 @@ class MttRouteManager(Node):
         with self._lock:
             self._obstacle_points = points
             self._obstacle_received_time = self._now_seconds()
+
+    def _on_front_obstacle_stop(self, msg: Bool) -> None:
+        with self._lock:
+            self._front_obstacle_stop = bool(msg.data)
+            self._front_obstacle_received_time = self._now_seconds()
+
+    def _on_front_obstacle_clearance(self, msg: Float32) -> None:
+        with self._lock:
+            self._front_obstacle_clearance = float(msg.data) if msg.data >= 0.0 else float("inf")
+            self._front_obstacle_received_time = self._now_seconds()
+
+    def _on_front_obstacle_status(self, msg: String) -> None:
+        with self._lock:
+            self._front_obstacle_status = str(msg.data)
+            self._front_obstacle_received_time = self._now_seconds()
 
     def _route_path(self, route_name: str) -> Path:
         safe_name = route_name.strip().strip("/")
@@ -338,6 +405,8 @@ class MttRouteManager(Node):
             return []
         names = []
         for child in sorted(self._routes_dir.iterdir()):
+            if child.name == "latest" and child.is_symlink():
+                continue
             if child.is_dir() and (child / self._route_file_name).exists():
                 names.append(child.name)
         return names
@@ -403,25 +472,30 @@ class MttRouteManager(Node):
         return min_clearance if math.isfinite(min_clearance) else float("inf")
 
     def _evaluate(self, route: Optional[RouteData]) -> Tuple[bool, str, float, float, float, Optional[RoutePose]]:
+        with self._lock:
+            mode = self._selected_mode
+            source = self._selected_source
+            auto_enabled = self._auto_enabled
+        control_hint = f"mode={mode} auto_enabled={auto_enabled} source={source}"
         if route is None:
-            return False, "no route loaded", float("nan"), float("nan"), float("nan"), None
+            return False, f"no route loaded; run route_load or teach/save first; {control_hint}", float("nan"), float("nan"), float("nan"), None
         if not route.valid:
-            return False, f"route rejected: {route.grade}", float("nan"), float("nan"), float("nan"), None
+            return False, f"route rejected: {route.grade}; validate/preview the route; {control_hint}", float("nan"), float("nan"), float("nan"), None
 
         icp_ok, icp = self._icp_fresh()
         if not icp_ok or icp is None:
-            return False, "ICP odom stale or absent", float("nan"), float("nan"), float("nan"), None
+            return False, f"ICP odom stale or absent; mapping/localization not fresh; {control_hint}", float("nan"), float("nan"), float("nan"), None
         health_ok, health = self._health_fresh()
         if not health_ok or health is None:
-            return False, "mtt_health stale or absent", float("nan"), float("nan"), float("nan"), None
+            return False, f"mtt_health stale or absent; driver health monitor missing/stale; {control_hint}", float("nan"), float("nan"), float("nan"), None
         if not health.security_unlocked:
-            return False, "security_unlocked=false", float("nan"), float("nan"), float("nan"), None
+            return False, f"security_unlocked=false; unlock robot safety; {control_hint}", float("nan"), float("nan"), float("nan"), None
         if health.emergency_stop_active:
-            return False, "emergency stop active", float("nan"), float("nan"), float("nan"), None
+            return False, f"emergency stop active; release e-stop; {control_hint}", float("nan"), float("nan"), float("nan"), None
         if health.fallback_active and health.fallback_low_confidence:
-            return False, f"health fallback low confidence: {health.fallback_reason}", float("nan"), float("nan"), float("nan"), None
+            return False, f"health fallback low confidence: {health.fallback_reason}; {control_hint}", float("nan"), float("nan"), float("nan"), None
         if self._deadman_override_active():
-            return False, "manual deadman override active", float("nan"), float("nan"), float("nan"), None
+            return False, f"manual deadman override active; release RB/deadman/manual stick; {control_hint}", float("nan"), float("nan"), float("nan"), None
 
         robot = self._robot_pose(icp)
         closest, distance, heading = self._closest_pose(route, robot)
@@ -429,16 +503,20 @@ class MttRouteManager(Node):
         start = route.poses[0]
         start_distance = math.hypot(robot.x - start.x, robot.y - start.y)
         if start_distance > self._max_start_distance_m:
-            return False, f"too far from route start: {start_distance:.2f} m > {self._max_start_distance_m:.2f} m", distance, heading, clearance, closest
+            return False, f"too far from route start: {start_distance:.2f} m > {self._max_start_distance_m:.2f} m; drive closer to start; {control_hint}", distance, heading, clearance, closest
         if distance > self._max_lateral_error_m:
-            return False, f"too far from route: {distance:.2f} m > {self._max_lateral_error_m:.2f} m", distance, heading, clearance, closest
+            return False, f"too far from route: {distance:.2f} m > {self._max_lateral_error_m:.2f} m; {control_hint}", distance, heading, clearance, closest
         if heading > self._max_heading_error_rad:
-            return False, f"heading error: {heading:.2f} rad > {self._max_heading_error_rad:.2f} rad", distance, heading, clearance, closest
+            return False, f"heading error: {heading:.2f} rad > {self._max_heading_error_rad:.2f} rad; align robot with route; {control_hint}", distance, heading, clearance, closest
         if self._require_obstacle_clearance and not math.isfinite(clearance):
-            return False, "obstacle clearance unavailable", distance, heading, clearance, closest
-        if math.isfinite(clearance) and clearance < self._min_obstacle_clearance_m:
-            return False, f"obstacle too close: {clearance:.2f} m < {self._min_obstacle_clearance_m:.2f} m", distance, heading, clearance, closest
-        return True, "ready", distance, heading, clearance, closest
+            return False, f"obstacle clearance unavailable; /wiln/obstacles missing/stale; {control_hint}", distance, heading, clearance, closest
+        if (
+            self._cancel_on_obstacle_clearance
+            and math.isfinite(clearance)
+            and clearance < self._min_obstacle_clearance_m
+        ):
+            return False, f"obstacle too close: {clearance:.2f} m < {self._min_obstacle_clearance_m:.2f} m; {control_hint}", distance, heading, clearance, closest
+        return True, f"ready; {control_hint}", distance, heading, clearance, closest
 
     def _call_trigger(self, client, timeout_s: float = 2.0) -> Tuple[bool, str]:
         if not client.wait_for_service(timeout_sec=0.0):
@@ -456,23 +534,22 @@ class MttRouteManager(Node):
             return False, "empty response"
         return bool(result.success), result.message or "ok"
 
-    def _call_load(self, route: RouteData, timeout_s: float = 3.0) -> Tuple[bool, str]:
-        if not self._load_client.wait_for_service(timeout_sec=0.0):
-            return False, "/load_map_traj unavailable"
-        request = LoadMapTraj.Request()
-        request.file_name.data = str(route.path)
-        future = self._load_client.call_async(request)
-        event = threading.Event()
-        future.add_done_callback(lambda _: event.set())
-        if not event.wait(timeout_s):
-            return False, "load_map_traj timeout"
-        try:
-            future.result()
-        except Exception as exc:  # pragma: no cover - runtime safety
-            return False, str(exc)
+    def _publish_wiln_command(self, command: str) -> Tuple[bool, str]:
+        if self._wiln_command_pub.get_subscription_count() <= 0:
+            return False, "no WILN command subscribers"
+        msg = String()
+        msg.data = command
+        self._wiln_command_pub.publish(msg)
+        self.get_logger().info(f"WILN command published: {command}")
+        return True, f"published {command}"
+
+    def _call_load(self, route: RouteData) -> Tuple[bool, str]:
+        ok, detail = self._publish_wiln_command(f"load:{route.path}")
+        if not ok:
+            return False, detail
         ok, detail = self._call_trigger(self._mark_ready_client)
         if not ok:
-            return False, f"route loaded, but mark_ready failed: {detail}"
+            return False, f"load command published, but mark_ready failed: {detail}"
         return True, "route loaded and armed"
 
     def _pose_msg(self, route: RouteData, pose: RoutePose) -> PoseStamped:
@@ -509,6 +586,9 @@ class MttRouteManager(Node):
         status_msg = String()
         status_msg.data = status
         self._status_pub.publish(status_msg)
+        safety_msg = String()
+        safety_msg.data = status
+        self._safety_status_pub.publish(safety_msg)
         allowed_msg = Bool()
         allowed_msg.data = allowed
         self._allowed_pub.publish(allowed_msg)
@@ -553,6 +633,13 @@ class MttRouteManager(Node):
         with self._lock:
             route_name = self._active_route.name if self._active_route else "none"
             mode = self._selected_mode
+            source = self._selected_source
+            auto_enabled = self._auto_enabled
+            deadman = self._deadman
+            front_stop = self._front_obstacle_stop
+            front_clearance = self._front_obstacle_clearance
+            front_status = self._front_obstacle_status
+            front_time = self._front_obstacle_received_time
             self._last_allowed = allowed
             self._last_refusal = "" if allowed else refusal
             self._last_distance = distance
@@ -561,10 +648,23 @@ class MttRouteManager(Node):
             self._last_closest = closest
             state = "allowed" if allowed else f"blocked: {refusal}"
             clearance_text = f"{clearance:.2f} m" if math.isfinite(clearance) else "unknown"
+            if front_time is None or self._now_seconds() - front_time > self._front_obstacle_timeout_s:
+                front_text = "front_obstacle=stale/missing"
+            else:
+                front_clearance_text = (
+                    f"{front_clearance:.2f} m"
+                    if math.isfinite(front_clearance)
+                    else "clear"
+                )
+                front_text = (
+                    f"front_obstacle_stop={front_stop} front_clearance={front_clearance_text} "
+                    f"front_status='{front_status}'"
+                )
             self._last_status = (
-                f"route={route_name} mode={mode} auto={state}; "
+                f"route={route_name} mode={mode} auto_enabled={auto_enabled} source={source} deadman={deadman} auto={state}; "
                 f"distance={distance:.2f} m heading={heading:.2f} rad clearance={clearance_text}; "
-                "buttons: A auto, B stop, Y manual, RB deadman, LB steering mode"
+                f"{front_text}; "
+                "buttons: A auto, B stop, Y manual, RB deadman"
             )
 
     def _handle_list(self, _, response: RouteList.Response) -> RouteList.Response:

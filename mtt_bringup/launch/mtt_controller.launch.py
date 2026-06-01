@@ -38,11 +38,59 @@ def generate_launch_description():
             description="Spawn wheel and yaw controllers if they are not already managed by Gazebo startup",
         )
     )
+    declared_arguments.append(
+        launch.actions.DeclareLaunchArgument(
+            name="controller_gear_ratio",
+            default_value="1.0",
+            description="Velocity scale applied by the Gazebo cmd_vel to wheel command bridge",
+        )
+    )
+    declared_arguments.append(
+        launch.actions.DeclareLaunchArgument(
+            name="controller_wheel_command_sign",
+            default_value="-1.0",
+            description="Wheel command sign applied by the Gazebo cmd_vel bridge",
+        )
+    )
+    declared_arguments.append(
+        launch.actions.DeclareLaunchArgument(
+            name="controller_yaw_command_sign",
+            default_value="1.0",
+            description="Yaw/articulation command sign applied by the Gazebo cmd_vel bridge",
+        )
+    )
+    declared_arguments.append(
+        launch.actions.DeclareLaunchArgument(
+            name="controller_yaw_command_mode",
+            default_value="position_servo",
+            description="How the Gazebo bridge drives the yaw velocity controller: position_servo or velocity",
+        )
+    )
+    declared_arguments.append(
+        launch.actions.DeclareLaunchArgument(
+            name="controller_yaw_position_kp",
+            default_value="5.0",
+            description="P gain from desired articulation angle to yaw joint velocity command",
+        )
+    )
+    declared_arguments.append(
+        launch.actions.DeclareLaunchArgument(
+            name="controller_yaw_velocity_limit_rad_s",
+            default_value="2.5",
+            description="Yaw joint velocity command limit for position_servo mode",
+        )
+    )
     
     # Initialize Arguments
     gui = LaunchConfiguration("gui")
     enable_joint_state_broadcaster = LaunchConfiguration("enable_joint_state_broadcaster")
     spawn_motion_controllers = LaunchConfiguration("spawn_motion_controllers")
+    controller_gear_ratio = LaunchConfiguration("controller_gear_ratio")
+    controller_wheel_command_sign = LaunchConfiguration("controller_wheel_command_sign")
+    controller_yaw_command_sign = LaunchConfiguration("controller_yaw_command_sign")
+    controller_yaw_command_mode = LaunchConfiguration("controller_yaw_command_mode")
+    controller_yaw_position_kp = LaunchConfiguration("controller_yaw_position_kp")
+    controller_yaw_velocity_limit_rad_s = LaunchConfiguration("controller_yaw_velocity_limit_rad_s")
 
 
     # joint state broadcaster
@@ -73,13 +121,28 @@ def generate_launch_description():
         package='mtt_bringup',
         executable='mtt_controller_interface.py',
         name='mtt_controller_interface',
-        output='screen'
+        output='screen',
+        parameters=[{
+            "gear_ratio": controller_gear_ratio,
+            "wheel_command_sign": controller_wheel_command_sign,
+            "yaw_command_sign": controller_yaw_command_sign,
+            "yaw_command_mode": controller_yaw_command_mode,
+            "yaw_position_kp": controller_yaw_position_kp,
+            "yaw_velocity_limit_rad_s": controller_yaw_velocity_limit_rad_s,
+        }],
     )
 
     
     ld = launch.LaunchDescription()
     ld.add_action(declared_arguments[0])
     ld.add_action(declared_arguments[1])
+    ld.add_action(declared_arguments[2])
+    ld.add_action(declared_arguments[3])
+    ld.add_action(declared_arguments[4])
+    ld.add_action(declared_arguments[5])
+    ld.add_action(declared_arguments[6])
+    ld.add_action(declared_arguments[7])
+    ld.add_action(declared_arguments[8])
 
     # Only necessary when this launch is launched alone
     # ld.add_action(robot_state_publisher_node)
