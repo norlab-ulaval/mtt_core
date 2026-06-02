@@ -1,0 +1,62 @@
+mtt_speed_servo_node:
+  ros__parameters:
+    # Operating mode:
+    #   "speed"       — PI closed-loop speed tracking using tachometer feedback (default)
+    #   "characterize" — automated open-loop throttle ramp to build feedforward LUT
+    #                    (hold deadman, robot drives forward at increasing speeds)
+    #   "disabled"    — no output
+    mode: "speed"
+
+    control_frequency_hz: 50.0
+
+    # Topics
+    feedback_topic: "/mtt_tachometer"
+    setpoint_topic: "/speed_setpoint"
+    # Output goes to the arbiter's auto input (same as path follower)
+    output_cmd_vel_topic: "controller/cmd_vel"
+
+    # ── PI gains ─────────────────────────────────────────────────────────
+    # Tuning guide:
+    #   kp: start at 1.0. At 0.1 m/s error, kp=1.5 → 0.15 throttle correction.
+    #       Increase until fast response without hunting.
+    #   ki: needed for steady-state on slopes/load. Start at 0.5, max ~1.5.
+    #       Anti-windup via integrator_limit clamp.
+    #   kd: leave at 0. Speed loop bandwidth (~1 Hz) is too low for useful derivative.
+    kp: 1.5
+    ki: 0.8
+    kd: 0.0
+    integrator_limit: 0.30   # [throttle units] anti-windup clamp
+
+    # ── Limits ───────────────────────────────────────────────────────────
+    max_throttle: 1.0         # output saturation [0, 1]
+    # MUST equal mtt_can_node.max_linear_speed_ms — see demos/common/config/speed_servo.yaml
+    max_speed_ms: 5.56
+    max_accel_ms2: 2.0        # rate limiter: max acceleration (m/s²)
+    max_decel_ms2: 3.5        # rate limiter: max deceleration (m/s² — can be more aggressive)
+
+    # ── Feedforward LUT (speed_ms → throttle_normalized) ─────────────────
+    # Set feedforward_gain: 0.0 until LUT is characterized.
+    # After characterization (mode: "characterize"), copy the logged YAML here.
+    # Then set feedforward_gain: 1.0 for full feedforward assistance.
+    #
+    # Format: flat list of [speed_ms, throttle] pairs (sorted by speed ascending)
+    # Example (MTT-154 on flat terrain — replace with actual characterization):
+    #   feedforward_lut: [0.0, 0.0, 0.15, 0.10, 0.30, 0.18, 0.50, 0.28, 1.00, 0.52, 1.50, 0.75, 2.00, 1.0]
+    feedforward_gain: 0.0
+    feedforward_lut: []
+
+    # ── Safety ───────────────────────────────────────────────────────────
+    # If tachometer not received within this window, output zero (don't control)
+    feedback_timeout_s: 0.50
+    # If setpoint not received within this window, ramp setpoint to zero
+    command_timeout_s: 0.50
+
+    # ── Characterization mode ─────────────────────────────────────────────
+    # Throttle increment per step (0.05 = 20 steps from 0 to 1.0)
+    characterize_throttle_step: 0.05
+    # Hold each throttle level this long before sampling (for speed to stabilize)
+    characterize_settle_time_s: 3.0
+    # Average speed over this window at each throttle level
+    characterize_sample_time_s: 2.0
+    # Safety: abort if measured speed exceeds this (m/s)
+    max_characterize_speed_ms: 4.2

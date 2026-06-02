@@ -244,7 +244,51 @@ rclcpp_components_register_node(mtt_articulation_sensor_node
 # ────────────────────────────────────────────────────────────────────
 # Install
 # ────────────────────────────────────────────────────────────────────
-install(TARGETS mtt_logic mtt_hardware mtt_can_node mtt_odometry_node mtt_health_monitor_node mtt_teleop_joy_node teleop_cmd_smoother_node mtt_synthetic_tachometer_node mtt_joint_state_builder_node mtt_articulation_sensor_node
+# ────────────────────────────────────────────────────────────────────
+# COMPONENT: mtt_articulation_servo_node (ROS 2 node — Software articulation servo)
+# Closes the loop between a position/velocity setpoint and the hardware encoder.
+# ────────────────────────────────────────────────────────────────────
+add_library(mtt_articulation_servo_node SHARED
+  src/components/mtt_articulation_servo_node.cpp
+)
+target_include_directories(mtt_articulation_servo_node PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+ament_target_dependencies(mtt_articulation_servo_node
+  rclcpp
+  rclcpp_components
+  std_msgs
+)
+rclcpp_components_register_node(mtt_articulation_servo_node
+  PLUGIN "mtt::MttArticulationServoNode"
+  EXECUTABLE mtt_articulation_servo
+)
+
+# ────────────────────────────────────────────────────────────────────
+# COMPONENT: mtt_speed_servo_node (ROS 2 node — Software speed controller)
+# PI speed controller using tachometer feedback + feedforward LUT characterization.
+# ────────────────────────────────────────────────────────────────────
+add_library(mtt_speed_servo_node SHARED
+  src/components/mtt_speed_servo_node.cpp
+)
+target_include_directories(mtt_speed_servo_node PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+ament_target_dependencies(mtt_speed_servo_node
+  rclcpp
+  rclcpp_components
+  std_msgs
+  geometry_msgs
+  mtt_msgs
+)
+rclcpp_components_register_node(mtt_speed_servo_node
+  PLUGIN "mtt::MttSpeedServoNode"
+  EXECUTABLE mtt_speed_servo
+)
+
+install(TARGETS mtt_logic mtt_hardware mtt_can_node mtt_odometry_node mtt_health_monitor_node mtt_teleop_joy_node teleop_cmd_smoother_node mtt_synthetic_tachometer_node mtt_joint_state_builder_node mtt_articulation_sensor_node mtt_articulation_servo_node mtt_speed_servo_node
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION bin
@@ -271,7 +315,8 @@ if(BUILD_TESTING)
   ament_add_gtest(test_tachometer test/test_tachometer.cpp)
   target_link_libraries(test_tachometer mtt_logic)
 
-  # Odometry test added in Step 5
+  ament_add_gtest(test_odometry_calculator test/test_odometry_calculator.cpp)
+  target_link_libraries(test_odometry_calculator mtt_logic)
 endif()
 
 ament_package()

@@ -188,6 +188,21 @@ def generate_launch_description():
             description='Whether mtt_odometry_node should publish odom->base TF'
         ),
         DeclareLaunchArgument(
+            'initial_odom_x',
+            default_value='0.0',
+            description='Initial odometry x position in odom frame'
+        ),
+        DeclareLaunchArgument(
+            'initial_odom_y',
+            default_value='0.0',
+            description='Initial odometry y position in odom frame'
+        ),
+        DeclareLaunchArgument(
+            'initial_odom_yaw',
+            default_value='0.0',
+            description='Initial odometry yaw in odom frame'
+        ),
+        DeclareLaunchArgument(
             'publish_runtime_joint_states',
             default_value='false',
             description='Publish articulation joint states on the live /joint_states topic'
@@ -265,6 +280,9 @@ def generate_launch_description():
                                 'base_frame': LaunchConfiguration('base_frame'),
                                 'odom_frame': LaunchConfiguration('odom_frame'),
                                 'broadcast_tf': LaunchConfiguration('odometry_broadcast_tf'),
+                                'initial_x_m': LaunchConfiguration('initial_odom_x'),
+                                'initial_y_m': LaunchConfiguration('initial_odom_y'),
+                                'initial_heading_rad': LaunchConfiguration('initial_odom_yaw'),
                                 'publish_runtime_joint_states': False,
                                 'runtime_joint_states_topic': LaunchConfiguration('runtime_joint_states_topic'),
                             }],
