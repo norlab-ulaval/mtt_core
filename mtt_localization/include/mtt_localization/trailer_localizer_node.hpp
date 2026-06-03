@@ -25,7 +25,11 @@ namespace mtt_loc
 ///   /mtt/articulation_state         → φ brut + α pitch fallback (MttArticulationState)
 ///
 /// The ISAM2-optimised φ is preferred when fresh (age < articulation_timeout).
-/// Pitch α is taken from articulation_state.pitch_rad when pitch_fresh.
+///
+/// Inputs (priority order for α — pitch):
+///   1. articulation_state.pitch_rad  — hardware potentiometer (σ ≈ 0.020 rad)
+///   2. /trailer/pitch_used           — LiDAR EMA pitch from trailer_pose_node (σ ≈ 0.060 rad)
+///   3. α = 0                         — flat-terrain fallback (σ = sigma_alpha_model)
 ///
 /// Outputs:
 ///   trailer/odom               → nav_msgs/Odometry  (map frame, with 6×6 covariance)
@@ -85,8 +89,9 @@ private:
   // ── Parameters ────────────────────────────────────────────────────
   FusionMode fusion_mode_{FusionMode::kHardware};
   double sigma_phi_hardware_{0.008};          ///< rad — yaw encoder σ
-  double sigma_phi_lidar_{0.035};             ///< rad — yaw LiDAR σ
+  double sigma_phi_lidar_{0.035};             ///< rad — yaw LiDAR KF σ
   double sigma_alpha_hardware_{0.020};        ///< rad — pitch potentiometer σ
+  double sigma_alpha_lidar_{0.060};           ///< rad — pitch LiDAR (trailer_pose_node EMA) σ
   double sigma_alpha_model_{0.035};           ///< rad — pitch model/stale σ (fallback)
   double default_tractor_sigma_xyz_{0.05};    ///< m, fallback when input cov is zero
   double default_tractor_sigma_rpy_{0.01};    ///< rad, fallback when input cov is zero
@@ -101,11 +106,15 @@ private:
   // ISAM2-optimised φ (preferred over raw articulation_state when fresh)
   std::optional<double> latest_isam2_phi_;
   rclcpp::Time latest_isam2_phi_stamp_{0, 0, RCL_ROS_TIME};
+  // LiDAR pitch from trailer_pose_node (fallback when hardware potentiometer is stale)
+  std::optional<double> latest_lidar_pitch_;
+  rclcpp::Time latest_lidar_pitch_stamp_{0, 0, RCL_ROS_TIME};
 
   // ── ROS interfaces ────────────────────────────────────────────────
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
   rclcpp::Subscription<mtt_msgs::msg::MttArticulationState>::SharedPtr articulation_sub_;
   rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr isam2_phi_sub_;
+  rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr lidar_pitch_sub_;
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr trailer_odom_pub_;
   rclcpp::Publisher<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr trailer_pose_pub_;
   std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;

@@ -72,25 +72,44 @@ localization:
 
 # ─── Trailer Localizer ──────────────────────────────────────────────────────
 # Computes trailer pose in map frame via SE(3) URDF kinematics.
-# Prefers ISAM2-optimised φ (localization/articulation_angle) when fresh.
-# Falls back to /mtt/articulation_state with fusion_mode logic.
+#
+# Two operating modes (switch via tractor_odom_topic + fusion_mode):
+#
+#   Real-time ICP mode (default):
+#     tractor_odom_topic: /mapping/icp_odom
+#     fusion_mode: "lidar"  (uses KF-fused output from trailer_detector_node)
+#     sigma_phi_lidar: 0.010  (KF steady-state σ, tighter than raw LiDAR)
+#
+#   Full factor graph mode (offline/precision):
+#     tractor_odom_topic: localization/odom
+#     fusion_mode: "fused"
+#     ISAM2 φ from localization/articulation_angle takes priority automatically.
+#
 mtt_trailer_localizer_node:
   ros__parameters:
     publish_rate: 50.0             # Hz
 
+    # Tractor pose source
+    # Real-time: /mapping/icp_odom (fast, no factor graph needed)
+    # Precision:  localization/odom (ISAM2 fused, preferred for offline)
+    tractor_odom_topic: "/mapping/icp_odom"
+
     # φ source selection (used only when ISAM2 φ is stale/unavailable)
     #   hardware: effective_rad from articulation_state
-    #   lidar:    lidar_rad when lidar_detected, else hardware fallback
-    #   fused:    inverse-variance weighted average of hardware + lidar
-    fusion_mode: "fused"
+    #   lidar:    lidar_rad from trailer_detector_node KF (hardware+LiDAR fused)
+    #   fused:    inverse-variance weighted average of hardware + lidar_rad
+    # Use "lidar" here because trailer_detector KF already fuses hardware+LiDAR.
+    # "fused" would double-count the hardware encoder.
+    fusion_mode: "lidar"
 
     # φ uncertainty (feeds covariance propagation)
-    sigma_phi_hardware: 0.008      # rad — encoder fresh
-    sigma_phi_lidar: 0.035         # rad — LiDAR RANSAC
+    sigma_phi_hardware: 0.008      # rad — encoder fresh (standalone)
+    sigma_phi_lidar: 0.010         # rad — KF steady-state σ (hardware+LiDAR fused)
 
-    # α uncertainty (pitch potentiometer, ADC1 8-bit)
-    sigma_alpha_hardware: 0.020    # rad — fresh pitch potentiometer reading
-    sigma_alpha_model: 0.035       # rad — model/stale fallback (flat terrain assumed)
+    # α uncertainty — 3-way priority (potentiometer → LiDAR → flat-terrain prior)
+    sigma_alpha_hardware: 0.020    # rad — fresh pitch potentiometer reading (best)
+    sigma_alpha_lidar: 0.060       # rad — trailer_pose_node EMA pitch (/trailer/pitch_used)
+    sigma_alpha_model: 0.035       # rad — flat-terrain fallback (α=0 prior)
 
     # Tractor pose covariance fallback (used when ISAM2 publishes zeros)
     default_tractor_sigma_xyz: 0.05  # m

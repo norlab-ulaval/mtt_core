@@ -128,6 +128,9 @@ TrailerLocalizerNode::TrailerLocalizerNode(const rclcpp::NodeOptions & options)
   sigma_alpha_hardware_ =
     declare_parameter("sigma_alpha_hardware", 0.020);
 
+  sigma_alpha_lidar_ =
+    declare_parameter("sigma_alpha_lidar", 0.060);
+
   sigma_alpha_model_ =
     declare_parameter("sigma_alpha_model", 0.035);
 
@@ -224,8 +227,10 @@ TrailerLocalizerNode::TrailerLocalizerNode(const rclcpp::NodeOptions & options)
   }
 
   // ── Subscriptions ───────────────────────────────────────────────────
+  const auto tractor_odom_topic = declare_parameter(
+    "tractor_odom_topic", std::string("localization/odom"));
   odom_sub_ = create_subscription<nav_msgs::msg::Odometry>(
-    "localization/odom",
+    tractor_odom_topic,
     rclcpp::QoS(10),
     [this](nav_msgs::msg::Odometry::ConstSharedPtr msg) { onTractorOdom(msg); });
 
@@ -244,6 +249,16 @@ TrailerLocalizerNode::TrailerLocalizerNode(const rclcpp::NodeOptions & options)
       std::lock_guard<std::mutex> lock(state_mutex_);
       latest_isam2_phi_ = msg->data;
       latest_isam2_phi_stamp_ = get_clock()->now();
+    });
+
+  // LiDAR pitch from trailer_pose_node — intermediate fallback when potentiometer is stale
+  lidar_pitch_sub_ = create_subscription<std_msgs::msg::Float64>(
+    "/trailer/pitch_used",
+    rclcpp::SensorDataQoS(),
+    [this](std_msgs::msg::Float64::ConstSharedPtr msg) {
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      latest_lidar_pitch_ = msg->data;
+      latest_lidar_pitch_stamp_ = get_clock()->now();
     });
 
   // ── Timer ───────────────────────────────────────────────────────────
@@ -283,6 +298,8 @@ void TrailerLocalizerNode::publishTrailerPose()
   mtt_msgs::msg::MttArticulationState articulation;
   std::optional<double> isam2_phi;
   rclcpp::Time isam2_phi_stamp{0, 0, RCL_ROS_TIME};
+  std::optional<double> lidar_pitch;
+  rclcpp::Time lidar_pitch_stamp{0, 0, RCL_ROS_TIME};
   {
     std::lock_guard<std::mutex> lock(state_mutex_);
     if (!latest_odom_ || !latest_articulation_) {
@@ -292,6 +309,8 @@ void TrailerLocalizerNode::publishTrailerPose()
     articulation = *latest_articulation_;
     isam2_phi = latest_isam2_phi_;
     isam2_phi_stamp = latest_isam2_phi_stamp_;
+    lidar_pitch = latest_lidar_pitch_;
+    lidar_pitch_stamp = latest_lidar_pitch_stamp_;
   }
 
   // Check raw articulation freshness
@@ -321,15 +340,26 @@ void TrailerLocalizerNode::publishTrailerPose()
   }
   const double sigma2_phi = sigma_phi * sigma_phi;
 
-  // ── Select α (pitch) ─────────────────────────────────────────────────
-  // Use potentiometer reading when fresh; fall back to α=0 (flat terrain).
-  // σ_α is higher for the fallback to reflect ignorance about pitch.
+  // ── Select α (pitch) — 3-way priority ──────────────────────────────
+  // 1. Hardware potentiometer   (σ=0.020 rad) — best, when fresh
+  // 2. LiDAR pitch from trailer_pose_node EMA (σ=0.060 rad) — intermediate fallback
+  // 3. α=0 flat-terrain prior  (σ=sigma_alpha_model_) — last resort
   double alpha = 0.0;
   double sigma_alpha = sigma_alpha_model_;
+
+  const bool lidar_pitch_fresh =
+    lidar_pitch.has_value() &&
+    (now - lidar_pitch_stamp).seconds() < articulation_timeout_;
+
   if (articulation.pitch_fresh) {
     alpha = articulation.pitch_rad;
     sigma_alpha = sigma_alpha_hardware_;
+  } else if (lidar_pitch_fresh) {
+    alpha = *lidar_pitch;
+    sigma_alpha = sigma_alpha_lidar_;
   }
+  // else: α=0, sigma_alpha=sigma_alpha_model_ (flat terrain)
+
   const double sigma2_alpha = sigma_alpha * sigma_alpha;
 
   // ── Build T_map_tractor from Odometry ───────────────────────────────

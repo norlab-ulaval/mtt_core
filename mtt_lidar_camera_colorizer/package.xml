@@ -1,10 +1,12 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>mtt_perception</name>
+  <name>mtt_lidar_camera_colorizer</name>
   <version>0.1.0</version>
-  <description>Perception package for MTT: trailer detection, obstacle detection,
-  and terrain analysis using LiDAR and camera data.</description>
+  <description>Colorizes Hesai LiDAR PointCloud2 with ZED2i RGB by projecting 3D points
+  into the camera image and reading pixel colors. Publishes an enriched cloud that
+  keeps all original fields (x, y, z, intensity, ring, timestamp) and adds an rgb
+  field for Foxglove visualization.</description>
 
   <maintainer email="mohamed@norlab.ulaval.ca">Mohamed</maintainer>
   <license>MIT</license>
@@ -14,20 +16,13 @@
   <depend>rclcpp</depend>
   <depend>sensor_msgs</depend>
   <depend>geometry_msgs</depend>
-  <depend>std_msgs</depend>
-  <depend>visualization_msgs</depend>
   <depend>tf2</depend>
   <depend>tf2_ros</depend>
-  <depend>tf2_geometry_msgs</depend>
-  <depend>tf2_sensor_msgs</depend>
-  <depend>message_filters</depend>
-  <depend>pcl_conversions</depend>
-  <depend>nav_msgs</depend>
-  <depend>mtt_msgs</depend>
   <depend>tf2_eigen</depend>
-  <depend>rclcpp_components</depend>
-
-  <test_depend>ament_cmake_gtest</test_depend>
+  <depend>image_transport</depend>
+  <depend>cv_bridge</depend>
+  <depend>image_geometry</depend>
+  <depend>eigen3_cmake_module</depend>
 
   <export>
     <build_type>ament_cmake</build_type>

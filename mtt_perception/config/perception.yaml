@@ -63,7 +63,7 @@ trailer_detector_node:
     # The model-estimated angle (/mtt_articulation_angle) feeds only the KF
     # prediction step. It never replaces the LiDAR measurement.
     command:
-      use_prediction: false
+      use_prediction: true              # anticipates steering during fast maneuvers
       topic: "/mtt_articulation_angle"
       gain: 0.5            # k_cmd: command contribution to angular rate prediction
       timeout_sec: 0.2     # ignore commands older than this
@@ -73,7 +73,7 @@ trailer_detector_node:
     motor_feedback:
       enabled: true
       topic: "/hardware/articulation_angle"
-      variance: 0.001       # High confidence measurement (rad²)
+      variance: 0.000064    # σ=0.008 rad — true hardware encoder precision (0.008²)
 
     # ── Sliding ROI (future — disabled) ──────────────────────────────────────
     # When enabled: shift the ROI centre based on the predicted angle.
@@ -160,6 +160,142 @@ trailer_pose_node:
     pitch_decay_to_zero: 0.80
     roll_decay_to_zero: 0.70
     position_decay_to_prior: 0.70
+
+# ── Unified Trailer Estimator — EKF V1.0 ─────────────────────────────────────
+# Single node replacing trailer_pose_node + trailer_localizer_node.
+# trailer_detector_node (V1.5) is kept unchanged and feeds /trailer/articulation_angle.
+#
+# Sensor topics:
+#   articulation_angle_topic: from trailer_detector_node KF (preferred phi source)
+#   hardware_angle_topic:     raw hardware ADC (cross-validation)
+#   tractor_odom_topic:       wheel+kinematic tractor odom (50 Hz)
+#   icp_odom_topic:           ICP-corrected tractor pose (10 Hz, preferred when fresh)
+#
+# EKF state: [x, y, z, roll, pitch, yaw, vx, vy, vz, yaw_rate] in map frame.
+# All covariances are data-driven (odom propagation + ICP Hessian) — not hardcoded.
+mtt_trailer_estimator_node:
+  ros__parameters:
+    map_frame: "map"
+    trailer_tf_frame: "trailer_body"
+    broadcast_tf: true
+    publish_rate: 50.0
+
+    # Sensor topics
+    articulation_angle_topic: "/trailer/articulation_angle"
+    hardware_angle_topic: "/hardware/articulation_angle"
+    tractor_odom_topic: "/mtt_odometry"
+    icp_odom_topic: "/mapping/icp_odom"
+    rsairy_topic: "/rsairy_ns/points"
+    hesai_topic: "/hesai_lidar/points"
+    imu_topic: "/mti100/data"
+
+    enable_hesai: true
+    enable_icp: true
+    icp_odom_max_age_s: 0.25
+    phi_max_age_s: 0.5
+
+    # Trailer wireframe model (in trailer body frame: s=longitudinal, l=lateral, h=vertical)
+    # Tune body_s_front/rear to match physical trailer rail extent relative to URDF origin.
+    # Use /trailer/body_markers in Foxglove to visually verify alignment.
+    model:
+      s_front:       -0.05  # m — front of rails relative to trailer body origin
+      s_rear:         1.90  # m — rear of rails
+      l_half:         0.40  # m — half rail separation
+      h_rail:         0.30  # m — rail height above trailer body origin
+      point_spacing:  0.10  # m — wireframe sampling density
+
+    # ROI around predicted trailer pose (map frame, oriented box)
+    # Note: longitudinal bounds are asymmetric in code (s_lo..s_hi), roi_half_s is unused.
+    # Lateral enlarged to 0.90 m: RS-Airy is offset ~0.85 m to the side, oblique view.
+    # Height enlarged to 1.00 m: steep downward pitch (~70°), points spread vertically.
+    roi_half_s: 1.05  # m — kept for legacy compat (code uses asymmetric s bounds)
+    roi_half_l: 0.90  # m — lateral (widened for RS-Airy oblique geometry)
+    roi_half_h: 1.00  # m — vertical (widened for steep downward view)
+    voxel_size: 0.04  # m
+    min_pts_after_ground: 10  # lowered: fewer points expected from oblique angle
+
+    # Ground plane removal (RANSAC)
+    ground:
+      ransac_iters:    50
+      inlier_thresh_m: 0.05   # m — distance threshold for ground plane inliers
+      max_tilt_rad:    0.52   # rad — max allowed tilt of ground normal from vertical (30°)
+
+    # 3D line fitting (RANSAC + SVD refit) — for future diagnostics / rail detection
+    line:
+      ransac_iters:     100
+      inlier_thresh_m:  0.05
+      min_inlier_frac:  0.6
+
+    # Constrained ICP (x, y, yaw only — z/roll/pitch fixed from IMU + kinematic prior)
+    icp:
+      max_iters:       20
+      max_corr_dist_m: 0.70   # m — enlarged for oblique RS-Airy view (was 0.50)
+      convergence_tol: 0.0001 # m — convergence threshold
+      min_inliers:     8      # minimum correspondences for valid ICP (was 10)
+
+    # EKF process noise (variance per second)
+    ekf:
+      velocity_decay:       0.95    # velocity exponential decay factor
+      q_xy:                 0.01    # m²/s — position XY
+      q_z:                  0.001   # m²/s — vertical
+      q_rp:                 0.001   # rad²/s — roll/pitch
+      q_yaw:                0.05    # rad²/s — yaw (raised: was 0.005, too small for gate)
+      q_vxy:                0.1     # m²/s³ — velocity XY
+      q_vz:                 0.01    # m²/s³ — vertical velocity
+      q_vyaw:               0.05    # rad²/s³ — yaw rate
+      divergence_trace_max: 50.0    # P.trace() threshold for divergence detection
+
+    filter_period_ms: 10  # ms — filter thread drain interval
+
+    # Hitch + body geometry in base_link (must match URDF / trailer_pose_node values)
+    hitch_base_x: -1.45
+    hitch_base_y: -0.085
+    hitch_base_z:  0.35
+    trailer_body_offset:  0.90  # m — trailer body center from hitch along u_rear
+    trailer_front_offset: 0.05  # m — front rail from hitch
+    trailer_rear_offset:  1.90  # m — rear rail from hitch
+
+    # PCA detection (trailer_pose_node V4.0 algorithm, sensor-frame)
+    pca:
+      # Point count gates
+      min_points:              30    # reject if fewer points in ROI
+      min_points_after_ground: 20    # reject if fewer points after ground removal
+
+      # PCA quality gates
+      min_ratio:               2.2   # reject if cloud not elongated enough (eigenvalue ratio)
+      max_yaw_correction:      0.20  # rad (~11.5°) — max PCA yaw correction vs prior
+      min_span_s:              0.45  # m — minimum longitudinal cloud extent
+
+      # Jump rejection + EMA decay
+      max_yaw_jump:            0.15  # rad — reject frame if yaw correction jumps by this much
+
+      # Position correction clamps (m)
+      max_pos_s:               0.05
+      max_pos_l:               0.08
+      max_pos_h:               0.06
+
+      # Ground removal (quantile method, same as trailer_pose_node)
+      ground_quantile:         0.10  # keep points above this h-quantile + margin
+      ground_margin:           0.06  # m
+
+      # Measurement noise model
+      r_base:                  0.005  # rad² — base yaw measurement variance
+      r_scale:                 0.05   # extra variance = r_scale / pca_ratio
+
+      # EMA filter gains (0 = no update, 1 = instant)
+      alpha_yaw:               0.25
+      alpha_pitch:             0.02
+      alpha_position:          0.20
+
+      # Decay-to-prior when measurement invalid
+      yaw_decay:               0.85
+      pitch_decay:             0.80
+      position_decay:          0.70
+
+    # Hitch angle cross-validation
+    hitch:
+      validation_sigma:      0.025  # rad — 2-sigma disagreement threshold
+      disagreement_timeout_s: 0.5   # s — how long before issuing a WARN
 
 # ── Dual-LiDAR merger ────────────────────────────────────────────────────────
 # Architecture: cache-based temporal pairing (replaces message_filters).

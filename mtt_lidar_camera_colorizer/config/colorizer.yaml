@@ -1,0 +1,43 @@
+lidar_camera_colorizer_node:
+  ros__parameters:
+    # Input topics (override with ros2 launch args or remap rules)
+    cloud_topic:       "/hesai_lidar/points"
+    image_base_topic:  "/zed/zed_node/rgb/color/rect/image"
+    depth_base_topic:  "/zed/zed_node/depth/depth_registered"
+
+    # Frame used for camera projection. Must be the optical frame (Z forward).
+    camera_optical_frame: "zed_left_camera_frame_optical"
+
+    # Output frame. Empty string = same frame_id as the input cloud.
+    output_frame: ""
+
+    # Range filter applied before projection (meters)
+    min_range: 0.5
+    max_range: 50.0
+
+    # Reject the cached image if it is older than this relative to the cloud stamp
+    image_timeout: 0.5
+
+    # Initial TF lookup timeout (seconds). Generous to survive startup / bag replay.
+    tf_timeout: 5.0
+
+    # Subscriber queue depth
+    queue_size: 2
+
+    # Depth-based occlusion check using the ZED depth image.
+    # When false the depth topic is not subscribed at all.
+    use_depth_check: false
+    # A LiDAR point at distance Z_lidar is considered occluded when
+    # the ZED depth at the projected pixel is < Z_lidar - depth_tolerance.
+    depth_tolerance: 0.5
+
+    # image_transport hint: "compressed", "zstd", or "raw"
+    # Use "compressed" for bag replay (only compressed is recorded).
+    # Use "raw" if you need zero-latency on live hardware.
+    image_transport: "compressed"
+
+    # Color assigned to points outside the camera FOV or with no valid image.
+    # Specified as separate R/G/B bytes (0-255).
+    default_color_r: 128
+    default_color_g: 128
+    default_color_b: 128
