@@ -1,0 +1,42 @@
+mtt_articulation_servo_node:
+  ros__parameters:
+    # Operating mode
+    #   "position"  — accept /mtt_articulation_setpoint (rad), hold with PD
+    #   "velocity"  — accept /mtt_articulation_velocity_cmd (rad/s), integrate to setpoint
+    #   "disabled"  — node does nothing (safe default)
+    mode: "position"
+
+    # Control rate (Hz) — should match or exceed encoder publication rate
+    control_frequency_hz: 50.0
+
+    # Feedback source (primary: STM32 hardware encoder, 100 Hz)
+    feedback_topic: "/hardware/articulation_angle"
+
+    # Command topics
+    position_cmd_topic: "/mtt_articulation_setpoint"
+    velocity_cmd_topic: "/mtt_articulation_velocity_cmd"
+
+    # ── PD gains ────────────────────────────────────────────────────
+    # Tuning guide:
+    #   kp: start at 1.0, increase until fast response without oscillation.
+    #       At error=0.1 rad (~5.7°), kp=2.0 → steer_cmd=0.20 (20% of full scale)
+    #   kd: add damping when oscillation appears (start at 0.02, max ~0.15)
+    #   ki: leave at 0.0 unless you see persistent steady-state offset
+    #       (rare in position mode since hardware servo also helps)
+    kp: 2.0             # normalized_steer / rad
+    kd: 0.05            # normalized_steer·s / rad (derivative damping)
+    ki: 0.0             # normalized_steer·s² / rad (disabled)
+    integrator_limit: 0.30   # anti-windup clamp
+
+    # ── Limits ───────────────────────────────────────────────────────
+    max_steer: 1.0              # output saturation (full scale = ±60°)
+    max_articulation_rad: 1.047 # ±60° physical joint limit
+    max_velocity_rad_s: 0.50    # velocity mode rate limit (~29°/s)
+
+    # ── Safety ───────────────────────────────────────────────────────
+    # If encoder topic is not received within this window, the servo
+    # stops publishing steer_cmd (CAN node falls back to cmd_vel angular.z).
+    feedback_timeout_s: 0.30
+
+# ── CAN node addition (add to mtt_can_node params) ───────────────────────────
+# servo_steer_timeout_s: 0.25   # how long servo steer_cmd stays valid without refresh
