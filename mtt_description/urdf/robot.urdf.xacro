@@ -1359,6 +1359,45 @@
   <origin xyz="0.0 -0.47 -0.1627" rpy="0.0 0.0 -1.57079"/>
 </joint>
 
+<!-- ZED 2i internal frames.
+     The live ZED wrapper publishes clouds/images in these frames, but bag replay
+     excludes recorded /tf_static and relies on this URDF instead. Keep the frame
+     names aligned with zed_wrapper's zed_macro.urdf.xacro. -->
+<link name="zed_camera_center"/>
+<joint name="zed_camera_center_joint" type="fixed">
+  <parent link="zed_camera_link"/>
+  <child link="zed_camera_center"/>
+  <origin xyz="0 0 0.015" rpy="0 0 0"/>
+</joint>
+
+<link name="zed_left_camera_frame"/>
+<joint name="zed_left_camera_joint" type="fixed">
+  <parent link="zed_camera_center"/>
+  <child link="zed_left_camera_frame"/>
+  <origin xyz="-0.01 0.06 0" rpy="0 0 0"/>
+</joint>
+
+<link name="zed_left_camera_frame_optical"/>
+<joint name="zed_left_camera_joint_optical" type="fixed">
+  <parent link="zed_left_camera_frame"/>
+  <child link="zed_left_camera_frame_optical"/>
+  <origin xyz="0 0 0" rpy="-1.57079632679 0 -1.57079632679"/>
+</joint>
+
+<link name="zed_right_camera_frame"/>
+<joint name="zed_right_camera_joint" type="fixed">
+  <parent link="zed_camera_center"/>
+  <child link="zed_right_camera_frame"/>
+  <origin xyz="-0.01 -0.06 0" rpy="0 0 0"/>
+</joint>
+
+<link name="zed_right_camera_frame_optical"/>
+<joint name="zed_right_camera_joint_optical" type="fixed">
+  <parent link="zed_right_camera_frame"/>
+  <child link="zed_right_camera_frame_optical"/>
+  <origin xyz="0 0 0" rpy="-1.57079632679 0 -1.57079632679"/>
+</joint>
+
 <link name="front_lidar_link">
   <visual>
     <origin xyz="0 0 0" rpy="0 0 0"/>

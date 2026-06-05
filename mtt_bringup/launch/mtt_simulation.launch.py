@@ -61,9 +61,15 @@ def launch_sim_description(context, *args, **kwargs):
                     'publish_rate_hz': 50.0,
                     'command_timeout_seconds': 0.5,
                     'cmd_angular_mode': 'normalized_steer',
-                    'max_linear_speed_ms': 1.0,
-                    'model_max_articulation_deg': 60.0,
-                    'model_articulation_response_gain': 0.8,
+                    'max_linear_speed_ms': LaunchConfiguration('synthetic_tachometer_max_linear_speed_ms'),
+                    'model_wheelbase_m': LaunchConfiguration('synthetic_model_wheelbase_m'),
+                    'model_max_articulation_deg': LaunchConfiguration('synthetic_model_max_articulation_deg'),
+                    'model_speed_response_gain': LaunchConfiguration('synthetic_model_speed_response_gain'),
+                    'model_articulation_response_gain': LaunchConfiguration('synthetic_model_articulation_response_gain'),
+                    'model_yaw_slip_base': LaunchConfiguration('synthetic_model_yaw_slip_base'),
+                    'model_yaw_slip_speed_gain': LaunchConfiguration('synthetic_model_yaw_slip_speed_gain'),
+                    'model_yaw_slip_articulation_gain': LaunchConfiguration('synthetic_model_yaw_slip_articulation_gain'),
+                    'model_yaw_slip_min_scale': LaunchConfiguration('synthetic_model_yaw_slip_min_scale'),
                 }
             ],
             remappings=[],
@@ -82,6 +88,9 @@ def launch_sim_description(context, *args, **kwargs):
                 'joy_deadzone': LaunchConfiguration('joy_deadzone'),
                 'base_frame': LaunchConfiguration('base_frame'),
                 'odom_frame': LaunchConfiguration('odom_frame'),
+                'initial_odom_x': LaunchConfiguration('x_pose'),
+                'initial_odom_y': LaunchConfiguration('y_pose'),
+                'initial_odom_yaw': LaunchConfiguration('yaw'),
                 'odometry_broadcast_tf': 'false',
                 'publish_runtime_joint_states': 'true',
                 'runtime_joint_states_topic': 'joint_states',
@@ -264,6 +273,81 @@ def generate_launch_description():
         default_value='0.15',
         description='Joystick deadzone for the simulation control stack',
     )
+    declare_controller_gear_ratio_cmd = DeclareLaunchArgument(
+        'controller_gear_ratio',
+        default_value='1.0',
+        description='Velocity scale applied by the Gazebo cmd_vel to wheel command bridge',
+    )
+    declare_controller_wheel_command_sign_cmd = DeclareLaunchArgument(
+        'controller_wheel_command_sign',
+        default_value='-1.0',
+        description='Wheel command sign applied by the Gazebo cmd_vel bridge',
+    )
+    declare_controller_yaw_command_sign_cmd = DeclareLaunchArgument(
+        'controller_yaw_command_sign',
+        default_value='1.0',
+        description='Yaw/articulation command sign applied by the Gazebo cmd_vel bridge',
+    )
+    declare_controller_yaw_command_mode_cmd = DeclareLaunchArgument(
+        'controller_yaw_command_mode',
+        default_value='position_servo',
+        description='Yaw bridge mode: position_servo or velocity',
+    )
+    declare_controller_yaw_position_kp_cmd = DeclareLaunchArgument(
+        'controller_yaw_position_kp',
+        default_value='5.0',
+        description='P gain for Gazebo yaw position servo bridge',
+    )
+    declare_controller_yaw_velocity_limit_cmd = DeclareLaunchArgument(
+        'controller_yaw_velocity_limit_rad_s',
+        default_value='2.5',
+        description='Velocity limit for Gazebo yaw position servo bridge',
+    )
+    declare_synthetic_tachometer_max_linear_speed_cmd = DeclareLaunchArgument(
+        'synthetic_tachometer_max_linear_speed_ms',
+        default_value='5.56',
+        description='Maximum speed accepted by the synthetic tachometer model',
+    )
+    declare_synthetic_model_wheelbase_cmd = DeclareLaunchArgument(
+        'synthetic_model_wheelbase_m',
+        default_value='2.40',
+        description='Wheelbase used by the synthetic tachometer motion model',
+    )
+    declare_synthetic_model_max_articulation_cmd = DeclareLaunchArgument(
+        'synthetic_model_max_articulation_deg',
+        default_value='60.0',
+        description='Maximum articulation used by the synthetic tachometer motion model',
+    )
+    declare_synthetic_model_speed_response_cmd = DeclareLaunchArgument(
+        'synthetic_model_speed_response_gain',
+        default_value='3.0',
+        description='Speed first-order response gain for the synthetic tachometer model',
+    )
+    declare_synthetic_model_articulation_response_cmd = DeclareLaunchArgument(
+        'synthetic_model_articulation_response_gain',
+        default_value='2.4',
+        description='Articulation first-order response gain for the synthetic tachometer model',
+    )
+    declare_synthetic_model_yaw_slip_base_cmd = DeclareLaunchArgument(
+        'synthetic_model_yaw_slip_base',
+        default_value='0.0',
+        description='Base yaw slip term for the synthetic tachometer model',
+    )
+    declare_synthetic_model_yaw_slip_speed_cmd = DeclareLaunchArgument(
+        'synthetic_model_yaw_slip_speed_gain',
+        default_value='0.0',
+        description='Speed yaw slip term for the synthetic tachometer model',
+    )
+    declare_synthetic_model_yaw_slip_articulation_cmd = DeclareLaunchArgument(
+        'synthetic_model_yaw_slip_articulation_gain',
+        default_value='0.0',
+        description='Articulation yaw slip term for the synthetic tachometer model',
+    )
+    declare_synthetic_model_yaw_slip_min_scale_cmd = DeclareLaunchArgument(
+        'synthetic_model_yaw_slip_min_scale',
+        default_value='1.0',
+        description='Minimum yaw slip scale for the synthetic tachometer model',
+    )
 
     declare_base_frame_cmd = DeclareLaunchArgument(
         'base_frame',
@@ -411,6 +495,12 @@ def generate_launch_description():
             'use_sim_time': use_sim_time,
             'enable_joint_state_broadcaster': 'true',
             'spawn_motion_controllers': 'true',
+            'controller_gear_ratio': LaunchConfiguration('controller_gear_ratio'),
+            'controller_wheel_command_sign': LaunchConfiguration('controller_wheel_command_sign'),
+            'controller_yaw_command_sign': LaunchConfiguration('controller_yaw_command_sign'),
+            'controller_yaw_command_mode': LaunchConfiguration('controller_yaw_command_mode'),
+            'controller_yaw_position_kp': LaunchConfiguration('controller_yaw_position_kp'),
+            'controller_yaw_velocity_limit_rad_s': LaunchConfiguration('controller_yaw_velocity_limit_rad_s'),
         }.items(),
     )
 
@@ -449,6 +539,21 @@ def generate_launch_description():
     ld.add_action(declare_enable_joystick_cmd)
     ld.add_action(declare_joy_device_cmd)
     ld.add_action(declare_joy_deadzone_cmd)
+    ld.add_action(declare_controller_gear_ratio_cmd)
+    ld.add_action(declare_controller_wheel_command_sign_cmd)
+    ld.add_action(declare_controller_yaw_command_sign_cmd)
+    ld.add_action(declare_controller_yaw_command_mode_cmd)
+    ld.add_action(declare_controller_yaw_position_kp_cmd)
+    ld.add_action(declare_controller_yaw_velocity_limit_cmd)
+    ld.add_action(declare_synthetic_tachometer_max_linear_speed_cmd)
+    ld.add_action(declare_synthetic_model_wheelbase_cmd)
+    ld.add_action(declare_synthetic_model_max_articulation_cmd)
+    ld.add_action(declare_synthetic_model_speed_response_cmd)
+    ld.add_action(declare_synthetic_model_articulation_response_cmd)
+    ld.add_action(declare_synthetic_model_yaw_slip_base_cmd)
+    ld.add_action(declare_synthetic_model_yaw_slip_speed_cmd)
+    ld.add_action(declare_synthetic_model_yaw_slip_articulation_cmd)
+    ld.add_action(declare_synthetic_model_yaw_slip_min_scale_cmd)
     ld.add_action(declare_base_frame_cmd)
     ld.add_action(declare_odom_frame_cmd)
     ld.add_action(declare_ground_truth_odom_topic_cmd)
