@@ -36,6 +36,10 @@ MttJointStateBuilderNode::MttJointStateBuilderNode(const rclcpp::NodeOptions & o
   trailer_wheel_radius_m_ = declare_parameter("trailer_wheel_radius_m", 0.0508);
   left_wheel_rotation_sign_ = declare_parameter("left_wheel_rotation_sign", 1.0);
   right_wheel_rotation_sign_ = declare_parameter("right_wheel_rotation_sign", 1.0);
+  // pitch_topic: subscribe to hardware pitch sensor when non-empty.
+  // Requires pitch_deg_per_bit calibration in mtt_driver.yaml before enabling.
+  pitch_topic_ = declare_parameter("pitch_topic", std::string(""));
+  pitch_sign_  = declare_parameter("pitch_sign", 1.0);
 
   joint_names_ = {
     "pitch",
@@ -60,6 +64,13 @@ MttJointStateBuilderNode::MttJointStateBuilderNode(const rclcpp::NodeOptions & o
     tachometer_topic_, rclcpp::SensorDataQoS(),
     std::bind(&MttJointStateBuilderNode::on_tachometer, this, std::placeholders::_1));
 
+  if (!pitch_topic_.empty()) {
+    pitch_sub_ = create_subscription<std_msgs::msg::Float64>(
+      pitch_topic_, 10,
+      std::bind(&MttJointStateBuilderNode::on_pitch, this, std::placeholders::_1));
+    RCLCPP_INFO(get_logger(), "Hardware pitch subscription enabled on %s", pitch_topic_.c_str());
+  }
+
   const auto timer_period = std::chrono::duration<double>(1.0 / std::max(1.0, publish_rate_hz_));
   publish_timer_ = create_wall_timer(
     std::chrono::duration_cast<std::chrono::milliseconds>(timer_period),
@@ -77,6 +88,12 @@ void MttJointStateBuilderNode::on_articulation(const std_msgs::msg::Float64::Sha
 {
   std::lock_guard<std::mutex> lock(state_mutex_);
   articulation_rad_ = msg->data;
+}
+
+void MttJointStateBuilderNode::on_pitch(const std_msgs::msg::Float64::SharedPtr msg)
+{
+  std::lock_guard<std::mutex> lock(state_mutex_);
+  hardware_pitch_rad_ = pitch_sign_ * msg->data;
 }
 
 void MttJointStateBuilderNode::on_tachometer(const mtt_msgs::msg::MttTachometerData::SharedPtr msg)
@@ -125,7 +142,8 @@ void MttJointStateBuilderNode::publish_joint_states()
     ? drive_joint_rotation_sign_ * cumulative_distance_m_ / drive_joint_radius_m_
     : 0.0;
 
-  msg.position[0] = pitch_rest_rad_;
+  // pitch joint: rest offset + live hardware measurement when pitch_topic is configured
+  msg.position[0] = pitch_rest_rad_ + (pitch_sub_ ? hardware_pitch_rad_ : 0.0);
   msg.position[1] = yaw_rest_rad_ + articulation_delta;
   msg.position[2] = roll_rest_rad_;
   msg.position[3] = trailer_left_link_rest_rad_;

@@ -24,6 +24,7 @@ public:
 private:
   void on_articulation(const std_msgs::msg::Float64::SharedPtr msg);
   void on_tachometer(const mtt_msgs::msg::MttTachometerData::SharedPtr msg);
+  void on_pitch(const std_msgs::msg::Float64::SharedPtr msg);
   void publish_joint_states();
   rclcpp::Time message_stamp_or_now(const std_msgs::msg::Header & header) const;
   double signed_speed_from_tachometer(const mtt_msgs::msg::MttTachometerData & msg) const;
@@ -31,8 +32,14 @@ private:
   std::string joint_state_topic_;
   std::string articulation_topic_;
   std::string tachometer_topic_;
+  // pitch_topic: topic for hardware pitch angle (rad). Default empty = disabled.
+  // Enable by setting pitch_topic to /hardware/articulation_pitch_rad in config
+  // after calibrating pitch_deg_per_bit in mtt_driver.yaml.
+  std::string pitch_topic_;
+  double pitch_sign_{1.0};
   double publish_rate_hz_{50.0};
   double pitch_rest_rad_{0.0};
+  double hardware_pitch_rad_{0.0};
   double yaw_rest_rad_{0.0};
   double roll_rest_rad_{0.0};
   double articulation_sign_{1.0};
@@ -55,6 +62,7 @@ private:
 
   rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr joint_state_pub_;
   rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr articulation_sub_;
+  rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr pitch_sub_;
   rclcpp::Subscription<mtt_msgs::msg::MttTachometerData>::SharedPtr tachometer_sub_;
   rclcpp::TimerBase::SharedPtr publish_timer_;
 };

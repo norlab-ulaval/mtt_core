@@ -51,11 +51,18 @@ private:
   double      command_timeout_s_;
   double      max_linear_speed_ms_;
   double      throttle_deadband_;
+  double      min_moving_throttle_;
+  double      moving_command_deadband_ms_;
   double      steer_deadband_;
   double      wheelbase_m_;
   double      min_steer_speed_ms_;
   logic::CommandMotionParams motion_model_params_{};
   logic::HoldAssistParams hold_assist_params_{};
+  double      parking_brake_dither_boost_{0.20};
+  double      parking_brake_dither_max_speed_{0.50};
+  double      parking_brake_relay_flip_speed_ms_{0.05};
+  double      parking_brake_slip_detect_ms_{0.02};
+  int         dither_tick_count_{0};
   std::string base_frame_;
   std::string cmd_angular_mode_;
   std::string steer_control_mode_;
@@ -68,6 +75,9 @@ private:
   std::shared_ptr<hardware::ICanInterface> can_;
   std::thread receiver_thread_;
   std::atomic<bool> receiver_running_{false};
+
+  // ── Parking hold state machine ────────────────────────────────────────
+  enum class ParkingPhase : uint8_t { Inactive, Decelerate, Hold };
 
   // ── State (protected by frame_mutex_) ────────────────────────────────
   mutable std::mutex frame_mutex_;
@@ -86,6 +96,9 @@ private:
   bool     teleop_estop_seen_{false};
   bool     teleop_deadman_active_{false};
   bool     teleop_deadman_seen_{false};
+  bool     dither_toggle_{false};
+  ParkingPhase parking_phase_{ParkingPhase::Inactive};
+  can::Direction hold_braking_direction_{can::Direction::Forward};
   double   synthetic_distance_m_{0.0};
   logic::CommandMotionModel synthetic_motion_model_{};
   logic::HoldAssistController hold_assist_controller_{};
@@ -94,12 +107,19 @@ private:
   std::chrono::steady_clock::time_point last_synthetic_update_{};
   std::chrono::steady_clock::time_point last_hold_assist_update_{};
   std::chrono::steady_clock::time_point last_cmd_vel_time_{};
+  // Articulation servo override (from mtt_articulation_servo_node)
+  double servo_steer_override_{0.0};
+  bool   servo_steer_active_{false};
+  std::chrono::steady_clock::time_point last_servo_steer_time_{};
+  double servo_steer_timeout_s_{0.25};
 
   // ── ROS I/O ──────────────────────────────────────────────────────────
   rclcpp::Subscription<geometry_msgs::msg::TwistStamped>::SharedPtr cmd_vel_sub_;
   rclcpp::Subscription<mtt_msgs::msg::MttAuxCommand>::SharedPtr aux_cmd_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr estop_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr deadman_sub_;
+  // Articulation servo override — when active, replaces cmd_vel angular.z
+  rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr servo_steer_sub_;
 
   rclcpp::Publisher<mtt_msgs::msg::MttTachometerData>::SharedPtr tachometer_pub_;
   rclcpp::Publisher<mtt_msgs::msg::MttVehicleStatus>::SharedPtr  status_pub_;

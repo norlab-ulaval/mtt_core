@@ -24,9 +24,12 @@ MttCanNode::MttCanNode(const rclcpp::NodeOptions& options)
   control_freq_hz_     = declare_parameter("control_frequency_hz", 50.0);
   can_frame_freq_hz_   = declare_parameter("can_frame_frequency_hz", 20.0);
   telemetry_timeout_ms_= declare_parameter("telemetry_timeout_ms", 500.0);
-  command_timeout_s_   = declare_parameter("command_timeout_seconds", 0.5);
+  command_timeout_s_       = declare_parameter("command_timeout_seconds", 0.5);
+  servo_steer_timeout_s_   = declare_parameter("servo_steer_timeout_s",   0.25);
   max_linear_speed_ms_ = declare_parameter("max_linear_speed_ms", 1.0);
   throttle_deadband_   = declare_parameter("throttle_deadband",   0.05);
+  min_moving_throttle_ = declare_parameter("min_moving_throttle", 0.0);
+  moving_command_deadband_ms_ = declare_parameter("moving_command_deadband_ms", 0.0);
   steer_deadband_      = declare_parameter("steer_deadband",      0.05);
   wheelbase_m_         = declare_parameter("wheelbase_m",         VehicleParams::total_wheelbase());
   min_steer_speed_ms_  = declare_parameter("min_steer_speed_ms",  VehicleParams::min_speed_for_steering);
@@ -50,6 +53,12 @@ MttCanNode::MttCanNode(const rclcpp::NodeOptions& options)
   hold_assist_params_.exit_speed_ms = declare_parameter("hold_assist_exit_speed_ms", 0.15);
   hold_assist_params_.kp = declare_parameter("hold_assist_kp", 2.5);
   hold_assist_params_.output_limit = declare_parameter("hold_assist_output_limit", 0.40);
+
+  parking_brake_dither_boost_ = declare_parameter("parking_brake_dither_boost", 0.20);
+  parking_brake_dither_max_speed_ = declare_parameter("parking_brake_dither_max_speed", 0.50);
+  parking_brake_relay_flip_speed_ms_ = declare_parameter("parking_brake_relay_flip_speed_ms", 0.05);
+  parking_brake_slip_detect_ms_      = declare_parameter("parking_brake_slip_detect_ms", 0.02);
+
   base_frame_          = declare_parameter("base_frame",           std::string("base_footprint"));
   cmd_angular_mode_    = declare_parameter("cmd_angular_mode",     std::string("normalized_steer"));
   steer_control_mode_  = declare_parameter("steer_control_mode",   std::string("closed_loop"));
@@ -132,6 +141,18 @@ MttCanNode::MttCanNode(const rclcpp::NodeOptions& options)
   deadman_sub_ = create_subscription<std_msgs::msg::Bool>(
     "mtt_control/teleop_deadman", 10,
     [this](const std_msgs::msg::Bool::SharedPtr msg){ on_deadman(msg); });
+
+  // Articulation servo override — published by mtt_articulation_servo_node when active.
+  // When fresh (< servo_steer_timeout_s_), replaces angular.z from cmd_vel for steering.
+  servo_steer_sub_ = create_subscription<std_msgs::msg::Float64>(
+    "articulation_servo/steer_cmd",
+    rclcpp::SensorDataQoS(),
+    [this](const std_msgs::msg::Float64::SharedPtr msg) {
+      std::lock_guard<std::mutex> lock(frame_mutex_);
+      servo_steer_override_ = std::clamp(msg->data, -1.0, 1.0);
+      servo_steer_active_ = true;
+      last_servo_steer_time_ = std::chrono::steady_clock::now();
+    });
 
   // ── Services ─────────────────────────────────────────────────────────
   set_mode_srv_ = create_service<mtt_interfaces::srv::SetVehiculeTypeSrv>(
@@ -319,6 +340,7 @@ void MttCanNode::on_deadman(const std_msgs::msg::Bool::SharedPtr msg)
     std::lock_guard<std::mutex> lock(frame_mutex_);
     current_linear_command_ms_ = 0.0;
     current_steering_input_ = 0.0;
+    servo_steer_active_ = false;   // also deactivate servo override on deadman release
     hold_assist_controller_.reset();
   }
 }
@@ -377,13 +399,137 @@ void MttCanNode::refresh_command_frame()
     -max_linear_speed_ms_,
     max_linear_speed_ms_);
 
-  const double throttle_norm =
+  const double speed_norm =
     std::clamp(std::abs(effective_linear_command_ms_) / max_linear_speed_ms_, 0.0, 1.0);
-  const double throttle_cmd = (throttle_norm < throttle_deadband_) ? 0.0 : throttle_norm;
-  command_frame_.set_throttle(safety_locked ? 0.0 : throttle_cmd);
-  command_frame_.set_steer(current_steering_input_);
-  command_frame_.set_direction(
-    effective_linear_command_ms_ >= 0.0 ? can::Direction::Forward : can::Direction::Reverse);
+  double throttle_cmd = 0.0;
+  if (std::abs(effective_linear_command_ms_) >= moving_command_deadband_ms_ &&
+      speed_norm >= throttle_deadband_) {
+    const double min_throttle = std::clamp(min_moving_throttle_, 0.0, 1.0);
+    throttle_cmd = min_throttle + speed_norm * (1.0 - min_throttle);
+  }
+  // Check if articulation servo override is still fresh
+  if (servo_steer_active_) {
+    const double servo_age =
+      std::chrono::duration<double>(wall_now - last_servo_steer_time_).count();
+    if (servo_age > servo_steer_timeout_s_) {
+      servo_steer_active_ = false;  // expired — fall back to cmd_vel angular
+    }
+  }
+  const double effective_steer = servo_steer_active_
+    ? servo_steer_override_
+    : current_steering_input_;
+
+  command_frame_.set_steer(effective_steer);
+
+  // ── Kinetic Safety Layer ──────────────────────────────────────────────
+  //
+  // Three-phase parking state machine:
+  //   Inactive   → normal drive
+  //   Decelerate → brake engaged, robot still rolling; relay locked to motion direction
+  //   Hold       → robot nearly stopped; directed dither above deadband
+  //
+  // The relay-direction-bug means: sending Reverse while moving Forward causes the
+  // motor controller to apply that throttle in the Forward direction — catastrophic
+  // acceleration.  The Decelerate phase prevents any relay flip until v < relay_flip_speed.
+
+  const bool parking_brake_engaged = (command_frame_.brake_raw() >= 250);
+
+  // ── Phase transitions ─────────────────────────────────────────────────
+  if (!parking_brake_engaged) {
+    if (parking_phase_ != ParkingPhase::Inactive) {
+      parking_phase_ = ParkingPhase::Inactive;
+      dither_tick_count_ = 0;
+      dither_toggle_ = false;
+    }
+  } else if (parking_phase_ == ParkingPhase::Inactive) {
+    // Capture motion direction before we touch anything.
+    parking_phase_ = ParkingPhase::Decelerate;
+    hold_braking_direction_ = (measured_speed_ms >= 0.0)
+      ? can::Direction::Forward : can::Direction::Reverse;
+    dither_tick_count_ = 0;
+  } else if (parking_phase_ == ParkingPhase::Decelerate &&
+             std::abs(measured_speed_ms) < parking_brake_relay_flip_speed_ms_) {
+    parking_phase_ = ParkingPhase::Hold;
+    dither_tick_count_ = 0;
+  } else if (parking_phase_ == ParkingPhase::Hold &&
+             std::abs(measured_speed_ms) > parking_brake_dither_max_speed_) {
+    // Slid too far — fall back to safe deceleration.
+    parking_phase_ = ParkingPhase::Decelerate;
+    hold_braking_direction_ = (measured_speed_ms >= 0.0)
+      ? can::Direction::Forward : can::Direction::Reverse;
+    dither_tick_count_ = 0;
+  }
+
+  // ── Wrong-way protection (normal driving only) ────────────────────────
+  // Only relevant when parking is inactive.  During parking, the state machine
+  // already owns direction control.
+  bool wrong_way_detected = false;
+  if (parking_phase_ == ParkingPhase::Inactive && std::abs(measured_speed_ms) > 0.05) {
+    if ((measured_speed_ms > 0.0 && effective_linear_command_ms_ < -0.01) ||
+        (measured_speed_ms < 0.0 && effective_linear_command_ms_ > 0.01)) {
+      wrong_way_detected = true;
+    }
+  }
+
+  // ── Command application ───────────────────────────────────────────────
+  if (safety_locked) {
+    command_frame_.set_throttle(0.0);
+    command_frame_.set_brake(1.0);
+    command_frame_.set_direction(can::Direction::Forward);
+
+  } else if (parking_phase_ == ParkingPhase::Decelerate) {
+    // Keep relay aligned with current motion — NEVER flip here.
+    // Hardware would apply throttle in the existing direction instead of the
+    // requested one, turning a brake command into a forward kick.
+    command_frame_.set_throttle(0.0);
+    command_frame_.set_brake(1.0);
+    command_frame_.set_direction(hold_braking_direction_);
+
+  } else if (parking_phase_ == ParkingPhase::Hold) {
+    const double abs_speed = std::abs(measured_speed_ms);
+    const double dither_amplitude =
+      std::clamp(min_moving_throttle_ + parking_brake_dither_boost_, 0.10, 1.0);
+
+    if (abs_speed >= parking_brake_relay_flip_speed_ms_) {
+      // Speed crept above relay-safe window before the ejection threshold fired.
+      // Coast with brake; do not attempt a direction flip.
+      command_frame_.set_throttle(0.0);
+      command_frame_.set_brake(1.0);
+      command_frame_.set_direction(measured_speed_ms >= 0.0
+        ? can::Direction::Forward : can::Direction::Reverse);
+    } else {
+      // Within relay-safe window: directed dither.
+      can::Direction dither_dir;
+      if (measured_speed_ms > parking_brake_slip_detect_ms_) {
+        // Drifting forward — push back with reverse.
+        dither_dir = can::Direction::Reverse;
+      } else if (measured_speed_ms < -parking_brake_slip_detect_ms_) {
+        // Drifting backward — push back with forward.
+        dither_dir = can::Direction::Forward;
+      } else {
+        // Near-stationary: symmetric square wave at 12.5 Hz (every 4 ticks at 50 Hz)
+        // to keep coils energised without net displacement.
+        if (dither_tick_count_++ % 4 == 0) {
+          dither_toggle_ = !dither_toggle_;
+        }
+        dither_dir = dither_toggle_ ? can::Direction::Forward : can::Direction::Reverse;
+      }
+      command_frame_.set_throttle(dither_amplitude);
+      command_frame_.set_brake(0.0);
+      command_frame_.set_direction(dither_dir);
+    }
+
+  } else if (wrong_way_detected) {
+    command_frame_.set_throttle(0.0);
+    command_frame_.set_brake(1.0);
+    command_frame_.set_direction(
+      measured_speed_ms >= 0.0 ? can::Direction::Forward : can::Direction::Reverse);
+
+  } else {
+    command_frame_.set_throttle(throttle_cmd);
+    command_frame_.set_direction(
+      effective_linear_command_ms_ >= 0.0 ? can::Direction::Forward : can::Direction::Reverse);
+  }
 }
 
 // ── CAN send timer ────────────────────────────────────────────────────
