@@ -32,6 +32,9 @@ def generate_launch_description():
                     "deadzone": LaunchConfiguration("joy_deadzone"),
                     "dev": LaunchConfiguration("joy_device"),
                     "autorepeat_rate": 20.0,
+                    # Seed triggers as "released" (+1.0) at boot so an untouched / disconnected
+                    # trigger never produces a ghost half-brake or partial e-stop.
+                    "default_trig_val": True,
                 }],
                 output="screen",
             ),

@@ -10,7 +10,7 @@ mtt_operator_input_node:
     manual_activity_angular_threshold: 0.05
     deadman_button_index: 5
     light_button_index: 2
-    articulation_hold_button_index: 6
+    articulation_hold_button_index: 10
     steer_mode_switch_button_index: 4
     enable_steering_mode_switch: true
     linear_axis_index: 1
@@ -22,11 +22,25 @@ mtt_operator_input_node:
     invert_linear_axis: true
     invert_angular_axis: false
     enable_brake_axis: true
-    brake_axis_default: 1.0
-    articulation_hold_enabled: true
-    articulation_hold_max_speed_ms: 0.25
-    articulation_hold_release_deadband: 0.08
+    # Calibrated fail-safe brake mapping.  Set released/pressed to match the raw
+    # axis values reported by joy_linux for RT (axis 5) at its two extremes.
+    # With default_trig_val=1.0 in joy_linux, the trigger reads brake_axis_released
+    # at boot so brake_value=0 until the operator actually presses RT.
+    brake_axis_released: 1.0
+    brake_axis_pressed: -1.0
+    # Fraction of brake_value [0,1] at which linear command is fully zeroed.
+    # e.g. 0.6 = full stop at 60% trigger travel.
+    brake_full_fraction: 0.6
+    joy_timeout_s: 0.25
+    articulation_hold_mode_default: false
+    articulation_hold_enabled: false
     articulation_hold_reset_on_deadman_release: true
+    # ---- COM motor mode toggle ----
+    # Button index (0-based) that switches the right stick between articulation and COM motor.
+    # Default 7 (paramétrable). Set enable_com_mode_switch: false to disable entirely.
+    enable_com_mode_switch: true
+    com_toggle_button_index: 7
+    invert_com_steer: false
 
 mtt_manual_cmd_filter_node:
   ros__parameters:
@@ -38,6 +52,7 @@ mtt_manual_cmd_filter_node:
     linear_fall_rate: 1.0
     angular_rise_rate: 0.5
     angular_fall_rate: 1.2
+    immediate_angular_zero: true
     decel_brake_gain: 0.35
     decel_brake_threshold: 0.05
     enable_dynamic_filter: false
