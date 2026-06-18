@@ -9,3 +9,6 @@ mtt_teleop_joy:
     winch_safety: 3
     light_toggle: 2
     safety: 6
+    # Toggles right-stick (axis 3) between articulation and COM motor control.
+    # Mapped to com_toggle_button_index in mtt_control params.
+    com_motor_toggle: 7
