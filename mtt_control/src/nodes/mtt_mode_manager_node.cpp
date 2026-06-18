@@ -30,6 +30,10 @@ MttModeManagerNode::MttModeManagerNode(const rclcpp::NodeOptions & options)
     "mtt_control/manual_activity",
     20,
     std::bind(&MttModeManagerNode::on_manual_activity, this, std::placeholders::_1));
+  deadman_sub_ = create_subscription<std_msgs::msg::Bool>(
+    "mtt_control/teleop_deadman",
+    20,
+    std::bind(&MttModeManagerNode::on_deadman, this, std::placeholders::_1));
   estop_sub_ = create_subscription<std_msgs::msg::Bool>(
     "mtt_control/teleop_estop",
     20,
@@ -118,13 +122,27 @@ void MttModeManagerNode::on_joy(const sensor_msgs::msg::Joy::SharedPtr msg)
 void MttModeManagerNode::on_manual_activity(const std_msgs::msg::Bool::SharedPtr msg)
 {
   manual_activity_ = msg->data;
-  // Do NOT switch to Manual if the replay supervisor has locked us in AUTO.
-  // The joystick-override safety is handled by the supervisor itself (which
-  // monitors cmd_vel/manual_raw + deadman and calls request_manual explicitly).
-  // Reacting to manual_activity here during a locked AUTO would cause the
-  // false-cancel loop the operator is experiencing.
-  if (manual_activity_ && !estop_active_ && !auto_locked_) {
+  // Always exit AUTO when the operator moves the stick (deadman held + past threshold).
+  // auto_locked_ no longer blocks this: physical presence on the controller is the
+  // ultimate safety override, even during a teach-and-repeat replay.
+  // Trade-off: stick drift can interrupt a replay — intentional per operator decision.
+  if (manual_activity_ && !estop_active_) {
+    auto_locked_ = false;
     set_mode(ControlMode::Manual, "manual_activity");
+  }
+}
+
+void MttModeManagerNode::on_deadman(const std_msgs::msg::Bool::SharedPtr msg)
+{
+  const bool deadman = msg->data;
+  const bool rising = deadman && !previous_deadman_;
+  previous_deadman_ = deadman;
+
+  // Deadman-press rising edge → return to Manual, even mid-replay.
+  // "Hand on the controller = I'm taking over."
+  if (rising && current_mode_ == ControlMode::Auto && !estop_active_) {
+    auto_locked_ = false;
+    set_mode(ControlMode::Manual, "deadman_override");
   }
 }
 

@@ -1,6 +1,7 @@
 #include "mtt_control/nodes/mtt_operator_input_node.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 
 namespace mtt_control
@@ -18,9 +19,10 @@ MttOperatorInputNode::MttOperatorInputNode(const rclcpp::NodeOptions & options)
   manual_activity_linear_threshold_ = declare_parameter("manual_activity_linear_threshold", 0.05);
   manual_activity_angular_threshold_ = declare_parameter("manual_activity_angular_threshold", 0.05);
   estop_trigger_threshold_ = declare_parameter("estop_trigger_threshold", -0.10);
-  brake_axis_default_ = declare_parameter("brake_axis_default", 1.0);
-  articulation_hold_max_speed_ms_ = declare_parameter("articulation_hold_max_speed_ms", 0.75);
-  articulation_hold_release_deadband_ = declare_parameter("articulation_hold_release_deadband", 0.08);
+  brake_axis_released_ = declare_parameter("brake_axis_released", 1.0);
+  brake_axis_pressed_  = declare_parameter("brake_axis_pressed",  -1.0);
+  brake_full_fraction_ = declare_parameter("brake_full_fraction", 0.6);
+  joy_timeout_s_ = declare_parameter("joy_timeout_s", 0.25);
   deadman_button_index_ = declare_parameter("deadman_button_index", 5);
   light_button_index_ = declare_parameter("light_button_index", 2);
   articulation_hold_button_index_ = declare_parameter("articulation_hold_button_index", 10);
@@ -32,28 +34,22 @@ MttOperatorInputNode::MttOperatorInputNode(const rclcpp::NodeOptions & options)
   invert_linear_axis_ = declare_parameter("invert_linear_axis", true);
   invert_angular_axis_ = declare_parameter("invert_angular_axis", false);
   enable_brake_axis_ = declare_parameter("enable_brake_axis", true);
-  articulation_hold_enabled_ = declare_parameter("articulation_hold_enabled", true);
-  articulation_hold_reset_on_deadman_release_ =
-    declare_parameter("articulation_hold_reset_on_deadman_release", true);
-  articulation_hold_mode_default_ = declare_parameter("articulation_hold_mode_default", false);
-  articulation_hold_mode_ = articulation_hold_mode_default_;
+  (void)declare_parameter("articulation_hold_enabled", false);
+  (void)declare_parameter("articulation_hold_reset_on_deadman_release", true);
+  (void)declare_parameter("articulation_hold_mode_default", false);
   enable_steering_mode_switch_ = declare_parameter("enable_steering_mode_switch", true);
   steer_mode_switch_button_index_ = declare_parameter("steer_mode_switch_button_index", 4);
+
+  // COM motor mode toggle + double-press park
+  enable_com_mode_switch_      = declare_parameter("enable_com_mode_switch",      true);
+  com_toggle_button_index_     = declare_parameter("com_toggle_button_index",     7);
+  invert_com_steer_            = declare_parameter("invert_com_steer",            false);
+  com_double_press_window_s_   = declare_parameter("com_double_press_window_s",   0.4);
 
   joy_sub_ = create_subscription<sensor_msgs::msg::Joy>(
     "joy",
     rclcpp::SensorDataQoS(),
     std::bind(&MttOperatorInputNode::on_joy, this, std::placeholders::_1));
-
-  // Timer to keep publishing manual_raw at 50Hz (20ms) so the filter doesn't time out
-  publish_timer_ = create_wall_timer(
-    std::chrono::milliseconds(20),
-    [this]() {
-      auto msg = std::make_shared<sensor_msgs::msg::Joy>(joystick_state_.last_msg());
-      if (msg->header.stamp.sec != 0) { // Only if we have received at least one msg
-        on_joy(msg);
-      }
-    });
 
   manual_raw_pub_ = create_publisher<geometry_msgs::msg::TwistStamped>("cmd_vel/manual_raw", 20);
   aux_pub_ = create_publisher<mtt_msgs::msg::MttAuxCommand>("mtt_aux_cmd", 20);
@@ -64,6 +60,15 @@ MttOperatorInputNode::MttOperatorInputNode(const rclcpp::NodeOptions & options)
     create_publisher<std_msgs::msg::String>("mtt_control/articulation_mode", 20);
   articulation_hold_active_pub_ =
     create_publisher<std_msgs::msg::Bool>("mtt_control/articulation_hold_active", 20);
+
+  // COM motor publishers (always created so topics appear on the graph even when OFF)
+  com_mode_pub_  = create_publisher<std_msgs::msg::Bool>  ("mtt_control/com_mode",  20);
+  com_steer_pub_ = create_publisher<std_msgs::msg::Float64>("mtt_control/com_steer", 20);
+  com_park_pub_  = create_publisher<std_msgs::msg::Empty> ("mtt_control/com_park",  10);
+
+  publish_timer_ = create_wall_timer(
+    std::chrono::milliseconds(20),
+    std::bind(&MttOperatorInputNode::on_watchdog, this));
 
   publish_articulation_hold_state(false);
 
@@ -107,7 +112,7 @@ bool MttOperatorInputNode::trigger_pressed(const JoystickState & state, int axis
 void MttOperatorInputNode::publish_articulation_hold_state(bool hold_active)
 {
   auto mode_msg = std_msgs::msg::String();
-  mode_msg.data = articulation_hold_mode_ ? "hold" : "return_to_zero";
+  mode_msg.data = "neutral";
   articulation_mode_pub_->publish(mode_msg);
 
   auto active_msg = std_msgs::msg::Bool();
@@ -117,6 +122,13 @@ void MttOperatorInputNode::publish_articulation_hold_state(bool hold_active)
 
 void MttOperatorInputNode::on_joy(const sensor_msgs::msg::Joy::SharedPtr msg)
 {
+  last_joy_receive_time_ = std::chrono::steady_clock::now();
+  joy_received_ = true;
+  if (joy_timeout_reported_) {
+    RCLCPP_INFO(get_logger(), "Joystick messages restored.");
+    joy_timeout_reported_ = false;
+  }
+
   joystick_state_.update(*msg);
 
   const bool deadman_pressed = joystick_state_.button_pressed(static_cast<std::size_t>(deadman_button_index_));
@@ -125,7 +137,6 @@ void MttOperatorInputNode::on_joy(const sensor_msgs::msg::Joy::SharedPtr msg)
   
   const bool light_rising = joystick_state_.button_rising(static_cast<std::size_t>(light_button_index_));
   const bool articulation_hold_rising =
-    articulation_hold_enabled_ &&
     joystick_state_.button_rising(static_cast<std::size_t>(articulation_hold_button_index_));
   const bool steer_mode_rising =
     enable_steering_mode_switch_ &&
@@ -135,19 +146,50 @@ void MttOperatorInputNode::on_joy(const sensor_msgs::msg::Joy::SharedPtr msg)
     light_state_ = !light_state_;
   }
 
-  // --- Parking Brake / Articulation Hold ---
+  // Parking brake is independent from deadman and articulation.
   if (articulation_hold_rising) {
     parking_brake_mode_ = !parking_brake_mode_;
-    articulation_hold_mode_ = parking_brake_mode_;
     RCLCPP_INFO(get_logger(), "Parking Brake: %s", parking_brake_mode_ ? "ENGAGED" : "RELEASED");
-    if (!parking_brake_mode_) {
-      has_held_angular_command_ = false;
-      held_angular_command_ = 0.0;
-    }
   }
 
   if (steer_mode_rising) {
     toggle_steering_mode();
+  }
+
+  // ---- COM motor mode toggle + double-press park ----
+  // Single press  → toggle COM ON/OFF.
+  // Double press (two presses < com_double_press_window_s apart) → park motor at home.
+  if (enable_com_mode_switch_) {
+    const bool com_toggle_rising =
+      joystick_state_.button_rising(static_cast<std::size_t>(com_toggle_button_index_));
+
+    if (com_toggle_rising) {
+      const rclcpp::Time now_t = now();
+      const double elapsed = (now_t - last_com_toggle_press_time_).seconds();
+
+      if (com_btn_first_press_pending_ && elapsed < com_double_press_window_s_) {
+        // Double press → park (do NOT toggle a second time)
+        com_btn_first_press_pending_ = false;
+        RCLCPP_INFO(get_logger(),
+                    "COM double-press → PARK (return to home, save calibration)");
+        com_park_pub_->publish(std_msgs::msg::Empty());
+      } else {
+        // First press → toggle COM mode immediately
+        com_btn_first_press_pending_  = true;
+        last_com_toggle_press_time_   = now_t;
+        com_mode_active_ = !com_mode_active_;
+        RCLCPP_INFO(get_logger(), "COM motor mode: %s",
+                    com_mode_active_ ? "ON (right stick → motor)" : "OFF (right stick → articulation)");
+      }
+    }
+
+    // Expire the pending window so it doesn't linger forever
+    if (com_btn_first_press_pending_) {
+      const double elapsed = (now() - last_com_toggle_press_time_).seconds();
+      if (elapsed >= com_double_press_window_s_) {
+        com_btn_first_press_pending_ = false;
+      }
+    }
   }
 
   float linear_axis = joystick_state_.axis_value(static_cast<std::size_t>(linear_axis_index_));
@@ -161,11 +203,29 @@ void MttOperatorInputNode::on_joy(const sensor_msgs::msg::Joy::SharedPtr msg)
     angular_axis = -angular_axis;
   }
   angular_axis = static_cast<float>(JoystickState::shape_axis(angular_axis, angular_deadband_, angular_expo_));
+  const float selected_actuator_axis = angular_axis;
 
+  // In COM mode the right stick no longer drives articulation. The COM
+  // command itself is published after deadman/e-stop evaluation below.
+  if (enable_com_mode_switch_ && com_mode_active_) {
+    angular_axis = 0.0F;
+  }
+
+  // Fail-safe calibrated brake mapping.
+  // The default for a missing axis entry is brake_axis_released_ so that a
+  // disconnected controller or a freshly-booted joy_linux node (with
+  // default_trig_val=1.0) always reads "brake released" → brake_value = 0.
   const float raw_brake_axis = joystick_state_.axis_value(
     static_cast<std::size_t>(brake_axis_index_),
-    static_cast<float>(brake_axis_default_));
-  const float brake_value = std::clamp((-raw_brake_axis + 1.0F) / 2.0F, 0.0F, 1.0F);
+    static_cast<float>(brake_axis_released_));
+  // Linear map: 0.0 = fully released, 1.0 = fully pressed.
+  // Works for both normal (released=+1, pressed=-1) and inverted controllers
+  // by adjusting the two params; no code change needed.
+  const float brake_range = static_cast<float>(brake_axis_released_ - brake_axis_pressed_);
+  const float brake_value = (brake_range > 1e-3F)
+    ? std::clamp((static_cast<float>(brake_axis_released_) - raw_brake_axis) / brake_range,
+                 0.0F, 1.0F)
+    : 0.0F;  // degenerate config → safe default (no brake)
 
   // --- RT Auto-Hold Logic (1s hold) ---
   if (brake_value > 0.95f) {
@@ -176,7 +236,6 @@ void MttOperatorInputNode::on_joy(const sensor_msgs::msg::Joy::SharedPtr msg)
       const auto duration = (now() - rt_press_start_time_).seconds();
       if (duration >= 1.0) {
         parking_brake_mode_ = true;
-        articulation_hold_mode_ = true;
         RCLCPP_INFO(get_logger(), "RT Held 1s: Parking Brake AUTO-ENGAGED");
       }
     }
@@ -190,23 +249,18 @@ void MttOperatorInputNode::on_joy(const sensor_msgs::msg::Joy::SharedPtr msg)
 
   // --- Deadman Safety Logic ---
   if (deadman_rising) {
-    if (std::abs(linear_axis) > 0.01f || std::abs(angular_axis) > 0.01f) {
+    if (std::abs(linear_axis) > 0.01f || std::abs(selected_actuator_axis) > 0.01f) {
       movement_inhibited_ = true;
       RCLCPP_WARN(get_logger(), "Deadman pressed while joystick not at center! Movement inhibited until centered.");
     } else {
       movement_inhibited_ = false;
-      if (parking_brake_mode_) {
-        parking_brake_mode_ = false;
-        articulation_hold_mode_ = articulation_hold_mode_default_;
-        RCLCPP_INFO(get_logger(), "Movement detected after Deadman: Parking Brake RELEASED");
-      }
     }
   }
   if (!deadman_pressed) {
     movement_inhibited_ = false;
   }
   if (movement_inhibited_) {
-    if (std::abs(linear_axis) < 0.001f && std::abs(angular_axis) < 0.001f) {
+    if (std::abs(linear_axis) < 0.001f && std::abs(selected_actuator_axis) < 0.001f) {
       movement_inhibited_ = false;
       RCLCPP_INFO(get_logger(), "Joystick centered. Movement re-enabled.");
     }
@@ -215,44 +269,35 @@ void MttOperatorInputNode::on_joy(const sensor_msgs::msg::Joy::SharedPtr msg)
   double linear_command = max_linear_speed_ * linear_axis;
   double angular_command = max_angular_command_ * angular_axis;
 
-  // --- Brake Priority Logic ---
-  if (brake_value > 0.05f) {
-    if (brake_value > 0.50f) {
-      linear_command = 0.0;
-    } else {
-      linear_command *= (1.0 - (brake_value * 2.0));
-    }
+  // --- Brake Priority Logic (monotonic linear ramp) ---
+  // Single curve: attenuates linearly to zero at brake_full_fraction.
+  // Brake can only reduce |linear|, never increase it or flip sign.
+  // No discontinuity, no un-gating: pressing RT always makes things slower.
+  if (enable_brake_axis_ && brake_value > 0.01F) {
+    const double attenuation = std::clamp(
+      1.0 - static_cast<double>(brake_value) / std::max(brake_full_fraction_, 1e-3),
+      0.0,
+      1.0);
+    linear_command *= attenuation;
   }
 
-  if (movement_inhibited_ || parking_brake_mode_) {
+  if (movement_inhibited_) {
+    linear_command = 0.0;
+    angular_command = 0.0;
+  }
+  if (parking_brake_mode_) {
+    linear_command = 0.0;
+  }
+
+  if (!deadman_pressed || estop_active) {
     linear_command = 0.0;
     angular_command = 0.0;
   }
 
-  bool articulation_hold_active = false;
-  const bool deadman_active_for_arbiter = deadman_pressed || parking_brake_mode_;
-
-  if (!deadman_active_for_arbiter || estop_active) {
-    linear_command = 0.0;
-    angular_command = 0.0;
-    if (articulation_hold_reset_on_deadman_release_) {
-      has_held_angular_command_ = false;
-      held_angular_command_ = 0.0;
-    }
-  } else if (articulation_hold_enabled_ && articulation_hold_mode_) {
-    if (std::abs(linear_command) <= articulation_hold_max_speed_ms_) {
-      if (std::abs(angular_axis) > articulation_hold_release_deadband_) {
-        held_angular_command_ = angular_command;
-        has_held_angular_command_ = true;
-      } else if (has_held_angular_command_) {
-        angular_command = held_angular_command_;
-        articulation_hold_active = std::abs(angular_command) > manual_activity_angular_threshold_;
-      }
-    } else if (has_held_angular_command_) {
-      has_held_angular_command_ = false;
-      held_angular_command_ = 0.0;
-      RCLCPP_WARN(get_logger(), "Speed exceeded threshold! Articulation hold released.");
-    }
+  if (enable_com_mode_switch_) {
+    publish_com_state(
+      selected_actuator_axis,
+      deadman_pressed && !estop_active && !movement_inhibited_);
   }
 
   const bool manual_activity =
@@ -262,7 +307,7 @@ void MttOperatorInputNode::on_joy(const sensor_msgs::msg::Joy::SharedPtr msg)
      std::abs(angular_command) > manual_activity_angular_threshold_);
 
   auto deadman_msg = std_msgs::msg::Bool();
-  deadman_msg.data = deadman_active_for_arbiter;
+  deadman_msg.data = deadman_pressed;
   deadman_pub_->publish(deadman_msg);
 
   auto estop_msg = std_msgs::msg::Bool();
@@ -272,7 +317,7 @@ void MttOperatorInputNode::on_joy(const sensor_msgs::msg::Joy::SharedPtr msg)
   auto activity_msg = std_msgs::msg::Bool();
   activity_msg.data = manual_activity;
   manual_activity_pub_->publish(activity_msg);
-  publish_articulation_hold_state(articulation_hold_active);
+  publish_articulation_hold_state(false);
 
   mtt_msgs::msg::MttAuxCommand aux_msg;
   aux_msg.light_state = light_state_;
@@ -289,16 +334,79 @@ void MttOperatorInputNode::on_joy(const sensor_msgs::msg::Joy::SharedPtr msg)
 
   geometry_msgs::msg::TwistStamped manual_msg;
   manual_msg.header.stamp = now();
-  if (deadman_active_for_arbiter && !estop_active) {
+  if (deadman_pressed && !estop_active) {
     manual_msg.twist.linear.x = linear_command;
     manual_msg.twist.angular.z = angular_command;
   }
 
-  if (deadman_active_for_arbiter || deadman_released || estop_active) {
+  if (deadman_pressed || deadman_released || estop_active) {
     manual_raw_pub_->publish(manual_msg);
   }
 
   previous_deadman_pressed_ = deadman_pressed;
+}
+
+void MttOperatorInputNode::on_watchdog()
+{
+  if (!joy_received_) {
+    publish_safe_stop();
+    return;
+  }
+
+  const double age_s = std::chrono::duration<double>(
+    std::chrono::steady_clock::now() - last_joy_receive_time_).count();
+  if (age_s <= joy_timeout_s_) {
+    return;
+  }
+
+  if (!joy_timeout_reported_) {
+    RCLCPP_ERROR(
+      get_logger(),
+      "Joystick timeout after %.3f s. Forcing deadman and all manual commands to zero.",
+      age_s);
+    joy_timeout_reported_ = true;
+  }
+  publish_safe_stop();
+}
+
+void MttOperatorInputNode::publish_safe_stop()
+{
+  previous_deadman_pressed_ = false;
+  movement_inhibited_ = false;
+  rt_is_fully_pressed_ = false;
+
+  geometry_msgs::msg::TwistStamped manual_msg;
+  manual_msg.header.stamp = now();
+  manual_raw_pub_->publish(manual_msg);
+
+  auto false_msg = std_msgs::msg::Bool();
+  false_msg.data = false;
+  deadman_pub_->publish(false_msg);
+  estop_pub_->publish(false_msg);
+  manual_activity_pub_->publish(false_msg);
+  publish_articulation_hold_state(false);
+
+  if (enable_com_mode_switch_) {
+    publish_com_state(0.0F, false);
+  }
+}
+
+void MttOperatorInputNode::publish_com_state(
+  float shaped_angular_axis,
+  bool command_enabled)
+{
+  // com_mode
+  auto mode_msg = std_msgs::msg::Bool();
+  mode_msg.data = com_mode_active_;
+  com_mode_pub_->publish(mode_msg);
+
+  // com_steer: forward the already-shaped angular axis value.
+  // When COM is OFF we still publish 0 so the motor controller always gets a message.
+  auto steer_msg = std_msgs::msg::Float64();
+  steer_msg.data = com_mode_active_ && command_enabled
+    ? static_cast<double>(invert_com_steer_ ? -shaped_angular_axis : shaped_angular_axis)
+    : 0.0;
+  com_steer_pub_->publish(steer_msg);
 }
 
 }  // namespace mtt_control

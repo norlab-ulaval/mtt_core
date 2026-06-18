@@ -25,6 +25,7 @@ MttManualCmdFilterNode::MttManualCmdFilterNode(const rclcpp::NodeOptions & optio
   linear_zeta_ = declare_parameter("linear_zeta", 1.0);
   angular_omega_n_ = declare_parameter("angular_omega_n", 10.0);
   angular_zeta_ = declare_parameter("angular_zeta", 1.0);
+  immediate_angular_zero_ = declare_parameter("immediate_angular_zero", true);
 
   linear_limiter_.set_limits(linear_rise_rate_, linear_fall_rate_);
   angular_limiter_.set_limits(angular_rise_rate_, angular_fall_rate_);
@@ -51,7 +52,11 @@ MttManualCmdFilterNode::MttManualCmdFilterNode(const rclcpp::NodeOptions & optio
     20,
     [this](const std_msgs::msg::Bool::SharedPtr msg) {
       std::lock_guard<std::mutex> lock(state_mutex_);
+      const bool was_active = deadman_active_;
       deadman_active_ = msg->data;
+      if (was_active && !deadman_active_) {
+        reset_filters();
+      }
     });
   output_pub_ = create_publisher<geometry_msgs::msg::TwistStamped>(output_topic_, 20);
   timer_ = create_wall_timer(
@@ -128,7 +133,7 @@ void MttManualCmdFilterNode::on_timer()
   last_update_time_ = now_stamp;
 
   VelocityState effective_target = target_;
-  if (current_mode_ != ControlMode::Manual || estop_active_ || !has_input_ ||
+  if (current_mode_ != ControlMode::Manual || estop_active_ || !deadman_active_ || !has_input_ ||
       (now_stamp - last_input_time_).seconds() > input_timeout_s_) {
     effective_target = {};
   }
@@ -158,7 +163,14 @@ void MttManualCmdFilterNode::on_timer()
   }
 
   double linear = linear_limiter_.update(effective_target.linear_x, dt);
-  double angular = angular_limiter_.update(effective_target.angular_z, dt);
+  double angular = 0.0;
+  if (immediate_angular_zero_ &&
+      std::abs(effective_target.angular_z) < zero_epsilon_) {
+    angular_limiter_.reset(0.0);
+    angular_filter_.reset(0.0);
+  } else {
+    angular = angular_limiter_.update(effective_target.angular_z, dt);
+  }
   if (enable_dynamic_filter_) {
     linear = linear_filter_.update(linear, dt);
     angular = angular_filter_.update(angular, dt);
