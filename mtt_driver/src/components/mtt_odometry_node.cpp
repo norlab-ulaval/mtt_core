@@ -18,6 +18,7 @@
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
 #include <std_msgs/msg/float64.hpp>
+#include <tf2/utils.h>
 #include <tf2_ros/transform_broadcaster.h>
 
 #include <mtt_msgs/msg/mtt_tachometer_data.hpp>
@@ -83,6 +84,7 @@ public:
     // alpha=1.0 → pure IMU, alpha=0.0 → pure model.
     // Applied only when both IMU and model are valid simultaneously.
     imu_complementary_alpha_ = declare_parameter("imu_complementary_alpha", 0.7);
+    use_imu_heading_ = declare_parameter("use_imu_heading", true);
     motion_model_params_.wheelbase_m = declare_parameter("model_wheelbase_m", wheelbase_m_);
     motion_model_params_.max_articulation_rad =
       declare_parameter("model_max_articulation_deg", VehicleParams::max_articulation_deg) * M_PI / 180.0;
@@ -168,6 +170,16 @@ public:
     lidar_articulation_sub_ = create_subscription<std_msgs::msg::Float64>(
       "trailer/articulation_angle", rclcpp::SensorDataQoS(),
       [this](const std_msgs::msg::Float64::SharedPtr msg){ on_lidar_articulation(msg); });
+
+    // ── Tacho watchdog — warn if no tachometer data arrives after 5s ──────
+    tacho_watchdog_timer_ = create_wall_timer(std::chrono::seconds(5), [this]() {
+      if (!last_tacho_wall_time_) {
+        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 10000,
+          "No tachometer data received in 5s — odometry/TF will not update. "
+          "If this bag has no tachometer, use 'imu_odom' instead: "
+          "MAPPING_CONFIG=.../_config_hesai_imu_replay.yaml docker compose up imu_odom mapping");
+      }
+    });
 
     // ── Services ────────────────────────────────────────────────────────────
     reset_srv_ = create_service<std_srvs::srv::Trigger>(
@@ -298,9 +310,14 @@ private:
   std::chrono::steady_clock::time_point last_lidar_articulation_time_{};
   std::string imu_yaw_rate_topic_;
   double   imu_yaw_rate_rad_s_{0.0};
+  double   imu_heading_rad_{0.0};
+  double   initial_imu_heading_rad_{0.0};
   bool     has_imu_yaw_rate_{false};
+  bool     has_imu_heading_{false};
+  bool     has_initial_imu_heading_{false};
   std::chrono::steady_clock::time_point last_imu_yaw_rate_time_{};
   double   imu_complementary_alpha_{0.7};
+  bool     use_imu_heading_{true};
   logic::YawRateSource yaw_rate_source_snapshot_{logic::YawRateSource::MODEL_ONLY};
   // Pitch potentiometer (ADC1, 8-bit)
   double   hardware_pitch_bits_{0.0};
@@ -329,6 +346,7 @@ private:
   rclcpp::Subscription<mtt_msgs::msg::MttTachometerData>::SharedPtr tacho_sub_;
   rclcpp::Subscription<mtt_msgs::msg::MttDrivingMode>::SharedPtr    mode_sub_;
   rclcpp::TimerBase::SharedPtr tf_fallback_timer_;
+  rclcpp::TimerBase::SharedPtr tacho_watchdog_timer_;
   rclcpp::Subscription<geometry_msgs::msg::TwistStamped>::SharedPtr cmd_vel_sub_;
   rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr hardware_articulation_sub_;
   rclcpp::Subscription<mtt_msgs::msg::MttArticulationState>::SharedPtr articulation_state_sub_;
@@ -479,9 +497,23 @@ private:
     imu_yaw_rate_rad_s_ = yaw_rate;
     last_imu_yaw_rate_time_ = std::chrono::steady_clock::now();
     has_imu_yaw_rate_ = true;
+    const double raw_heading = std::atan2(
+        2.0 * (msg->orientation.w * msg->orientation.z + msg->orientation.x * msg->orientation.y),
+        1.0 - 2.0 * (msg->orientation.y * msg->orientation.y + msg->orientation.z * msg->orientation.z));
+    if (!has_initial_imu_heading_) {
+      initial_imu_heading_rad_ = raw_heading;
+      has_initial_imu_heading_ = true;
+    }
+    imu_heading_rad_ = raw_heading - initial_imu_heading_rad_;
+    has_imu_heading_ = true;
   }
 
   void on_cmd_vel(const geometry_msgs::msg::TwistStamped::SharedPtr msg) {
+    if (!std::isfinite(msg->twist.angular.z)) {
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
+        "Ignoring cmd_vel with non-finite angular.z: %f", msg->twist.angular.z);
+      return;
+    }
     std::lock_guard<std::mutex> lock(state_mutex_);
     current_angular_cmd_ = msg->twist.angular.z;
     last_cmd_vel_time_ = std::chrono::steady_clock::now();
@@ -492,8 +524,13 @@ private:
   {
     const auto wall_now = std::chrono::steady_clock::now();
     last_tacho_time_ = wall_now;
-    const double speed_ms   = msg->speed_ms;
-    const double steer_cmd  = msg->steer_cmd;
+    const double speed_ms   = std::isfinite(msg->speed_ms) ? msg->speed_ms : 0.0;
+    const double steer_cmd  = std::isfinite(msg->steer_cmd) ? msg->steer_cmd : 0.0;
+    if (!std::isfinite(msg->speed_ms) || !std::isfinite(msg->steer_cmd)) {
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
+        "Non-finite tachometer data: speed_ms=%f steer_cmd=%f — clamped to 0",
+        msg->speed_ms, msg->steer_cmd);
+    }
     int dir_sign = (msg->direction == "Reverse") ? -1 : 1;
     double signed_speed_ms = 0.0;
     if (msg->model_state_valid && std::abs(msg->model_speed_ms) > 1e-4) {
@@ -640,6 +677,9 @@ private:
     input.angular_velocity = eff_ang;
     input.direction_sign   = dir_sign;
     input.dt               = dt;
+    if (use_imu_heading_ && has_imu_heading_) {
+      input.imu_heading = -imu_heading_rad_;
+    }
     input.synthetic_model_valid = msg->model_state_valid;
     input.articulation_command_rad = msg->model_articulation_command_rad;
     input.yaw_rate_source  = yaw_rate_source_snapshot_;
@@ -756,7 +796,14 @@ private:
     auto new_mode = static_cast<logic::DrivingMode>(msg->mode);
     if (new_mode == current_mode_) return;
 
-    auto new_calc = logic::OdometryFactory::create(new_mode, track_width_m_, wheelbase_m_);
+    std::unique_ptr<logic::IOdometryCalculator> new_calc;
+    try {
+      new_calc = logic::OdometryFactory::create(new_mode, track_width_m_, wheelbase_m_);
+    } catch (const std::invalid_argument& e) {
+      RCLCPP_ERROR(get_logger(),
+        "Invalid driving mode %d (%s) — keeping current mode", msg->mode, e.what());
+      return;
+    }
     {
       std::lock_guard<std::mutex> lock(calc_mutex_);
       // Transfer pose so there's no jump at mode switch

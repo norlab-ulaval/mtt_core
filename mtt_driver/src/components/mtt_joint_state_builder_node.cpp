@@ -20,12 +20,14 @@ MttJointStateBuilderNode::MttJointStateBuilderNode(const rclcpp::NodeOptions & o
 {
   joint_state_topic_ = declare_parameter("joint_state_topic", std::string("joint_states"));
   articulation_topic_ = declare_parameter("articulation_topic", std::string("mtt_articulation_angle"));
+  articulation_state_topic_ = declare_parameter("articulation_state_topic", std::string(""));
   tachometer_topic_ = declare_parameter("tachometer_topic", std::string("mtt_tachometer"));
   publish_rate_hz_ = declare_parameter("publish_rate_hz", 50.0);
   pitch_rest_rad_ = declare_parameter("pitch_rest_rad", -M_PI_2);
   yaw_rest_rad_ = declare_parameter("yaw_rest_rad", M_PI_2);
   roll_rest_rad_ = declare_parameter("roll_rest_rad", -M_PI_2);
   articulation_sign_ = declare_parameter("articulation_sign", 1.0);
+  articulation_state_timeout_s_ = declare_parameter("articulation_state_timeout_seconds", 0.5);
   max_articulation_rad_ = declare_parameter(
     "max_articulation_deg",
     VehicleParams::max_articulation_deg) * M_PI / 180.0;
@@ -60,6 +62,16 @@ MttJointStateBuilderNode::MttJointStateBuilderNode(const rclcpp::NodeOptions & o
   articulation_sub_ = create_subscription<std_msgs::msg::Float64>(
     articulation_topic_, 10,
     std::bind(&MttJointStateBuilderNode::on_articulation, this, std::placeholders::_1));
+  if (!articulation_state_topic_.empty()) {
+    articulation_state_sub_ = create_subscription<mtt_msgs::msg::MttArticulationState>(
+      articulation_state_topic_, rclcpp::SensorDataQoS(),
+      std::bind(&MttJointStateBuilderNode::on_articulation_state, this, std::placeholders::_1));
+    RCLCPP_INFO(
+      get_logger(),
+      "Articulation state subscription enabled on %s (hardware/effective preferred over %s)",
+      articulation_state_topic_.c_str(),
+      articulation_topic_.c_str());
+  }
   tachometer_sub_ = create_subscription<mtt_msgs::msg::MttTachometerData>(
     tachometer_topic_, rclcpp::SensorDataQoS(),
     std::bind(&MttJointStateBuilderNode::on_tachometer, this, std::placeholders::_1));
@@ -78,9 +90,10 @@ MttJointStateBuilderNode::MttJointStateBuilderNode(const rclcpp::NodeOptions & o
 
   RCLCPP_INFO(
     get_logger(),
-    "Joint-state builder started (joint_states=%s, articulation=%s, tachometer=%s)",
+    "Joint-state builder started (joint_states=%s, articulation=%s, articulation_state=%s, tachometer=%s)",
     joint_state_topic_.c_str(),
     articulation_topic_.c_str(),
+    articulation_state_topic_.empty() ? "<disabled>" : articulation_state_topic_.c_str(),
     tachometer_topic_.c_str());
 }
 
@@ -88,6 +101,17 @@ void MttJointStateBuilderNode::on_articulation(const std_msgs::msg::Float64::Sha
 {
   std::lock_guard<std::mutex> lock(state_mutex_);
   articulation_rad_ = msg->data;
+}
+
+void MttJointStateBuilderNode::on_articulation_state(
+  const mtt_msgs::msg::MttArticulationState::SharedPtr msg)
+{
+  std::lock_guard<std::mutex> lock(state_mutex_);
+  state_articulation_rad_ = msg->hardware_fresh ? msg->hardware_rad : msg->effective_rad;
+  state_pitch_rad_ = msg->pitch_rad;
+  state_pitch_fresh_ = msg->pitch_fresh;
+  has_articulation_state_ = true;
+  last_articulation_state_wall_time_ = std::chrono::steady_clock::now();
 }
 
 void MttJointStateBuilderNode::on_pitch(const std_msgs::msg::Float64::SharedPtr msg)
@@ -124,8 +148,16 @@ void MttJointStateBuilderNode::publish_joint_states()
   msg.name = joint_names_;
   msg.position.resize(joint_names_.size(), 0.0);
 
+  const bool articulation_state_fresh =
+    has_articulation_state_ &&
+    std::chrono::duration<double>(
+      std::chrono::steady_clock::now() - last_articulation_state_wall_time_).count()
+      <= articulation_state_timeout_s_;
+  const double articulation_for_description =
+    articulation_state_fresh ? state_articulation_rad_ : articulation_rad_;
+
   const double articulation_delta = std::clamp(
-    articulation_sign_ * articulation_rad_,
+    articulation_sign_ * articulation_for_description,
     -max_articulation_rad_,
     max_articulation_rad_);
 
@@ -142,8 +174,12 @@ void MttJointStateBuilderNode::publish_joint_states()
     ? drive_joint_rotation_sign_ * cumulative_distance_m_ / drive_joint_radius_m_
     : 0.0;
 
-  // pitch joint: rest offset + live hardware measurement when pitch_topic is configured
-  msg.position[0] = pitch_rest_rad_ + (pitch_sub_ ? hardware_pitch_rad_ : 0.0);
+  // Use the unified articulation state first so replay follows measured hardware state.
+  // Fall back to the legacy pitch topic for live/debug configs that publish it directly.
+  const double pitch_delta =
+    (articulation_state_fresh && state_pitch_fresh_) ? state_pitch_rad_ :
+    (pitch_sub_ ? hardware_pitch_rad_ : 0.0);
+  msg.position[0] = pitch_rest_rad_ + pitch_delta;
   msg.position[1] = yaw_rest_rad_ + articulation_delta;
   msg.position[2] = roll_rest_rad_;
   msg.position[3] = trailer_left_link_rest_rad_;
