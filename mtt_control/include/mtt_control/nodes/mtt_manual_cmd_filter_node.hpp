@@ -49,6 +49,7 @@ private:
   double angular_omega_n_{10.0};
   double angular_zeta_{1.0};
   double zero_epsilon_{1e-3};
+  bool immediate_angular_zero_{true};
 
   // Feedforward deceleration brake.
   // When output > decel_brake_threshold_ and target drops to 0,

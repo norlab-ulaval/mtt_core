@@ -21,6 +21,7 @@ public:
 private:
   void on_joy(const sensor_msgs::msg::Joy::SharedPtr msg);
   void on_manual_activity(const std_msgs::msg::Bool::SharedPtr msg);
+  void on_deadman(const std_msgs::msg::Bool::SharedPtr msg);
   void on_estop(const std_msgs::msg::Bool::SharedPtr msg);
   void on_timer();
   void handle_request_auto(
@@ -39,12 +40,14 @@ private:
   ControlMode current_mode_{ControlMode::Stop};
   bool estop_active_{false};
   bool manual_activity_{false};
-  // When true, AUTO was granted by the replay supervisor via service.
-  // manual_activity events are IGNORED while this flag is set so that tiny
-  // stick-drift while holding the deadman cannot flip back to Manual and
-  // abort the replay.  The flag is cleared only by an explicit joystick
-  // button press (manual/stop buttons) or by the request_manual service.
+  // auto_locked_ is set by the replay supervisor via the request_auto service.
+  // It no longer blocks manual override: the operator can ALWAYS exit AUTO by
+  // moving the stick (deadman held) or pressing the deadman. This is intentional:
+  // the operator's physical presence on the controller is the ultimate safety override.
+  // Note: stick drift can now interrupt a teach-and-repeat replay — this is the
+  // explicit trade-off chosen by the operator (safety > replay continuity).
   bool auto_locked_{false};
+  bool previous_deadman_{false};
   int button_auto_index_{0};
   int button_manual_index_{3};
   int button_stop_index_{1};
@@ -58,6 +61,7 @@ private:
 
   rclcpp::Subscription<sensor_msgs::msg::Joy>::SharedPtr joy_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr manual_activity_sub_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr deadman_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr estop_sub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr mode_pub_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr auto_enabled_pub_;

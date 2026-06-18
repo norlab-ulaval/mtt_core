@@ -1,11 +1,15 @@
 #pragma once
 
+#include <chrono>
+
 #include <rclcpp/rclcpp.hpp>
 
 #include <geometry_msgs/msg/twist_stamped.hpp>
 #include <mtt_msgs/msg/mtt_aux_command.hpp>
 #include <sensor_msgs/msg/joy.hpp>
 #include <std_msgs/msg/bool.hpp>
+#include <std_msgs/msg/empty.hpp>
+#include <std_msgs/msg/float64.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <mtt_interfaces/srv/set_steer_control_mode.hpp>
 
@@ -21,9 +25,14 @@ public:
 
 private:
   void on_joy(const sensor_msgs::msg::Joy::SharedPtr msg);
+  void on_watchdog();
+  void publish_safe_stop();
   bool trigger_pressed(const JoystickState & state, int axis_index) const;
   void publish_articulation_hold_state(bool hold_active);
   void toggle_steering_mode();
+
+  // COM motor mode toggle
+  void publish_com_state(float shaped_angular_axis, bool command_enabled);
 
   double max_linear_speed_{1.0};
   double max_angular_command_{0.6};
@@ -34,9 +43,14 @@ private:
   double manual_activity_linear_threshold_{0.05};
   double manual_activity_angular_threshold_{0.05};
   double estop_trigger_threshold_{-0.10};
-  double brake_axis_default_{1.0};
-  double articulation_hold_max_speed_ms_{0.25};
-  double articulation_hold_release_deadband_{0.08};
+  // Calibrated brake mapping: raw axis value when trigger is fully released / fully pressed.
+  // With joy_linux param default_trig_val=1.0 the trigger reads brake_axis_released_ at boot
+  // so brake_value = 0 until the operator actually presses RT.
+  double brake_axis_released_{1.0};
+  double brake_axis_pressed_{-1.0};
+  // Fraction of brake_value [0,1] at which linear command is fully attenuated to zero.
+  double brake_full_fraction_{0.6};
+  double joy_timeout_s_{0.25};
   int deadman_button_index_{5};
 
   int light_button_index_{2};
@@ -50,22 +64,31 @@ private:
   bool invert_linear_axis_{true};
   bool invert_angular_axis_{false};
   bool enable_brake_axis_{true};
-  bool articulation_hold_enabled_{true};
-  bool articulation_hold_reset_on_deadman_release_{true};
   bool enable_steering_mode_switch_{true};
 
   bool light_state_{false};
   bool previous_deadman_pressed_{false};
   bool movement_inhibited_{false};
-  bool articulation_hold_mode_default_{false};
-  bool articulation_hold_mode_{false};
   bool parking_brake_mode_{false};
-  bool has_held_angular_command_{false};
-  double held_angular_command_{0.0};
   std::string current_steer_mode_{"closed_loop"};
+  bool joy_received_{false};
+  bool joy_timeout_reported_{false};
+  std::chrono::steady_clock::time_point last_joy_receive_time_{};
 
   rclcpp::Time rt_press_start_time_;
   bool rt_is_fully_pressed_{false};
+
+  // ---- COM motor mode ----
+  // When com_mode_active_ is true, the right stick (angular_axis) drives the
+  // COM motor via mtt_control/com_steer instead of the articulation servo.
+  bool   enable_com_mode_switch_{true};
+  int    com_toggle_button_index_{7};
+  bool   invert_com_steer_{false};
+  bool   com_mode_active_{false};
+  // Double-press on com_toggle → park (return to home).
+  double             com_double_press_window_s_{0.4};
+  rclcpp::Time       last_com_toggle_press_time_{0, 0, RCL_ROS_TIME};
+  bool               com_btn_first_press_pending_{false};
 
   JoystickState joystick_state_;
 
@@ -78,6 +101,11 @@ private:
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr manual_activity_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr articulation_mode_pub_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr articulation_hold_active_pub_;
+
+  // COM motor topics (published when enable_com_mode_switch_ is true)
+  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr    com_mode_pub_;
+  rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr com_steer_pub_;
+  rclcpp::Publisher<std_msgs::msg::Empty>::SharedPtr   com_park_pub_;
 
   rclcpp::Client<mtt_interfaces::srv::SetSteerControlMode>::SharedPtr can_steer_mode_client_;
   rclcpp::Client<mtt_interfaces::srv::SetSteerControlMode>::SharedPtr odom_steer_mode_client_;
