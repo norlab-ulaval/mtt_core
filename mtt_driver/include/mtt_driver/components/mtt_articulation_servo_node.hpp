@@ -53,6 +53,8 @@ private:
   // ── Parameters ─────────────────────────────────────────────────────
   std::string mode_;            ///< "position" | "velocity" | "disabled"
   double feedback_timeout_s_;   ///< drop to open-loop if encoder stale > this
+  double command_timeout_s_;    ///< stop publishing override if command is stale
+  double control_frequency_hz_;
   double max_articulation_rad_; ///< ±physical limit (rad)
 
   // ── Controller ─────────────────────────────────────────────────────
@@ -66,6 +68,7 @@ private:
 
   std::optional<double> latest_position_cmd_rad_;
   std::optional<double> latest_velocity_cmd_rad_s_;
+  rclcpp::Time          latest_command_stamp_{0, 0, RCL_ROS_TIME};
 
   // ── ROS interfaces ────────────────────────────────────────────────
   // Subscriptions

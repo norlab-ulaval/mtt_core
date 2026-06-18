@@ -15,6 +15,7 @@
 #include <geometry_msgs/msg/twist_stamped.hpp>
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/float64.hpp>
+#include <std_msgs/msg/string.hpp>
 
 #include <mtt_msgs/msg/mtt_tachometer_data.hpp>
 #include <mtt_msgs/msg/mtt_vehicle_status.hpp>
@@ -62,7 +63,6 @@ private:
   double      parking_brake_dither_max_speed_{0.50};
   double      parking_brake_relay_flip_speed_ms_{0.05};
   double      parking_brake_slip_detect_ms_{0.02};
-  int         dither_tick_count_{0};
   std::string base_frame_;
   std::string cmd_angular_mode_;
   std::string steer_control_mode_;
@@ -96,7 +96,7 @@ private:
   bool     teleop_estop_seen_{false};
   bool     teleop_deadman_active_{false};
   bool     teleop_deadman_seen_{false};
-  bool     dither_toggle_{false};
+  bool     manual_control_active_{false};
   ParkingPhase parking_phase_{ParkingPhase::Inactive};
   can::Direction hold_braking_direction_{can::Direction::Forward};
   double   synthetic_distance_m_{0.0};
@@ -110,6 +110,7 @@ private:
   // Articulation servo override (from mtt_articulation_servo_node)
   double servo_steer_override_{0.0};
   bool   servo_steer_active_{false};
+  bool   servo_override_allowed_{false};
   std::chrono::steady_clock::time_point last_servo_steer_time_{};
   double servo_steer_timeout_s_{0.25};
 
@@ -118,6 +119,7 @@ private:
   rclcpp::Subscription<mtt_msgs::msg::MttAuxCommand>::SharedPtr aux_cmd_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr estop_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr deadman_sub_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr control_mode_sub_;
   // Articulation servo override — when active, replaces cmd_vel angular.z
   rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr servo_steer_sub_;
 
@@ -127,6 +129,7 @@ private:
   // mtt/articulation_cmd: commanded articulation angle in rad (standalone, SensorDataQoS).
   // Mirrors mtt_tachometer.model_articulation_command_rad for direct Foxglove/rqt monitoring.
   rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr           articulation_cmd_pub_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr            steering_source_pub_;
   rclcpp::Publisher<mtt_msgs::msg::MttBmsData>::SharedPtr        bms_pub_;
   rclcpp::Publisher<mtt_msgs::msg::MttCanFrame>::SharedPtr       can_debug_pub_;
 
@@ -136,6 +139,7 @@ private:
 
   rclcpp::TimerBase::SharedPtr control_timer_;
   rclcpp::TimerBase::SharedPtr can_send_timer_;
+  std::string last_steering_source_;
 
   // ── Methods ───────────────────────────────────────────────────────────
   void init_can_interface();
@@ -145,6 +149,7 @@ private:
   void on_aux_cmd(const mtt_msgs::msg::MttAuxCommand::SharedPtr msg);
   void on_estop(const std_msgs::msg::Bool::SharedPtr msg);
   void on_deadman(const std_msgs::msg::Bool::SharedPtr msg);
+  void on_control_mode(const std_msgs::msg::String::SharedPtr msg);
 
   void control_loop();
   void send_can_frame();

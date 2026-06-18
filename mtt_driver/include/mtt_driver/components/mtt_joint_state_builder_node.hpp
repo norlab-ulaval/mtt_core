@@ -2,6 +2,7 @@
 #define MTT_DRIVER__COMPONENTS__MTT_JOINT_STATE_BUILDER_NODE_HPP_
 
 #include <array>
+#include <chrono>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -11,6 +12,7 @@
 #include "sensor_msgs/msg/joint_state.hpp"
 #include "std_msgs/msg/float64.hpp"
 
+#include "mtt_msgs/msg/mtt_articulation_state.hpp"
 #include "mtt_msgs/msg/mtt_tachometer_data.hpp"
 
 namespace mtt
@@ -23,6 +25,7 @@ public:
 
 private:
   void on_articulation(const std_msgs::msg::Float64::SharedPtr msg);
+  void on_articulation_state(const mtt_msgs::msg::MttArticulationState::SharedPtr msg);
   void on_tachometer(const mtt_msgs::msg::MttTachometerData::SharedPtr msg);
   void on_pitch(const std_msgs::msg::Float64::SharedPtr msg);
   void publish_joint_states();
@@ -31,6 +34,7 @@ private:
 
   std::string joint_state_topic_;
   std::string articulation_topic_;
+  std::string articulation_state_topic_;
   std::string tachometer_topic_;
   // pitch_topic: topic for hardware pitch angle (rad). Default empty = disabled.
   // Enable by setting pitch_topic to /hardware/articulation_pitch_rad in config
@@ -43,6 +47,7 @@ private:
   double yaw_rest_rad_{0.0};
   double roll_rest_rad_{0.0};
   double articulation_sign_{1.0};
+  double articulation_state_timeout_s_{0.5};
   double max_articulation_rad_{0.0};
   double trailer_left_link_rest_rad_{0.0};
   double trailer_right_link_rest_rad_{0.0};
@@ -55,6 +60,11 @@ private:
   mutable std::mutex state_mutex_;
 
   double articulation_rad_{0.0};
+  double state_articulation_rad_{0.0};
+  double state_pitch_rad_{0.0};
+  bool has_articulation_state_{false};
+  bool state_pitch_fresh_{false};
+  std::chrono::steady_clock::time_point last_articulation_state_wall_time_{};
   double cumulative_distance_m_{0.0};
   std::optional<rclcpp::Time> last_tacho_stamp_;
 
@@ -62,6 +72,7 @@ private:
 
   rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr joint_state_pub_;
   rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr articulation_sub_;
+  rclcpp::Subscription<mtt_msgs::msg::MttArticulationState>::SharedPtr articulation_state_sub_;
   rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr pitch_sub_;
   rclcpp::Subscription<mtt_msgs::msg::MttTachometerData>::SharedPtr tachometer_sub_;
   rclcpp::TimerBase::SharedPtr publish_timer_;

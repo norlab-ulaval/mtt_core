@@ -123,6 +123,8 @@ MttCanNode::MttCanNode(const rclcpp::NodeOptions& options)
   status_pub_       = create_publisher<mtt_msgs::msg::MttVehicleStatus>("mtt_status", 10);
   driving_mode_pub_ = create_publisher<mtt_msgs::msg::MttDrivingMode>("mtt_driving_mode", 10);
   articulation_cmd_pub_ = create_publisher<std_msgs::msg::Float64>("mtt/articulation_cmd", rclcpp::SensorDataQoS());
+  steering_source_pub_ = create_publisher<std_msgs::msg::String>(
+    "mtt/steering_source", rclcpp::QoS(1).transient_local());
   bms_pub_          = create_publisher<mtt_msgs::msg::MttBmsData>("mtt_battery/status", 10);
   if (publish_can_debug_) {
     can_debug_pub_ = create_publisher<mtt_msgs::msg::MttCanFrame>(can_debug_topic_, 50);
@@ -141,6 +143,9 @@ MttCanNode::MttCanNode(const rclcpp::NodeOptions& options)
   deadman_sub_ = create_subscription<std_msgs::msg::Bool>(
     "mtt_control/teleop_deadman", 10,
     [this](const std_msgs::msg::Bool::SharedPtr msg){ on_deadman(msg); });
+  control_mode_sub_ = create_subscription<std_msgs::msg::String>(
+    "mtt_control/selected_mode", 10,
+    [this](const std_msgs::msg::String::SharedPtr msg){ on_control_mode(msg); });
 
   // Articulation servo override — published by mtt_articulation_servo_node when active.
   // When fresh (< servo_steer_timeout_s_), replaces angular.z from cmd_vel for steering.
@@ -150,7 +155,7 @@ MttCanNode::MttCanNode(const rclcpp::NodeOptions& options)
     [this](const std_msgs::msg::Float64::SharedPtr msg) {
       std::lock_guard<std::mutex> lock(frame_mutex_);
       servo_steer_override_ = std::clamp(msg->data, -1.0, 1.0);
-      servo_steer_active_ = true;
+      servo_steer_active_ = servo_override_allowed_;
       last_servo_steer_time_ = std::chrono::steady_clock::now();
     });
 
@@ -330,17 +335,34 @@ void MttCanNode::on_estop(const std_msgs::msg::Bool::SharedPtr msg)
 
 void MttCanNode::on_deadman(const std_msgs::msg::Bool::SharedPtr msg)
 {
+  std::lock_guard<std::mutex> lock(frame_mutex_);
   const bool was_active = teleop_deadman_active_;
   teleop_deadman_seen_ = true;
   teleop_deadman_active_ = msg->data;
 
   // On deadman release: immediately zero commands and reset hold assist.
   // Defense-in-depth — even if upstream node fails to send zero, CAN node stops the robot.
-  if (was_active && !teleop_deadman_active_) {
-    std::lock_guard<std::mutex> lock(frame_mutex_);
+  if (manual_control_active_ && was_active && !teleop_deadman_active_) {
     current_linear_command_ms_ = 0.0;
     current_steering_input_ = 0.0;
     servo_steer_active_ = false;   // also deactivate servo override on deadman release
+    hold_assist_controller_.reset();
+  }
+}
+
+void MttCanNode::on_control_mode(const std_msgs::msg::String::SharedPtr msg)
+{
+  std::lock_guard<std::mutex> lock(frame_mutex_);
+  manual_control_active_ = msg->data == "MANUAL";
+  servo_override_allowed_ = msg->data == "AUTO";
+  if (!servo_override_allowed_) {
+    servo_steer_active_ = false;
+    servo_steer_override_ = 0.0;
+  }
+  if (msg->data == "STOP" ||
+      (manual_control_active_ && teleop_deadman_seen_ && !teleop_deadman_active_)) {
+    current_linear_command_ms_ = 0.0;
+    current_steering_input_ = 0.0;
     hold_assist_controller_.reset();
   }
 }
@@ -359,7 +381,7 @@ void MttCanNode::refresh_command_frame()
   std::lock_guard<std::mutex> lock(frame_mutex_);
 
   // Defense-in-depth: force zero if deadman released, regardless of upstream state.
-  if (teleop_deadman_seen_ && !teleop_deadman_active_) {
+  if (manual_control_active_ && teleop_deadman_seen_ && !teleop_deadman_active_) {
     current_linear_command_ms_ = 0.0;
     current_steering_input_ = 0.0;
   }
@@ -415,11 +437,28 @@ void MttCanNode::refresh_command_frame()
       servo_steer_active_ = false;  // expired — fall back to cmd_vel angular
     }
   }
-  const double effective_steer = servo_steer_active_
+  const double effective_steer = servo_override_allowed_ && servo_steer_active_
     ? servo_steer_override_
     : current_steering_input_;
 
   command_frame_.set_steer(effective_steer);
+
+  std::string steering_source = "cmd_vel";
+  if (safety_locked) {
+    steering_source = "safety_lock";
+  } else if (manual_control_active_ && teleop_deadman_seen_ && !teleop_deadman_active_) {
+    steering_source = "deadman_stop";
+  } else if (command_timeout_active_) {
+    steering_source = "command_timeout";
+  } else if (servo_override_allowed_ && servo_steer_active_) {
+    steering_source = "articulation_servo";
+  }
+  if (steering_source != last_steering_source_) {
+    std_msgs::msg::String source_msg;
+    source_msg.data = steering_source;
+    steering_source_pub_->publish(source_msg);
+    last_steering_source_ = steering_source;
+  }
 
   // ── Kinetic Safety Layer ──────────────────────────────────────────────
   //
@@ -438,26 +477,21 @@ void MttCanNode::refresh_command_frame()
   if (!parking_brake_engaged) {
     if (parking_phase_ != ParkingPhase::Inactive) {
       parking_phase_ = ParkingPhase::Inactive;
-      dither_tick_count_ = 0;
-      dither_toggle_ = false;
     }
   } else if (parking_phase_ == ParkingPhase::Inactive) {
     // Capture motion direction before we touch anything.
     parking_phase_ = ParkingPhase::Decelerate;
     hold_braking_direction_ = (measured_speed_ms >= 0.0)
       ? can::Direction::Forward : can::Direction::Reverse;
-    dither_tick_count_ = 0;
   } else if (parking_phase_ == ParkingPhase::Decelerate &&
              std::abs(measured_speed_ms) < parking_brake_relay_flip_speed_ms_) {
     parking_phase_ = ParkingPhase::Hold;
-    dither_tick_count_ = 0;
   } else if (parking_phase_ == ParkingPhase::Hold &&
              std::abs(measured_speed_ms) > parking_brake_dither_max_speed_) {
     // Slid too far — fall back to safe deceleration.
     parking_phase_ = ParkingPhase::Decelerate;
     hold_braking_direction_ = (measured_speed_ms >= 0.0)
       ? can::Direction::Forward : can::Direction::Reverse;
-    dither_tick_count_ = 0;
   }
 
   // ── Wrong-way protection (normal driving only) ────────────────────────
@@ -498,25 +532,26 @@ void MttCanNode::refresh_command_frame()
       command_frame_.set_direction(measured_speed_ms >= 0.0
         ? can::Direction::Forward : can::Direction::Reverse);
     } else {
-      // Within relay-safe window: directed dither.
-      can::Direction dither_dir;
-      if (measured_speed_ms > parking_brake_slip_detect_ms_) {
-        // Drifting forward — push back with reverse.
-        dither_dir = can::Direction::Reverse;
-      } else if (measured_speed_ms < -parking_brake_slip_detect_ms_) {
-        // Drifting backward — push back with forward.
-        dither_dir = can::Direction::Forward;
+      // Within relay-safe window: corrective pulse ONLY on confirmed encoder drift.
+      // Near-stationary or stale telemetry → physical brake only, zero throttle.
+      // The blind Forward/Reverse square-wave has been removed: it caused autonomous
+      // forward motion while the operator held the brake (encoder authority removed).
+      if (telemetry_fresh && measured_speed_ms > parking_brake_slip_detect_ms_) {
+        // Encoder confirms forward drift — counter with reverse.
+        command_frame_.set_throttle(dither_amplitude);
+        command_frame_.set_brake(0.0);
+        command_frame_.set_direction(can::Direction::Reverse);
+      } else if (telemetry_fresh && measured_speed_ms < -parking_brake_slip_detect_ms_) {
+        // Encoder confirms backward drift — counter with forward.
+        command_frame_.set_throttle(dither_amplitude);
+        command_frame_.set_brake(0.0);
+        command_frame_.set_direction(can::Direction::Forward);
       } else {
-        // Near-stationary: symmetric square wave at 12.5 Hz (every 4 ticks at 50 Hz)
-        // to keep coils energised without net displacement.
-        if (dither_tick_count_++ % 4 == 0) {
-          dither_toggle_ = !dither_toggle_;
-        }
-        dither_dir = dither_toggle_ ? can::Direction::Forward : can::Direction::Reverse;
+        // Near-stationary or stale telemetry: rely on the physical brake, no motor pulse.
+        command_frame_.set_throttle(0.0);
+        command_frame_.set_brake(1.0);
+        command_frame_.set_direction(hold_braking_direction_);
       }
-      command_frame_.set_throttle(dither_amplitude);
-      command_frame_.set_brake(0.0);
-      command_frame_.set_direction(dither_dir);
     }
 
   } else if (wrong_way_detected) {
