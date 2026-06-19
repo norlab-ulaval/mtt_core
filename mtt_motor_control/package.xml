@@ -1,0 +1,32 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>mtt_motor_control</name>
+  <version>1.0.0</version>
+  <description>
+    MTT COM motor position controller.
+    Spring-return joystick-to-position mapping (OFF/SETUP/RUN state machine),
+    C++20 port of com_dynamic_shift/joy_com_position_node.py.
+    Consumes mtt_control/com_mode + com_steer + teleop_deadman topics.
+  </description>
+
+  <maintainer email="med.dhia2003@gmail.com">Mohamed Dhia OUNALLY</maintainer>
+  <license>Apache License 2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>rcl_interfaces</depend>
+  <depend>sensor_msgs</depend>
+  <depend>std_msgs</depend>
+
+  <!-- Runtime: mtt_motor_driver provides /motor/joint_state and accepts /motor/cmd_position -->
+  <exec_depend>mtt_motor_driver</exec_depend>
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

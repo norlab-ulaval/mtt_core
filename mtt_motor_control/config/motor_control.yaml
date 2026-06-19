@@ -1,0 +1,21 @@
+com_position_node:
+  ros__parameters:
+    # Half-range of motion in RUN mode (encoder counts).
+    # Stick at +1 → home + amplitude_counts
+    # Stick at -1 → home - amplitude_counts
+    amplitude_counts: 50000.0
+
+    # Max jog speed in SETUP mode (counts/second).
+    # Slow enough to safely find the operating range.
+    setup_slew: 20000.0
+
+    # Max slew rate in RUN mode (counts/second).
+    # Should be comfortably achievable by the motor+drive.
+    run_slew: 20000.0
+
+    # Slide-in slew rate used when dead-man is re-armed in RUN mode (counts/second).
+    # Slower than run_slew to avoid a positional jerk when the operator re-grips.
+    rearm_slew: 4000.0
+
+    # Control loop publish rate (Hz).
+    publish_rate_hz: 100.0
