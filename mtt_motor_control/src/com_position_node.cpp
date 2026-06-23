@@ -168,10 +168,12 @@ void ComPositionNode::on_set_home(const std_msgs::msg::Empty::SharedPtr /*msg*/)
         RCLCPP_WARN(get_logger(), "set_home ignored — COM not active.");
         return;
     }
+
     home_               = cmd_;
     home_position_counts_ = cmd_;
     save_calibration();
-    RCLCPP_INFO(get_logger(), "Home set to %.0f counts (mode unchanged)", cmd_);
+    RCLCPP_INFO(get_logger(), "Home set to %.0f counts — limits [%.0f, %.0f]",
+                cmd_, cmd_ - pos_half_range_, cmd_ + pos_half_range_);
 }
 
 void ComPositionNode::on_com_park(const std_msgs::msg::Empty::SharedPtr /*msg*/)
@@ -267,7 +269,9 @@ void ComPositionNode::loop()
         }
 
         auto out = std_msgs::msg::Float64();
-        out.data = cmd_;
+        out.data = home_.has_value()
+            ? std::clamp(cmd_, home_.value() - pos_half_range_, home_.value() + pos_half_range_)
+            : cmd_;
         cmd_pub_->publish(out);
         prev_deadman_ = deadman_;
         return;
@@ -308,7 +312,9 @@ void ComPositionNode::loop()
     }
 
     auto out = std_msgs::msg::Float64();
-    out.data = cmd_;
+    out.data = home_.has_value()
+        ? std::clamp(cmd_, home_.value() - pos_half_range_, home_.value() + pos_half_range_)
+        : cmd_;
     cmd_pub_->publish(out);
 
     prev_deadman_ = deadman_;

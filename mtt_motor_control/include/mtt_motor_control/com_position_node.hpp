@@ -80,6 +80,10 @@ private:
     bool                park_arrived_ {false};  // true once PARK reaches home
     bool                spring_enabled_{false}; // true = RUN, false = SETUP
 
+    // Position limits relative to home: [home - half_range, home + half_range].
+    // When home changes (SET_HOME), limits recenter automatically.
+    double pos_half_range_{45000.0};
+
     double dt_ {0.01};  // seconds between loop ticks (1/rate)
 
     // ── ROS interfaces ──
