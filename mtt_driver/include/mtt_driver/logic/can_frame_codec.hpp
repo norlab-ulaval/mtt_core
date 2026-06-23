@@ -14,14 +14,14 @@
 
 namespace mtt::can {
 
-// ── CAN IDs ───────────────────────────────────────────────────────────
+// ── CAN IDs ──
 constexpr uint32_t kCommandId    = 0x001;
 constexpr uint32_t kExternalCommandId = 0x100;
 constexpr uint32_t kTelemetryId  = 0x2FF;
 constexpr uint32_t kMainControllerVersionId   = 0x300;
 constexpr uint32_t kBatteryControllerVersionId = 0x301;
 
-// ── Byte positions in the 8-byte command frame ───────────────────────
+// ── Byte positions in the 8-byte command frame ──
 enum FrameIndex : uint8_t {
   kVehicleType     = 0,
   kGlobalSwitches  = 1,
@@ -33,7 +33,7 @@ enum FrameIndex : uint8_t {
   kReserved        = 7,
 };
 
-// ── Enumerations (match firmware protocol) ───────────────────────────
+// ── Enumerations (match firmware protocol) ──
 enum class Direction : uint8_t { Forward = 0x00, Reverse = 0x01 };
 enum class SteeringMode : uint8_t { OpenLoop = 0, CloseLoop = 1 };
 enum class VehicleType : uint8_t { SingleTrack = 0x00, SbsLeft = 0x01, SbsRight = 0x02 };
@@ -41,7 +41,7 @@ enum class WinchState : uint8_t { Neutral = 0x7F, In = 0xE5, Out = 0x18 };
 enum class LightState : uint8_t { Off = 0x00, On = 0x01 };
 enum class SafetyState : uint8_t { Locked = 0x00, Unlocked = 0x01 };
 
-// ── Command Frame ────────────────────────────────────────────────────
+// ── Command Frame ──
 // Mutable representation of the 8-byte outgoing CAN frame.
 struct CommandFrame {
   std::array<uint8_t, 8> data{};
@@ -206,7 +206,7 @@ inline const char* winch_state_to_string(WinchState state)
   return "Unknown";
 }
 
-// ── Telemetry Frame Decoder ──────────────────────────────────────────
+// ── Telemetry Frame Decoder ──
 // Decodes the 8-byte incoming CAN frame from ID 0x2FF.
 struct TelemetryDecoder {
   // Decode raw 8-byte frame into tachometer reading.
@@ -229,7 +229,7 @@ struct TelemetryDecoder {
   }
 };
 
-// ── BMS CAN IDs ──────────────────────────────────────────────────────
+// ── BMS CAN IDs ──
 // ROYPOW S51105 BMS broadcasts on 4 frames.
 constexpr uint32_t kBmsCellTempsId  = 0x600;  // CellTemp1..4
 constexpr uint32_t kBmsSysTempsId   = 0x601;  // AmbientTemp, MosfetTemp, HeatpadA/B
@@ -292,14 +292,14 @@ struct ControllerVersionReading {
   bool has_battery_controller_version{false};
 };
 
-// ── BMS Reading ──────────────────────────────────────────────────────
+// ── BMS Reading ──
 // Accumulates data across the 3 useful BMS frames.
 // NOTE: BatteryCurrent_raw and BatteryVoltage_raw are published as-is
 // per the DBC (factor=1, offset=0, unit="raw") because physical scaling
 // (e.g. 10mV/LSB for voltage) is not confirmed in the specification.
 // Verify against a calibrated meter before trusting the computed power.
 struct BmsReading {
-  // ── 0x602 ────────────────────────────────────────────────────────
+  // ── 0x602 ──
   uint8_t  soc_percent{0};          // State of charge (0-100 %)
   int16_t  battery_current_raw{0};  // Signed int, unit not confirmed
   uint16_t battery_voltage_raw{0};  // Unsigned int, unit not confirmed
@@ -308,28 +308,28 @@ struct BmsReading {
   bool heatpad_a_on{false};
   uint8_t heatpads_reserved{0};
 
-  // ── 0x600 ────────────────────────────────────────────────────────
+  // ── 0x600 ──
   int16_t cell_temp[4]{};           // 4 cell group temperatures (°C direct int)
 
-  // ── 0x601 ────────────────────────────────────────────────────────
+  // ── 0x601 ──
   int16_t ambient_temp{0};          // Ambient temperature (°C)
   int16_t mosfet_temp{0};           // MOSFET temperature (°C)
   int16_t heatpad_a_temp{0};        // Heatpad A temperature (°C)
   int16_t heatpad_b_temp{0};        // Heatpad B temperature (°C)
 
-  // ── 0x603 ────────────────────────────────────────────────────────
+  // ── 0x603 ──
   uint16_t charge_time_remaining_603_raw{0};
   uint16_t year_month_raw{0};
   uint16_t day_hour_raw{0};
   uint16_t minute_second_raw{0};
 
-  // ── Charger 29-bit IDs ───────────────────────────────────────────
+  // ── Charger 29-bit IDs ──
   uint16_t charger_max_voltage_raw{0};
   uint16_t charger_max_current_raw{0};
   uint16_t charger_configured_voltage_raw{0};
   uint16_t charger_configured_current_raw{0};
 
-  // ── Freshness flags ───────────────────────────────────────────────
+  // ── Freshness flags ──
   bool has_soc{false};          // set after first 0x602
   bool has_cell_temps{false};   // set after first 0x600
   bool has_sys_temps{false};    // set after first 0x601
@@ -338,7 +338,7 @@ struct BmsReading {
   bool has_charger_status{false};
 };
 
-// ── BMS Decoder ──────────────────────────────────────────────────────
+// ── BMS Decoder ──
 struct BmsDecoder {
   // Decode one BMS frame and accumulate into `out`.
   // Returns true if the frame was recognized and decoded.

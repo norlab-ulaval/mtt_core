@@ -55,7 +55,7 @@ using PointField  = sensor_msgs::msg::PointField;
 using Image       = sensor_msgs::msg::Image;
 using CameraInfo  = sensor_msgs::msg::CameraInfo;
 
-// ── helpers ───────────────────────────────────────────────────────────────────
+// ── helpers ──
 
 static bool validateXYZFields(const PointCloud2 & cloud,
                                uint32_t & off_x,
@@ -84,7 +84,7 @@ static inline float packRGB(uint8_t r, uint8_t g, uint8_t b)
   return f;
 }
 
-// ── node ─────────────────────────────────────────────────────────────────────
+// ── node ──
 
 class LidarCameraColorizerNode : public rclcpp::Node
 {
@@ -94,7 +94,7 @@ public:
     tf_buffer_(get_clock()),
     tf_listener_(tf_buffer_)
   {
-    // ── parameters ──────────────────────────────────────────────────────────
+    // ── parameters ──
     declare_parameter("cloud_topic",          "/hesai_lidar/points");
     declare_parameter("image_base_topic",     "/zed/zed_node/rgb/color/rect/image");
     declare_parameter("depth_base_topic",     "/zed/zed_node/depth/depth_registered");
@@ -130,18 +130,18 @@ public:
       static_cast<uint8_t>(get_parameter("default_color_g").as_int()),
       static_cast<uint8_t>(get_parameter("default_color_b").as_int()));
 
-    // ── publisher ────────────────────────────────────────────────────────────
+    // ── publisher ──
     const std::string out_topic = cloud_topic_ + "_colored";
     pub_colored_ = create_publisher<PointCloud2>(
       out_topic, rclcpp::SensorDataQoS().keep_last(queue_size_));
 
-    // ── cloud subscriber ────────────────────────────────────────────────────
+    // ── cloud subscriber ──
     sub_cloud_ = create_subscription<PointCloud2>(
       cloud_topic_,
       rclcpp::SensorDataQoS().keep_last(queue_size_),
       std::bind(&LidarCameraColorizerNode::cloudCallback, this, std::placeholders::_1));
 
-    // ── camera subscriber (image_transport handles compressed/raw) ────────
+    // ── camera subscriber (image_transport handles compressed/raw) ──
     image_transport::TransportHints hints(this, transport_hint_);
     sub_camera_ = image_transport::create_camera_subscription(
       this,
@@ -151,7 +151,7 @@ public:
       transport_hint_,
       rmw_qos_profile_sensor_data);
 
-    // ── depth subscriber (optional) ─────────────────────────────────────
+    // ── depth subscriber (optional) ──
     if (use_depth_check_) {
       sub_depth_ = image_transport::create_subscription(
         this,
@@ -174,7 +174,7 @@ public:
   }
 
 private:
-  // ── image callback ───────────────────────────────────────────────────────
+  // ── image callback ──
   void imageCallback(const Image::ConstSharedPtr & img_msg,
                      const CameraInfo::ConstSharedPtr & info_msg)
   {
@@ -196,7 +196,7 @@ private:
     }
   }
 
-  // ── depth callback ───────────────────────────────────────────────────────
+  // ── depth callback ──
   void depthCallback(const Image::ConstSharedPtr & depth_msg)
   {
     cv_bridge::CvImageConstPtr cv_depth;
@@ -213,7 +213,7 @@ private:
     cached_depth_stamp_ = rclcpp::Time(depth_msg->header.stamp);
   }
 
-  // ── TF lookup (called once, cached for all subsequent frames) ───────────
+  // ── TF lookup (called once, cached for all subsequent frames) ──
   bool cacheTransform(const rclcpp::Time & stamp)
   {
     const std::string & lidar_frame = lidar_frame_.empty()
@@ -248,12 +248,12 @@ private:
     return true;
   }
 
-  // ── cloud callback (main processing pipeline) ────────────────────────────
+  // ── cloud callback (main processing pipeline) ──
   void cloudCallback(const PointCloud2::ConstSharedPtr & cloud_in)
   {
     last_cloud_frame_ = cloud_in->header.frame_id;
 
-    // ── grab image snapshot under lock ──────────────────────────────────
+    // ── grab image snapshot under lock ──
     cv::Mat image_snapshot;
     image_geometry::PinholeCameraModel cam_snapshot;
     bool have_image = false;
@@ -270,14 +270,14 @@ private:
       }
     }
 
-    // ── lazy TF caching ─────────────────────────────────────────────────
+    // ── lazy TF caching ──
     if (have_image && !transform_cached_) {
       if (!cacheTransform(rclcpp::Time(cloud_in->header.stamp))) {
         have_image = false;  // can't colorize without transform
       }
     }
 
-    // ── validate input fields ────────────────────────────────────────────
+    // ── validate input fields ──
     uint32_t off_x, off_y, off_z;
     if (!validateXYZFields(*cloud_in, off_x, off_y, off_z)) {
       RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 10000,
@@ -290,7 +290,7 @@ private:
     const uint32_t out_step    = in_step + 4u;   // append 4-byte rgb field
     const uint32_t rgb_offset  = in_step;        // rgb sits right after original data
 
-    // ── build output cloud descriptor ───────────────────────────────────
+    // ── build output cloud descriptor ──
     PointCloud2 cloud_out;
     cloud_out.header     = cloud_in->header;
     if (!output_frame_.empty()) cloud_out.header.frame_id = output_frame_;
@@ -315,7 +315,7 @@ private:
 
     cloud_out.data.resize(static_cast<size_t>(out_step) * n_pts);
 
-    // ── pre-compute camera intrinsics ────────────────────────────────────
+    // ── pre-compute camera intrinsics ──
     double fx = 0.0, fy = 0.0, cx = 0.0, cy = 0.0;
     int img_w = 0, img_h = 0;
     if (have_image) {
@@ -327,7 +327,7 @@ private:
       img_h = static_cast<int>(image_snapshot.rows);
     }
 
-    // ── grab depth snapshot (optional) ──────────────────────────────────
+    // ── grab depth snapshot (optional) ──
     cv::Mat depth_snapshot;
     if (have_image && use_depth_check_) {
       std::lock_guard<std::mutex> lock(depth_mtx_);
@@ -336,7 +336,7 @@ private:
       }
     }
 
-    // ── per-point loop ───────────────────────────────────────────────────
+    // ── per-point loop ──
     const uint8_t * src = cloud_in->data.data();
     uint8_t       * dst = cloud_out.data.data();
 
@@ -423,7 +423,7 @@ private:
     }
   }
 
-  // ── parameters ────────────────────────────────────────────────────────────
+  // ── parameters ──
   std::string cloud_topic_;
   std::string image_base_topic_;
   std::string depth_base_topic_;
@@ -440,33 +440,33 @@ private:
   bool        use_depth_check_;
   float       default_rgb_float_;
 
-  // ── TF ────────────────────────────────────────────────────────────────────
+  // ── TF ──
   tf2_ros::Buffer           tf_buffer_;
   tf2_ros::TransformListener tf_listener_;
   Eigen::Isometry3d          T_cam_lidar_{Eigen::Isometry3d::Identity()};
   bool                       transform_cached_ = false;
   std::string                last_cloud_frame_;
 
-  // ── image cache ───────────────────────────────────────────────────────────
+  // ── image cache ──
   std::mutex                           image_mtx_;
   cv::Mat                              cached_image_;
   rclcpp::Time                         cached_image_stamp_{0, 0, RCL_ROS_TIME};
   image_geometry::PinholeCameraModel   cam_model_;
   bool                                 cam_model_ready_ = false;
 
-  // ── depth cache ───────────────────────────────────────────────────────────
+  // ── depth cache ──
   std::mutex   depth_mtx_;
   cv::Mat      cached_depth_;
   rclcpp::Time cached_depth_stamp_{0, 0, RCL_ROS_TIME};
 
-  // ── subscriptions / publisher ─────────────────────────────────────────────
+  // ── subscriptions / publisher ──
   rclcpp::Subscription<PointCloud2>::SharedPtr sub_cloud_;
   image_transport::CameraSubscriber            sub_camera_;
   image_transport::Subscriber                  sub_depth_;
   rclcpp::Publisher<PointCloud2>::SharedPtr    pub_colored_;
 };
 
-// ── main ─────────────────────────────────────────────────────────────────────
+// ── main ──
 
 int main(int argc, char ** argv)
 {

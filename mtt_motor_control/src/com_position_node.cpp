@@ -1,7 +1,3 @@
-// ============================================================================
-// ComPositionNode implementation — spring-return COM motor position controller.
-// ============================================================================
-
 #include "mtt_motor_control/com_position_node.hpp"
 
 #include <algorithm>
@@ -16,14 +12,11 @@ using namespace std::chrono_literals;
 namespace mtt_motor_control
 {
 
-// ---------------------------------------------------------------------------
-// Construction
-// ---------------------------------------------------------------------------
+// ── Construction ──
 
 ComPositionNode::ComPositionNode(const rclcpp::NodeOptions & options)
 : rclcpp::Node("com_position_node", options)
 {
-    // --- Parameters ---
     amplitude_   = declare_parameter("amplitude_counts",  50000.0);
     setup_slew_  = declare_parameter("setup_slew",         4000.0);
     run_slew_    = declare_parameter("run_slew",          20000.0);
@@ -31,11 +24,11 @@ ComPositionNode::ComPositionNode(const rclcpp::NodeOptions & options)
     const double rate = declare_parameter("publish_rate_hz", 100.0);
     dt_ = 1.0 / rate;
 
-    // Pre-configured home (NaN = use SETUP workflow or calibration file).
+    steer_deadband_        = declare_parameter("steer_deadband", 0.05);
+
     home_position_counts_ = declare_parameter(
         "home_position_counts", std::numeric_limits<double>::quiet_NaN());
 
-    // Calibration persistence
     calib_file_ = declare_parameter(
         "calibration_file", std::string("/data/mtt/com_calibration.yaml"));
     consistency_threshold_ = declare_parameter("home_consistency_threshold", 1000.0);
@@ -43,10 +36,8 @@ ComPositionNode::ComPositionNode(const rclcpp::NodeOptions & options)
     param_cb_handle_ = add_on_set_parameters_callback(
         [this](const auto & p) { return on_param_change(p); });
 
-    // --- Publisher ---
     cmd_pub_ = create_publisher<std_msgs::msg::Float64>("/motor/cmd_position", 10);
 
-    // --- Subscriptions ---
     com_mode_sub_ = create_subscription<std_msgs::msg::Bool>(
         "mtt_control/com_mode", 10,
         [this](const std_msgs::msg::Bool::SharedPtr m) { on_com_mode(m); });
@@ -63,6 +54,10 @@ ComPositionNode::ComPositionNode(const rclcpp::NodeOptions & options)
         "mtt_control/com_park", 10,
         [this](const std_msgs::msg::Empty::SharedPtr m) { on_com_park(m); });
 
+    spring_sub_ = create_subscription<std_msgs::msg::Bool>(
+        "mtt_control/com_spring", 10,
+        [this](const std_msgs::msg::Bool::SharedPtr m) { on_com_spring(m); });
+
     deadman_sub_ = create_subscription<std_msgs::msg::Bool>(
         "mtt_control/teleop_deadman", 10,
         [this](const std_msgs::msg::Bool::SharedPtr m) { on_deadman(m); });
@@ -71,7 +66,6 @@ ComPositionNode::ComPositionNode(const rclcpp::NodeOptions & options)
         "/motor/joint_state", 10,
         [this](const sensor_msgs::msg::JointState::SharedPtr m) { on_joint_state(m); });
 
-    // --- Control timer ---
     loop_timer_ = create_wall_timer(
         std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::duration<double>(dt_)),
@@ -79,8 +73,10 @@ ComPositionNode::ComPositionNode(const rclcpp::NodeOptions & options)
 
     RCLCPP_INFO(get_logger(),
                 "ComPositionNode ready — amplitude=%.0f counts, "
-                "setup_slew=%.0f, run_slew=%.0f, rearm_slew=%.0f counts/s",
-                amplitude_, setup_slew_, run_slew_, rearm_slew_);
+                "setup_slew=%.0f, run_slew=%.0f, rearm_slew=%.0f counts/s, "
+                "steer_deadband=%.2f",
+                amplitude_, setup_slew_, run_slew_, rearm_slew_,
+                steer_deadband_);
     if (!std::isnan(home_position_counts_)) {
         RCLCPP_INFO(get_logger(), "  home_position_counts=%.0f (from YAML)",
                     home_position_counts_);
@@ -89,44 +85,31 @@ ComPositionNode::ComPositionNode(const rclcpp::NodeOptions & options)
                 calib_file_.c_str(), consistency_threshold_);
 }
 
-// ---------------------------------------------------------------------------
-// State machine helpers
-// ---------------------------------------------------------------------------
+// ── State machine helpers ──
 
 void ComPositionNode::enter_setup()
 {
     cmd_        = actual_;
-    home_       = std::nullopt;
     state_      = State::SETUP;
     sliding_in_ = false;
     RCLCPP_INFO(get_logger(),
-                "COM SETUP — jog-velocity mode, slew=%.0f counts/s, start=%.0f",
-                setup_slew_, cmd_);
+                "COM SETUP — free jog, slew=%.0f counts/s, start=%.0f, home=%s",
+                setup_slew_, cmd_,
+                home_.has_value() ? (std::to_string(home_.value()) + " saved").c_str() : "none");
 }
 
 void ComPositionNode::enter_run()
 {
-    // Called by SET_HOME: motor is physically at cmd_ right now.
-    home_                 = cmd_;
-    home_position_counts_ = cmd_;   // persist in-memory for future restarts
-    state_                = State::RUN;
-    sliding_in_           = false;
+    if (!home_.has_value()) {
+        RCLCPP_WARN(get_logger(), "enter_run ignored — home not set.");
+        return;
+    }
+    state_       = State::RUN;
+    sliding_in_  = false;
+    spring_enabled_ = true;
     RCLCPP_INFO(get_logger(),
                 "COM RUN — spring ±%.0f counts around home=%.0f",
                 amplitude_, home_.value());
-    // Motor is currently at home → save calibration immediately.
-    save_calibration();
-}
-
-void ComPositionNode::enter_run_at_configured_home()
-{
-    cmd_        = actual_;  // start smoothing from current motor position
-    home_       = home_position_counts_;
-    state_      = State::RUN;
-    sliding_in_ = false;
-    RCLCPP_INFO(get_logger(),
-                "COM RUN (configured home=%.0f) — motor will slew to home when deadman held.",
-                home_.value());
 }
 
 void ComPositionNode::enter_park()
@@ -140,22 +123,20 @@ void ComPositionNode::enter_park()
                 home_.value(), rearm_slew_);
 }
 
-// ---------------------------------------------------------------------------
-// Subscription callbacks
-// ---------------------------------------------------------------------------
+// ── Subscription callbacks ──
 
 void ComPositionNode::on_com_mode(const std_msgs::msg::Bool::SharedPtr msg)
 {
     const bool new_mode = msg->data;
 
     if (new_mode && !com_mode_) {
-        // COM turned ON
+        // COM turned ON — always enter free mode (SETUP), never spring.
         if (seeded_) {
             if (!std::isnan(home_position_counts_)) {
-                enter_run_at_configured_home();
-            } else {
-                enter_setup();
+                home_ = home_position_counts_;
             }
+            spring_enabled_ = false;
+            enter_setup();
         } else {
             pending_setup_ = true;
             RCLCPP_WARN(get_logger(),
@@ -163,7 +144,7 @@ void ComPositionNode::on_com_mode(const std_msgs::msg::Bool::SharedPtr msg)
                         "SETUP pending.");
         }
     } else if (!new_mode && com_mode_) {
-        // COM turned OFF — cancel any in-progress park or setup
+        // COM turned OFF
         state_         = State::OFF;
         pending_setup_ = false;
         park_arrived_  = false;
@@ -176,15 +157,21 @@ void ComPositionNode::on_com_mode(const std_msgs::msg::Bool::SharedPtr msg)
 void ComPositionNode::on_com_steer(const std_msgs::msg::Float64::SharedPtr msg)
 {
     steer_ = std::clamp(msg->data, -1.0, 1.0);
+    if (std::abs(steer_) < steer_deadband_) {
+        steer_ = 0.0;
+    }
 }
 
 void ComPositionNode::on_set_home(const std_msgs::msg::Empty::SharedPtr /*msg*/)
 {
-    if (state_ != State::SETUP && state_ != State::RUN) {
-        RCLCPP_WARN(get_logger(), "set_home ignored — COM not in SETUP/RUN.");
+    if (state_ == State::OFF) {
+        RCLCPP_WARN(get_logger(), "set_home ignored — COM not active.");
         return;
     }
-    enter_run();
+    home_               = cmd_;
+    home_position_counts_ = cmd_;
+    save_calibration();
+    RCLCPP_INFO(get_logger(), "Home set to %.0f counts (mode unchanged)", cmd_);
 }
 
 void ComPositionNode::on_com_park(const std_msgs::msg::Empty::SharedPtr /*msg*/)
@@ -193,18 +180,39 @@ void ComPositionNode::on_com_park(const std_msgs::msg::Empty::SharedPtr /*msg*/)
         RCLCPP_INFO(get_logger(), "com_park: already parking.");
         return;
     }
-    if (state_ == State::SETUP) {
-        RCLCPP_WARN(get_logger(), "com_park ignored — home not set yet (in SETUP).");
-        return;
-    }
     if (!home_.has_value()) {
-        RCLCPP_WARN(get_logger(),
-                    "com_park ignored — home not set. "
-                    "Enter COM mode and use com_set_home first.");
-        return;
+        if (!std::isnan(home_position_counts_)) {
+            home_ = home_position_counts_;
+        } else {
+            RCLCPP_WARN(get_logger(),
+                        "com_park ignored — no home known. "
+                        "Use com_set_home first.");
+            return;
+        }
     }
-    // Accept from RUN or OFF (home known from previous session)
     enter_park();
+}
+
+void ComPositionNode::on_com_spring(const std_msgs::msg::Bool::SharedPtr msg)
+{
+    const bool want_spring = msg->data;
+
+    if (want_spring == spring_enabled_) { return; }
+
+    if (want_spring) {
+        if (!home_.has_value()) {
+            RCLCPP_WARN(get_logger(),
+                        "Spring ON ignored — home not set. "
+                        "Jog to centre and use com_set_home first.");
+            return;
+        }
+        enter_run();
+    } else {
+        spring_enabled_ = false;
+        state_          = State::SETUP;
+        cmd_            = actual_;
+        RCLCPP_INFO(get_logger(), "Spring OFF — free position hold");
+    }
 }
 
 void ComPositionNode::on_deadman(const std_msgs::msg::Bool::SharedPtr msg)
@@ -221,22 +229,19 @@ void ComPositionNode::on_joint_state(const sensor_msgs::msg::JointState::SharedP
         seeded_ = true;
         if (pending_setup_) {
             pending_setup_ = false;
-            // Priority: YAML param > calibration file > manual SETUP.
             if (std::isnan(home_position_counts_)) {
-                try_restore_from_calibration();  // may set home_position_counts_
+                try_restore_from_calibration();
             }
             if (!std::isnan(home_position_counts_)) {
-                enter_run_at_configured_home();
-            } else {
-                enter_setup();
+                home_ = home_position_counts_;
             }
+            spring_enabled_ = false;
+            enter_setup();
         }
     }
 }
 
-// ---------------------------------------------------------------------------
-// 100-Hz control loop
-// ---------------------------------------------------------------------------
+// ── Control loop ──
 
 void ComPositionNode::loop()
 {
@@ -245,7 +250,7 @@ void ComPositionNode::loop()
         return;
     }
 
-    // ── PARK: autonomous return to home, independent of dead-man ─────────
+    // ── PARK: autonomous return to home ──
     if (state_ == State::PARK) {
         const double h    = home_.value();
         const double step = rearm_slew_ * dt_;
@@ -268,14 +273,8 @@ void ComPositionNode::loop()
         return;
     }
 
-    // ── SETUP: jog-velocity mode ──────────────────────────────────────────
-    if (state_ == State::SETUP) {
-        if (deadman_) {
-            cmd_ += steer_ * setup_slew_ * dt_;
-        }
-
-    // ── RUN: spring-return position mode ─────────────────────────────────
-    } else {
+    // ── RUN: spring-return mode ──
+    if (state_ == State::RUN) {
         const double h      = home_.value();
         const double target = std::clamp(h + steer_ * amplitude_,
                                          h - amplitude_,
@@ -291,9 +290,23 @@ void ComPositionNode::loop()
                 sliding_in_ = false;
             }
         }
+
+        if (seeded_ && std::abs(cmd_ - actual_) > consistency_threshold_) {
+            RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
+                "COM cmd=%.0f actual=%.0f (diff=%.0f) — motor may be at limit. "
+                "Release deadman to resync.",
+                cmd_, actual_, cmd_ - actual_);
+        }
+
+    // ── SETUP: free jog mode ──
+    } else {
+        if (deadman_) {
+            cmd_ = actual_ + steer_ * setup_slew_ * dt_;
+        } else {
+            cmd_ = actual_;
+        }
     }
 
-    // Publish (SETUP + RUN)
     auto out = std_msgs::msg::Float64();
     out.data = cmd_;
     cmd_pub_->publish(out);
@@ -301,15 +314,12 @@ void ComPositionNode::loop()
     prev_deadman_ = deadman_;
 }
 
-// ---------------------------------------------------------------------------
-// Calibration persistence
-// ---------------------------------------------------------------------------
+// ── Calibration persistence ──
 
 void ComPositionNode::save_calibration() const
 {
     if (!home_.has_value()) { return; }
 
-    // Ensure directory exists
     std::error_code ec;
     std::filesystem::create_directories(
         std::filesystem::path(calib_file_).parent_path(), ec);
@@ -367,8 +377,7 @@ bool ComPositionNode::try_restore_from_calibration()
         home_position_counts_ = saved_home;
         RCLCPP_INFO(get_logger(),
                     "Calibration restored from %s — home=%.0f, "
-                    "position drift=%.0f counts (< %.0f threshold). "
-                    "Entering RUN directly (no SETUP needed).",
+                    "position drift=%.0f counts (< %.0f threshold).",
                     calib_file_.c_str(), saved_home, drift, consistency_threshold_);
         return true;
     }
@@ -376,15 +385,13 @@ bool ComPositionNode::try_restore_from_calibration()
     RCLCPP_WARN(get_logger(),
                 "Calibration file found but position mismatch: "
                 "actual=%.0f, saved=%.0f, drift=%.0f counts (>= %.0f threshold). "
-                "Motor was likely power-cycled. SETUP required — "
-                "motor should be at home position, just press com_set_home.",
+                "Motor was likely power-cycled. "
+                "Jog to centre and use com_set_home.",
                 actual_, saved_actual, drift, consistency_threshold_);
     return false;
 }
 
-// ---------------------------------------------------------------------------
-// Parameter hot-reload
-// ---------------------------------------------------------------------------
+// ── Params hot-reload ──
 
 rcl_interfaces::msg::SetParametersResult
 ComPositionNode::on_param_change(const std::vector<rclcpp::Parameter> & params)
@@ -394,17 +401,16 @@ ComPositionNode::on_param_change(const std::vector<rclcpp::Parameter> & params)
         else if (p.get_name() == "setup_slew")               setup_slew_             = p.as_double();
         else if (p.get_name() == "run_slew")                 run_slew_               = p.as_double();
         else if (p.get_name() == "rearm_slew")               rearm_slew_             = p.as_double();
-        else if (p.get_name() == "home_position_counts")     home_position_counts_   = p.as_double();
-        else if (p.get_name() == "home_consistency_threshold") consistency_threshold_ = p.as_double();
+        else if (p.get_name() == "steer_deadband")             steer_deadband_          = p.as_double();
+        else if (p.get_name() == "home_position_counts")       home_position_counts_    = p.as_double();
+        else if (p.get_name() == "home_consistency_threshold") consistency_threshold_   = p.as_double();
     }
     rcl_interfaces::msg::SetParametersResult result;
     result.successful = true;
     return result;
 }
 
-// ---------------------------------------------------------------------------
-// Geometry helper
-// ---------------------------------------------------------------------------
+// ── Geometry helper ──
 
 double ComPositionNode::move_toward(double cur, double target, double step) noexcept
 {
@@ -414,10 +420,6 @@ double ComPositionNode::move_toward(double cur, double target, double step) noex
 }
 
 }  // namespace mtt_motor_control
-
-// ---------------------------------------------------------------------------
-// Entry point
-// ---------------------------------------------------------------------------
 
 int main(int argc, char ** argv)
 {

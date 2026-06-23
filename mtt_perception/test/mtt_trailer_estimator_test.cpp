@@ -22,11 +22,7 @@
 
 static constexpr double kPi = 3.141592653589793;
 
-// ─────────────────────────────────────────────────────────────────────────────
-// White-box helpers — replicate the EKF core without pulling in the full node.
-// These mirror exactly the logic in mtt_trailer_estimator_node.cpp.
-// ─────────────────────────────────────────────────────────────────────────────
-
+// ── White-box helpers — replicate the EKF core without pulling in the full node. These mirror exactly the logic in mtt_trailer_estimator_node.cpp ──
 // State index constants (must match idx:: in the main header).
 namespace idx
 {
@@ -62,9 +58,7 @@ static double normalizeAngle(double a) noexcept
   return a - kPi;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// EKF predict — constant-velocity with decay.
-// ─────────────────────────────────────────────────────────────────────────────
+// ── EKF predict — constant-velocity with decay ──
 static void ekfPredict(
   FilterState & state,
   double dt,
@@ -99,10 +93,7 @@ static void ekfPredict(
   state.P = 0.5 * (state.P + state.P.transpose());
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// EKF update — Joseph form with Mahalanobis gating.
-// Returns true if the measurement was accepted.
-// ─────────────────────────────────────────────────────────────────────────────
+// ── EKF update — Joseph form with Mahalanobis gating. Returns true if the measurement was accepted ──
 template<int M>
 static bool ekfUpdate(
   FilterState & state,
@@ -135,9 +126,7 @@ static bool ekfUpdate(
   return true;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// H matrix builders
-// ─────────────────────────────────────────────────────────────────────────────
+// ── H matrix builders ──
 static Eigen::Matrix<double, 4, 10> makeH4()
 {
   Eigen::Matrix<double, 4, 10> H = Eigen::Matrix<double, 4, 10>::Zero();
@@ -157,9 +146,7 @@ static Eigen::Matrix<double, 3, 10> makeH3()
   return H;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Default Q matrix for tests.
-// ─────────────────────────────────────────────────────────────────────────────
+// ── Default Q matrix for tests ──
 static Cov10d makeDefaultQ()
 {
   Cov10d Q = Cov10d::Zero();
@@ -176,9 +163,7 @@ static Cov10d makeDefaultQ()
   return Q;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// RANSAC 3D line fit (same algorithm as in the main node — no dependency).
-// ─────────────────────────────────────────────────────────────────────────────
+// ── RANSAC 3D line fit (same algorithm as in the main node — no dependency) ──
 struct RansacLine3d
 {
   Eigen::Vector3d dir{Eigen::Vector3d::UnitX()};
@@ -247,12 +232,10 @@ static RansacLine3d ransacLine3d(
   return result;
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
 // Test 1 — EKF cold-start convergence.
 //
 // Given: perfect kinematic prior at the true trailer position.
 // Expect: after N updates, state converges within 1 cm of ground truth.
-// ═════════════════════════════════════════════════════════════════════════════
 TEST(TrailerEkf, ColdStartConvergence)
 {
   const Cov10d Q = makeDefaultQ();
@@ -305,12 +288,10 @@ TEST(TrailerEkf, ColdStartConvergence)
   EXPECT_LT(state.P(idx::kY, idx::kY), 0.01) << "P(y,y) did not shrink";
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
 // Test 2 — Mahalanobis gating: corrupted measurement must not move the state.
 //
 // Given: filter at known state, a measurement 10-sigma away from prior.
 // Expect: state is unchanged after the gated update.
-// ═════════════════════════════════════════════════════════════════════════════
 TEST(TrailerEkf, MahalanobisGating)
 {
   const Eigen::Matrix<double, 4, 10> H = makeH4();
@@ -347,12 +328,10 @@ TEST(TrailerEkf, MahalanobisGating)
   EXPECT_NEAR((state.P - P_before).norm(), 0.0, 1e-12) << "Covariance was modified despite gate";
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
 // Test 3 — Covariance remains positive-definite after 1000 Joseph-form updates.
 //
 // Positive-definiteness is checked by attempting Cholesky decomposition.
 // This validates numerical stability of the Joseph-form update.
-// ═════════════════════════════════════════════════════════════════════════════
 TEST(TrailerEkf, CovariancePositiveDefiniteAfter1000Updates)
 {
   const Cov10d Q = makeDefaultQ();
@@ -396,12 +375,10 @@ TEST(TrailerEkf, CovariancePositiveDefiniteAfter1000Updates)
   EXPECT_TRUE(state.P.array().isFinite().all()) << "NaN or Inf detected in P";
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
 // Test 4 — Hitch angle back-computation correctness.
 //
 // Given: trailer at a known position relative to a known hitch, at a known
 // tractor yaw.  Compute the expected hitch angle analytically and compare.
-// ═════════════════════════════════════════════════════════════════════════════
 TEST(TrailerEkf, HitchAngleBackComputation)
 {
   // Setup (all values in map frame, arbitrary):
@@ -441,12 +418,10 @@ TEST(TrailerEkf, HitchAngleBackComputation)
   EXPECT_NEAR(std::abs(phi_straight), kPi, 0.01) << "Straight-ahead hitch angle wrong";
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
 // Test 5 — RANSAC 3D line fit converges with 30% outliers.
 //
 // Generate a noisy line along [1, 0, 0] direction, inject 30% uniform outliers.
 // Expect: recovered direction within 2° of true direction, > 70% inlier ratio.
-// ═════════════════════════════════════════════════════════════════════════════
 TEST(TrailerEkf, RansacLineFit3D)
 {
   std::mt19937 rng(42u);
@@ -490,7 +465,6 @@ TEST(TrailerEkf, RansacLineFit3D)
   EXPECT_LT(result.residual_variance, 0.01) << "Residual variance too large";
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 int main(int argc, char ** argv)
 {
   ::testing::InitGoogleTest(&argc, argv);

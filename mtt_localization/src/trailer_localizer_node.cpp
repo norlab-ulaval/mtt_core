@@ -28,9 +28,7 @@
 namespace mtt_loc
 {
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Anonymous-namespace helpers
-// ─────────────────────────────────────────────────────────────────────────────
+// ── Anonymous-namespace helpers ──
 namespace
 {
 
@@ -106,13 +104,11 @@ void covToRos(
 
 }  // namespace
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Constructor
-// ─────────────────────────────────────────────────────────────────────────────
+// ── Constructor ──
 TrailerLocalizerNode::TrailerLocalizerNode(const rclcpp::NodeOptions & options)
 : rclcpp::Node("trailer_localizer_node", options)
 {
-  // ── Declare parameters ──────────────────────────────────────────────
+  // ── Declare parameters ──
   const double publish_rate =
     declare_parameter("publish_rate", 50.0);
 
@@ -158,7 +154,7 @@ TrailerLocalizerNode::TrailerLocalizerNode(const rclcpp::NodeOptions & options)
     fusion_mode_ = FusionMode::kHardware;
   }
 
-  // ── Precompute URDF kinematic chain ────────────────────────────────
+  // ── Precompute URDF kinematic chain ──
   //
   // Joint origins from robot.urdf.xacro (exact values):
   //
@@ -215,7 +211,7 @@ TrailerLocalizerNode::TrailerLocalizerNode(const rclcpp::NodeOptions & options)
     computeDelta(0.0, 0.0).translation().y(),
     computeDelta(0.0, 0.0).translation().z());
 
-  // ── Publishers ──────────────────────────────────────────────────────
+  // ── Publishers ──
   trailer_odom_pub_ = create_publisher<nav_msgs::msg::Odometry>(
     "trailer/odom", rclcpp::QoS(10));
 
@@ -226,7 +222,7 @@ TrailerLocalizerNode::TrailerLocalizerNode(const rclcpp::NodeOptions & options)
     tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
   }
 
-  // ── Subscriptions ───────────────────────────────────────────────────
+  // ── Subscriptions ──
   const auto tractor_odom_topic = declare_parameter(
     "tractor_odom_topic", std::string("localization/odom"));
   odom_sub_ = create_subscription<nav_msgs::msg::Odometry>(
@@ -261,7 +257,7 @@ TrailerLocalizerNode::TrailerLocalizerNode(const rclcpp::NodeOptions & options)
       latest_lidar_pitch_stamp_ = get_clock()->now();
     });
 
-  // ── Timer ───────────────────────────────────────────────────────────
+  // ── Timer ──
   const auto period = std::chrono::duration<double>(1.0 / publish_rate);
   publish_timer_ = create_wall_timer(
     std::chrono::duration_cast<std::chrono::nanoseconds>(period),
@@ -272,9 +268,7 @@ TrailerLocalizerNode::TrailerLocalizerNode(const rclcpp::NodeOptions & options)
     fusion_mode_str.c_str(), publish_rate, trailer_tf_frame_.c_str());
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Callbacks
-// ─────────────────────────────────────────────────────────────────────────────
+// ── Callbacks ──
 void TrailerLocalizerNode::onTractorOdom(nav_msgs::msg::Odometry::ConstSharedPtr msg)
 {
   std::lock_guard<std::mutex> lock(state_mutex_);
@@ -288,9 +282,7 @@ void TrailerLocalizerNode::onArticulationState(
   latest_articulation_ = *msg;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Timer callback — main computation
-// ─────────────────────────────────────────────────────────────────────────────
+// ── Timer callback — main computation ──
 void TrailerLocalizerNode::publishTrailerPose()
 {
   // Take a snapshot of the shared state
@@ -320,7 +312,7 @@ void TrailerLocalizerNode::publishTrailerPose()
     return;  // Stale raw articulation — skip silently
   }
 
-  // ── Select φ (yaw) ───────────────────────────────────────────────────
+  // ── Select φ (yaw) ──
   // Priority: ISAM2-optimised φ (if fresh) → raw articulation_state
   // The ISAM2 φ is the posterior-optimal estimate fusing encoder + LiDAR.
   double phi;
@@ -340,7 +332,7 @@ void TrailerLocalizerNode::publishTrailerPose()
   }
   const double sigma2_phi = sigma_phi * sigma_phi;
 
-  // ── Select α (pitch) — 3-way priority ──────────────────────────────
+  // ── Select α (pitch) — 3-way priority ──
   // 1. Hardware potentiometer   (σ=0.020 rad) — best, when fresh
   // 2. LiDAR pitch from trailer_pose_node EMA (σ=0.060 rad) — intermediate fallback
   // 3. α=0 flat-terrain prior  (σ=sigma_alpha_model_) — last resort
@@ -362,7 +354,7 @@ void TrailerLocalizerNode::publishTrailerPose()
 
   const double sigma2_alpha = sigma_alpha * sigma_alpha;
 
-  // ── Build T_map_tractor from Odometry ───────────────────────────────
+  // ── Build T_map_tractor from Odometry ──
   const auto & p = odom.pose.pose.position;
   const auto & q = odom.pose.pose.orientation;
   Eigen::Isometry3d T_tractor = Eigen::Isometry3d::Identity();
@@ -370,11 +362,11 @@ void TrailerLocalizerNode::publishTrailerPose()
   T_tractor.linear() =
     Eigen::Quaterniond(q.w, q.x, q.y, q.z).toRotationMatrix();
 
-  // ── Compute trailer pose ────────────────────────────────────────────
+  // ── Compute trailer pose ──
   const Eigen::Isometry3d delta = computeDelta(phi, alpha);
   const Eigen::Isometry3d T_trailer = T_tractor * delta;
 
-  // ── Covariance propagation ──────────────────────────────────────────
+  // ── Covariance propagation ──
   Eigen::Matrix<double, 6, 6> sigma_tractor = covFromRos(odom.pose.covariance);
 
   // If factor_graph_node publishes zero covariance (no ISAM2 marginals yet),
@@ -398,7 +390,7 @@ void TrailerLocalizerNode::publishTrailerPose()
   const Eigen::Matrix<double, 6, 6> sigma_trailer =
     propagateCovariance(sigma_tractor, sigma2_phi, J_phi, sigma2_alpha, J_alpha, delta);
 
-  // ── Build output messages ────────────────────────────────────────────
+  // ── Build output messages ──
   const rclcpp::Time stamp(odom.header.stamp);
   const std::string map_frame = odom.header.frame_id;
 
@@ -445,9 +437,7 @@ void TrailerLocalizerNode::publishTrailerPose()
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Kinematics
-// ─────────────────────────────────────────────────────────────────────────────
+// ── Kinematics ──
 Eigen::Isometry3d TrailerLocalizerNode::computeDelta(double phi, double alpha) const
 {
   // Δ(φ, α) = A_prefix · Rz(-π/2+α) · A_suffix · Rz(π/2+φ) · B
@@ -515,9 +505,7 @@ Eigen::Matrix<double, 6, 6> TrailerLocalizerNode::propagateCovariance(
          sigma2_alpha * J_alpha * J_alpha.transpose();
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Source selection
-// ─────────────────────────────────────────────────────────────────────────────
+// ── Source selection ──
 double TrailerLocalizerNode::selectPhi(
   const mtt_msgs::msg::MttArticulationState & state) const
 {

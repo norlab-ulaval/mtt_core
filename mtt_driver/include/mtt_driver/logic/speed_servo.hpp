@@ -62,7 +62,7 @@ struct SpeedServoDebug
 class SpeedServo
 {
 public:
-  // ── Configuration ──────────────────────────────────────────────────
+  // ── Configuration ──
   void set_params(const SpeedServoParams & p) { params_ = p; }
   const SpeedServoParams & params() const { return params_; }
 
@@ -75,7 +75,7 @@ public:
     feedforward_lut_ = std::move(lut);
   }
 
-  // ── State reset ────────────────────────────────────────────────────
+  // ── State reset ──
   void reset(double initial_speed_ms = 0.0)
   {
     setpoint_ms_ = std::clamp(initial_speed_ms, 0.0, params_.max_speed_ms);
@@ -85,7 +85,7 @@ public:
     prev_error_initialized_ = false;
   }
 
-  // ── Setpoint ───────────────────────────────────────────────────────
+  // ── Setpoint ──
   void set_setpoint(double speed_ms)
   {
     setpoint_ms_ = std::clamp(std::abs(speed_ms), 0.0, params_.max_speed_ms);
@@ -93,12 +93,12 @@ public:
 
   double setpoint_ms() const { return setpoint_ms_; }
 
-  // ── Main update — call at fixed rate ──────────────────────────────
+  // ── Main update — call at fixed rate ──
   /// Returns normalized throttle [0, 1] and fills debug.
   /// measured_speed_ms: absolute value of tachometer speed (direction handled by caller)
   double compute(double measured_speed_ms, double dt, SpeedServoDebug & dbg)
   {
-    // ── Rate-limit the setpoint ──────────────────────────────────────
+    // ── Rate-limit the setpoint ──
     const double accel_limit = params_.max_accel_ms2 * dt;
     const double decel_limit = params_.max_decel_ms2 * dt;
     const double delta = setpoint_ms_ - rate_limited_setpoint_ms_;
@@ -109,7 +109,7 @@ public:
     }
     rate_limited_setpoint_ms_ = std::clamp(rate_limited_setpoint_ms_, 0.0, params_.max_speed_ms);
 
-    // ── PI + D ──────────────────────────────────────────────────────
+    // ── PI + D ──
     const double error = rate_limited_setpoint_ms_ - measured_speed_ms;
 
     integrator_ = std::clamp(
@@ -126,10 +126,10 @@ public:
     const double p_term = params_.kp * error;
     const double i_term = params_.ki * integrator_;
 
-    // ── Feedforward ─────────────────────────────────────────────────
+    // ── Feedforward ──
     const double ff = params_.feedforward_gain * lookup_feedforward(rate_limited_setpoint_ms_);
 
-    // ── Output ──────────────────────────────────────────────────────
+    // ── Output ──
     const double u_raw = ff + p_term + i_term + d_term;
     const double u = std::clamp(u_raw, 0.0, params_.max_throttle);
 

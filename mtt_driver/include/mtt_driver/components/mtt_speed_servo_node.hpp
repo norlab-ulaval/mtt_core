@@ -55,16 +55,16 @@ public:
   explicit MttSpeedServoNode(const rclcpp::NodeOptions & options);
 
 private:
-  // ── Timer callbacks ────────────────────────────────────────────────
+  // ── Timer callbacks ──
   void control_loop();
   void characterize_loop();
 
-  // ── Helpers ────────────────────────────────────────────────────────
+  // ── Helpers ──
   void publish_zero_cmd();
   void publish_diagnostics(const logic::SpeedServoDebug & dbg);
   void log_lut_yaml(const std::vector<std::pair<double, double>> & lut) const;
 
-  // ── Parameters ─────────────────────────────────────────────────────
+  // ── Parameters ──
   std::string mode_;
   double feedback_timeout_s_;
   double command_timeout_s_;
@@ -76,10 +76,10 @@ private:
   double char_sample_time_s_;
   double char_max_speed_ms_;
 
-  // ── Controller ─────────────────────────────────────────────────────
+  // ── Controller ──
   logic::SpeedServo servo_;
 
-  // ── Shared state (mutex protected) ────────────────────────────────
+  // ── Shared state (mutex protected) ──
   mutable std::mutex state_mutex_;
 
   std::optional<double> latest_speed_ms_;        ///< from /mtt_tachometer
@@ -97,7 +97,7 @@ private:
   std::vector<double>   char_sample_buffer_;
   std::vector<std::pair<double, double>> char_lut_;
 
-  // ── ROS interfaces ────────────────────────────────────────────────
+  // ── ROS interfaces ──
   rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr              setpoint_sub_;
   rclcpp::Subscription<mtt_msgs::msg::MttTachometerData>::SharedPtr    tacho_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr                 deadman_sub_;

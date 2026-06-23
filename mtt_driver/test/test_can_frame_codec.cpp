@@ -8,7 +8,7 @@
 using namespace mtt;
 using namespace mtt::can;
 
-// ── CommandFrame defaults ─────────────────────────────────────────────
+// ── CommandFrame defaults ──
 TEST(CanFrameCodec, InitDefaultsCenter)
 {
   CommandFrame f;
@@ -18,7 +18,7 @@ TEST(CanFrameCodec, InitDefaultsCenter)
   EXPECT_EQ(f.brake_raw(), 0u);
 }
 
-// ── Throttle ─────────────────────────────────────────────────────────
+// ── Throttle ──
 TEST(CanFrameCodec, ThrottleNormalized)
 {
   CommandFrame f;
@@ -40,7 +40,7 @@ TEST(CanFrameCodec, ThrottleOutOfRange)
   EXPECT_FALSE(f.set_throttle(1.1));
 }
 
-// ── Brake ─────────────────────────────────────────────────────────────
+// ── Brake ──
 TEST(CanFrameCodec, BrakeNormalized)
 {
   CommandFrame f;
@@ -51,7 +51,7 @@ TEST(CanFrameCodec, BrakeNormalized)
   EXPECT_EQ(f.brake_raw(), VehicleParams::brake_max);
 }
 
-// ── Steering ─────────────────────────────────────────────────────────
+// ── Steering ──
 TEST(CanFrameCodec, SteerCenter)
 {
   CommandFrame f;
@@ -85,7 +85,7 @@ TEST(CanFrameCodec, SteerFullRight)
   EXPECT_EQ(f.steer_raw(), VehicleParams::steering_max_byte);
 }
 
-// ── Direction bit ─────────────────────────────────────────────────────
+// ── Direction bit ──
 TEST(CanFrameCodec, DirectionToggle)
 {
   CommandFrame f;
@@ -97,7 +97,7 @@ TEST(CanFrameCodec, DirectionToggle)
   EXPECT_EQ(f.get_direction(), Direction::Forward);
 }
 
-// ── Telemetry decoder ─────────────────────────────────────────────────
+// ── Telemetry decoder ──
 TEST(CanFrameCodec, TelemetryDecode)
 {
   // Synthesize a 8-byte frame

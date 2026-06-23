@@ -47,14 +47,14 @@ public:
   explicit TrailerLocalizerNode(const rclcpp::NodeOptions & options);
 
 private:
-  // ── Callbacks ──────────────────────────────────────────────────────
+  // ── Callbacks ──
   void onTractorOdom(nav_msgs::msg::Odometry::ConstSharedPtr msg);
   void onArticulationState(mtt_msgs::msg::MttArticulationState::ConstSharedPtr msg);
 
-  // ── Timer ──────────────────────────────────────────────────────────
+  // ── Timer ──
   void publishTrailerPose();
 
-  // ── Kinematics ─────────────────────────────────────────────────────
+  // ── Kinematics ──
   /// Δ(φ, α) = A_prefix · Rz(-π/2+α) · A_suffix · Rz(π/2+φ) · B
   Eigen::Isometry3d computeDelta(double phi, double alpha = 0.0) const;
 
@@ -75,18 +75,18 @@ private:
     const Eigen::Matrix<double, 6, 1> & J_alpha,
     const Eigen::Isometry3d & delta) const;
 
-  // ── Source selection ───────────────────────────────────────────────
+  // ── Source selection ──
   enum class FusionMode { kHardware, kLidar, kFused };
 
   double selectPhi(const mtt_msgs::msg::MttArticulationState & state) const;
   double selectSigmaPhi(const mtt_msgs::msg::MttArticulationState & state) const;
 
-  // ── Precomputed kinematic constants ───────────────────────────────
+  // ── Precomputed kinematic constants ──
   Eigen::Isometry3d A_prefix_;  ///< T_bf_bl · T_pitch_origin  (before pitch rotation)
   Eigen::Isometry3d A_suffix_;  ///< T_yaw_origin              (between pitch and yaw)
   Eigen::Isometry3d B_;         ///< T_roll                    (after yaw rotation)
 
-  // ── Parameters ────────────────────────────────────────────────────
+  // ── Parameters ──
   FusionMode fusion_mode_{FusionMode::kHardware};
   double sigma_phi_hardware_{0.008};          ///< rad — yaw encoder σ
   double sigma_phi_lidar_{0.035};             ///< rad — yaw LiDAR KF σ
@@ -99,7 +99,7 @@ private:
   std::string trailer_tf_frame_{"trailer_body"};
   bool broadcast_tf_{true};
 
-  // ── Shared state (mutex-protected) ────────────────────────────────
+  // ── Shared state (mutex-protected) ──
   mutable std::mutex state_mutex_;
   std::optional<nav_msgs::msg::Odometry> latest_odom_;
   std::optional<mtt_msgs::msg::MttArticulationState> latest_articulation_;
@@ -110,7 +110,7 @@ private:
   std::optional<double> latest_lidar_pitch_;
   rclcpp::Time latest_lidar_pitch_stamp_{0, 0, RCL_ROS_TIME};
 
-  // ── ROS interfaces ────────────────────────────────────────────────
+  // ── ROS interfaces ──
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
   rclcpp::Subscription<mtt_msgs::msg::MttArticulationState>::SharedPtr articulation_sub_;
   rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr isam2_phi_sub_;

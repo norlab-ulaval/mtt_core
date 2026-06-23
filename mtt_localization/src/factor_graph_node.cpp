@@ -97,7 +97,7 @@ public:
   }
 
 private:
-  // ─── Parameter declarations ───────────────────────────────────────
+  // ─── Parameter declarations ──
   void declare_parameters() {
     declare_parameter("use_imu_primary", true);
     declare_parameter("use_track_odom", true);
@@ -209,7 +209,7 @@ private:
     trailer_min_confidence_ = get_parameter("trailer_min_confidence").as_double();
   }
 
-  // ─── ISAM2 setup ─────────────────────────────────────────────────
+  // ─── ISAM2 setup ──
   void setup_isam2() {
     gtsam::ISAM2Params params;
     params.relinearizeThreshold =
@@ -280,7 +280,7 @@ private:
         p, current_state_.imu_bias);
   }
 
-  // ─── Publishers ──────────────────────────────────────────────────
+  // ─── Publishers ──
   void setup_publishers() {
     odom_pub_ = create_publisher<nav_msgs::msg::Odometry>("localization/odom", 10);
     articulation_pub_ = create_publisher<std_msgs::msg::Float64>(
@@ -292,7 +292,7 @@ private:
     tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
   }
 
-  // ─── Subscribers ─────────────────────────────────────────────────
+  // ─── Subscribers ──
   void setup_subscribers() {
     if (use_imu_) {
       imu_sub_ = create_subscription<sensor_msgs::msg::Imu>(
@@ -345,7 +345,7 @@ private:
         use_articulation_, use_articulation_ && use_trailer_pose_);
   }
 
-  // ─── Sensor callbacks ────────────────────────────────────────────
+  // ─── Sensor callbacks ──
   void imu_callback(const sensor_msgs::msg::Imu::SharedPtr msg) {
     std::lock_guard<std::mutex> lock(mtx_);
     double t = rclcpp::Time(msg->header.stamp).seconds();
@@ -432,7 +432,7 @@ private:
     latest_trailer_confidence_ = msg->data;
   }
 
-  // ─── Helpers ─────────────────────────────────────────────────────
+  // ─── Helpers ──
   gtsam::Point3 gps_to_local(double lat, double lon, double alt) const {
     double lat_ref = gps_origin_lat_ * kDeg2Rad;
     double m_per_deg_lat = kEarthRadius * kDeg2Rad;
@@ -456,7 +456,7 @@ private:
             gtsam::Point3(p.x, p.y, p.z)};
   }
 
-  // ─── Main optimisation loop ───────────────────────────────────────
+  // ─── Main optimisation loop ──
   void optimize_and_publish() {
     std::lock_guard<std::mutex> lock(mtx_);
 
@@ -474,7 +474,7 @@ private:
     const uint64_t prev_key = current_state_.key_index;
     const uint64_t curr_key = prev_key + 1;
 
-    // ── IMU preintegration factor ───────────────────────────────────
+    // ── IMU preintegration factor ──
     if (use_imu_ && imu_data_count_ > 0) {
       graph_.add(gtsam::CombinedImuFactor(
           X(prev_key), V(prev_key), X(curr_key), V(curr_key),
@@ -492,7 +492,7 @@ private:
     initial_values_.insert(V(curr_key), predicted.velocity());
     initial_values_.insert(B(curr_key), current_state_.imu_bias);
 
-    // ── GPS position ─────────────────────────────────────────────────
+    // ── GPS position ──
     if (has_pending_gps_ && gps_origin_set_) {
       auto local = gps_to_local(pending_gps_.latitude,
                                 pending_gps_.longitude,
@@ -509,7 +509,7 @@ private:
       has_pending_gps_ = false;
     }
 
-    // ── GPS heading ──────────────────────────────────────────────────
+    // ── GPS heading ──
     if (has_pending_heading_) {
       auto & q = pending_heading_.quaternion;
       auto heading_noise = gtsam::noiseModel::Diagonal::Sigmas(
@@ -522,7 +522,7 @@ private:
       has_pending_heading_ = false;
     }
 
-    // ── Track odometry ───────────────────────────────────────────────
+    // ── Track odometry ──
     if (has_pending_odom_ && has_last_odom_) {
       gtsam::Pose3 delta =
           odom_to_pose3(last_odom_).between(odom_to_pose3(pending_odom_));
@@ -535,7 +535,7 @@ private:
       has_pending_odom_ = false;
     }
 
-    // ── LiDAR odometry ───────────────────────────────────────────────
+    // ── LiDAR odometry ──
     if (has_pending_lidar_odom_ && has_last_lidar_odom_) {
       gtsam::Pose3 delta =
           odom_to_pose3(last_lidar_odom_).between(odom_to_pose3(pending_lidar_odom_));
@@ -545,7 +545,7 @@ private:
       has_pending_lidar_odom_ = false;
     }
 
-    // ── Visual odometry ──────────────────────────────────────────────
+    // ── Visual odometry ──
     if (has_pending_visual_odom_ && has_last_visual_odom_) {
       gtsam::Pose3 delta =
           odom_to_pose3(last_visual_odom_).between(odom_to_pose3(pending_visual_odom_));
@@ -555,9 +555,7 @@ private:
       has_pending_visual_odom_ = false;
     }
 
-    // ══════════════════════════════════════════════════════════════════
-    // ARTICULATION FACTORS — H(curr_key)=φ  [and P(curr_key)=α]
-    // ══════════════════════════════════════════════════════════════════
+    // ── Articulation factors: H(curr_key)=φ, P(curr_key)=α ──
     if (use_articulation_) {
       // Initial value for H(curr_key): propagate from previous optimised φ
       initial_values_.insert(H_key(curr_key), current_state_.trailer_angle);
@@ -567,7 +565,7 @@ private:
         initial_values_.insert(P_key(curr_key), current_alpha_);
       }
 
-      // ── Yaw dynamics: BetweenFactor H(prev)→H(curr) ───────────────
+      // ── Yaw dynamics: BetweenFactor H(prev)→H(curr) ──
       // Penalises large φ changes between keyframes (random-walk prior).
       {
         auto dyn_noise = gtsam::noiseModel::Isotropic::Sigma(
@@ -576,7 +574,7 @@ private:
             H_key(prev_key), H_key(curr_key), 0.0, dyn_noise));
       }
 
-      // ── Pitch dynamics: BetweenFactor P(prev)→P(curr) ────────────
+      // ── Pitch dynamics: BetweenFactor P(prev)→P(curr) ──
       // Pitch changes slowly (terrain slope); σ_dynamics is tight (~0.5°/KF).
       if (use_pitch_state_) {
         auto pitch_dyn_noise = gtsam::noiseModel::Isotropic::Sigma(
@@ -588,7 +586,7 @@ private:
       if (has_pending_articulation_) {
         const auto & art = pending_articulation_;
 
-        // ── Yaw encoder: PriorFactor on H(curr_key) ──────────────────
+        // ── Yaw encoder: PriorFactor on H(curr_key) ──
         const double phi_meas =
             art.hardware_fresh ? art.hardware_rad : art.effective_rad;
         const double sigma_enc =
@@ -596,14 +594,14 @@ private:
         graph_.addPrior(H_key(curr_key), phi_meas,
             gtsam::noiseModel::Isotropic::Sigma(1, sigma_enc));
 
-        // ── Pitch encoder: PriorFactor on P(curr_key) ─────────────────
+        // ── Pitch encoder: PriorFactor on P(curr_key) ──
         // Only when potentiometer reading is fresh (ADC1, 8-bit).
         if (use_pitch_state_ && art.pitch_fresh) {
           graph_.addPrior(P_key(curr_key), art.pitch_rad,
               gtsam::noiseModel::Isotropic::Sigma(1, noise_.pitch_sigma_hardware));
         }
 
-        // ── Trailer LiDAR pose factor ──────────────────────────────────
+        // ── Trailer LiDAR pose factor ──
         // TrailerPoseFactorFull (joint φ+α) when pitch state enabled,
         // TrailerPoseFactor (φ only) when not.
         // Noise scaled by 1/√confidence — bad detections contribute little.
@@ -636,9 +634,7 @@ private:
       }
     }
 
-    // ══════════════════════════════════════════════════════════════════
-    // ISAM2 update
-    // ══════════════════════════════════════════════════════════════════
+    // ── ISAM2 update ──
     try {
       isam2_->update(graph_, initial_values_);
       auto result = isam2_->calculateEstimate();
@@ -656,7 +652,7 @@ private:
         }
       }
 
-      // ── Extract marginal covariances ─────────────────────────────
+      // ── Extract marginal covariances ──
       // isam2_->marginalCovariance(key) runs back-substitution on the
       // Bayes tree — O(n) but cheap for a single key at 50 Hz.
       if (extract_covariance_) {
@@ -695,7 +691,7 @@ private:
     publish_tf();
   }
 
-  // ─── Publish tractor odometry (with covariance from ISAM2) ───────
+  // ─── Publish tractor odometry (with covariance from ISAM2) ──
   void publish_odometry() {
     nav_msgs::msg::Odometry msg;
     msg.header.stamp    = has_latest_odom_ ? latest_odom_.header.stamp
@@ -734,7 +730,7 @@ private:
     odom_pub_->publish(msg);
   }
 
-  // ─── Publish optimised yaw angle ─────────────────────────────────
+  // ─── Publish optimised yaw angle ──
   void publish_articulation() {
     if (!use_articulation_) return;
     std_msgs::msg::Float64 msg;
@@ -742,7 +738,7 @@ private:
     articulation_pub_->publish(msg);
   }
 
-  // ─── Publish optimised pitch angle ───────────────────────────────
+  // ─── Publish optimised pitch angle ──
   void publish_pitch() {
     if (!use_articulation_ || !use_pitch_state_ || !pitch_pub_) return;
     std_msgs::msg::Float64 msg;
@@ -750,7 +746,7 @@ private:
     pitch_pub_->publish(msg);
   }
 
-  // ─── TF broadcast: map → odom ────────────────────────────────────
+  // ─── TF broadcast: map → odom ──
   void publish_tf() {
     if (!has_latest_odom_) return;
     gtsam::Pose3 map_to_base = current_state_.pose;
@@ -773,7 +769,7 @@ private:
     tf_broadcaster_->sendTransform(tf);
   }
 
-  // ─── Members ─────────────────────────────────────────────────────
+  // ─── Members ──
   std::mutex mtx_;
 
   // ISAM2

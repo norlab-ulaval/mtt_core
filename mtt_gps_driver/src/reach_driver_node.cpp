@@ -62,7 +62,7 @@ static int64_t gps_utc_to_ns(int day, int month, int year_2digit, double time_of
 class ReachDriverNode : public rclcpp::Node {
 public:
   ReachDriverNode() : Node("reach_driver_node") {
-    // ── Parameters ──────────────────────────────────────────────────
+    // ── Parameters ──
     declare_parameter("connection_type", "serial");  // "tcp" | "serial"
     declare_parameter("frame_id", "gps_rover_link");
     declare_parameter("reconnect_interval_s", 3.0);
@@ -89,7 +89,7 @@ public:
       throw std::invalid_argument("Invalid connection_type: " + conn_type_);
     }
 
-    // ── Publishers ──────────────────────────────────────────────────
+    // ── Publishers ──
     fix_pub_     = create_publisher<sensor_msgs::msg::NavSatFix>("fix", 10);
     nmea_pub_    = create_publisher<nmea_msgs::msg::Sentence>("nmea_sentence", 50);
     timeref_pub_ = create_publisher<sensor_msgs::msg::TimeReference>("time_reference", 10);
@@ -114,7 +114,7 @@ public:
   }
 
 private:
-  // ─── I/O loop (reconnects on failure) ─────────────────────────────
+  // ─── I/O loop (reconnects on failure) ──
   void io_loop() {
     while (running_ && rclcpp::ok()) {
       bool ok = (conn_type_ == "tcp") ? connect_tcp() : connect_serial();
@@ -136,7 +136,7 @@ private:
     }
   }
 
-  // ─── TCP connection ────────────────────────────────────────────────
+  // ─── TCP connection ──
   bool connect_tcp() {
     fd_ = ::socket(AF_INET, SOCK_STREAM, 0);
     if (fd_ < 0) return false;
@@ -156,7 +156,7 @@ private:
     return true;
   }
 
-  // ─── Serial connection (POSIX termios) ────────────────────────────
+  // ─── Serial connection (POSIX termios) ──
   bool connect_serial() {
     fd_ = ::open(serial_port_.c_str(), O_RDWR | O_NOCTTY | O_NONBLOCK);
     if (fd_ < 0) return false;
@@ -202,7 +202,7 @@ private:
     if (fd_ >= 0) { ::close(fd_); fd_ = -1; }
   }
 
-  // ─── NMEA stream reader ────────────────────────────────────────────
+  // ─── NMEA stream reader ──
   void read_stream() {
     std::string buffer;
     char chunk[1024];
@@ -237,7 +237,7 @@ private:
     }
   }
 
-  // ─── GPS-time stamp computation ───────────────────────────────────
+  // ─── GPS-time stamp computation ──
   // Returns a GPS-UTC-based rclcpp::Time when date is known, or now() otherwise.
   // Also publishes TimeReference on every call so the bag contains the full
   // GPS↔ROS clock correspondence for post-processing alignment.
@@ -272,7 +272,7 @@ private:
     return gps_time;
   }
 
-  // ─── NMEA sentence processor ──────────────────────────────────────
+  // ─── NMEA sentence processor ──
   void process_sentence(const std::string& sentence) {
     ++nmea_sentence_count_;
 
@@ -283,7 +283,7 @@ private:
     nmea_msg.sentence        = sentence;
     nmea_pub_->publish(nmea_msg);
 
-    // ── RMC: update calendar date (needed for GPS-UTC timestamp) ────
+    // ── RMC: update calendar date (needed for GPS-UTC timestamp) ──
     if (sentence.find("RMC") != std::string::npos) {
       ++rmc_sentence_count_;
       auto rmc = mtt_gps::parse_rmc(sentence);
@@ -304,7 +304,7 @@ private:
       return;
     }
 
-    // ── GGA: position fix ────────────────────────────────────────────
+    // ── GGA: position fix ──
     if (sentence.find("GGA") != std::string::npos) {
       ++gga_sentence_count_;
       auto gga = mtt_gps::parse_gga(sentence);
@@ -440,7 +440,7 @@ private:
       static_cast<unsigned long long>(timeref_count));
   }
 
-  // ─── Members ──────────────────────────────────────────────────────
+  // ─── Members ──
   rclcpp::Publisher<sensor_msgs::msg::NavSatFix>::SharedPtr      fix_pub_;
   rclcpp::Publisher<nmea_msgs::msg::Sentence>::SharedPtr          nmea_pub_;
   rclcpp::Publisher<sensor_msgs::msg::TimeReference>::SharedPtr   timeref_pub_;

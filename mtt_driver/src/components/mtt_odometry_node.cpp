@@ -38,7 +38,7 @@ public:
   explicit MttOdometryNode(const rclcpp::NodeOptions& options)
   : rclcpp::Node("mtt_odometry_node", options)
   {
-    // ── Parameters ────────────────────────────────────────────────────
+    // ── Parameters ──
     odom_frame_       = declare_parameter("odom_frame",       std::string("odom"));
     base_frame_       = declare_parameter("base_frame",       std::string("base_footprint"));
     broadcast_tf_     = declare_parameter("broadcast_tf",     true);
@@ -108,12 +108,12 @@ public:
       cmd_angular_mode_ = "normalized_steer";
     }
 
-    // ── Initial odometry mode ─────────────────────────────────────────
+    // ── Initial odometry mode ──
     calculator_ = logic::OdometryFactory::create(
       logic::DrivingMode::SingleTrailer, track_width_m_, wheelbase_m_);
     apply_initial_pose();
 
-    // ── Publishers ────────────────────────────────────────────────────
+    // ── Publishers ──
     odom_pub_        = create_publisher<nav_msgs::msg::Odometry>("mtt_odometry", 10);
     articulation_pub_ = create_publisher<std_msgs::msg::Float64>("mtt_articulation_angle", 10);
     articulation_state_pub_ = create_publisher<mtt_msgs::msg::MttArticulationState>(
@@ -123,7 +123,7 @@ public:
         runtime_joint_states_topic_, 10);
     }
 
-    // ── Subscribers ────────────────────────────────────────────────────────────
+    // ── Subscribers ──
     tacho_sub_ = create_subscription<mtt_msgs::msg::MttTachometerData>(
       "mtt_tachometer", rclcpp::SensorDataQoS(),
       [this](const mtt_msgs::msg::MttTachometerData::SharedPtr msg){ on_tachometer(msg); });
@@ -171,7 +171,7 @@ public:
       "trailer/articulation_angle", rclcpp::SensorDataQoS(),
       [this](const std_msgs::msg::Float64::SharedPtr msg){ on_lidar_articulation(msg); });
 
-    // ── Tacho watchdog — warn if no tachometer data arrives after 5s ──────
+    // ── Tacho watchdog — warn if no tachometer data arrives after 5s ──
     tacho_watchdog_timer_ = create_wall_timer(std::chrono::seconds(5), [this]() {
       if (!last_tacho_wall_time_) {
         RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 10000,
@@ -181,7 +181,7 @@ public:
       }
     });
 
-    // ── Services ────────────────────────────────────────────────────────────
+    // ── Services ──
     reset_srv_ = create_service<std_srvs::srv::Trigger>(
       "mtt/reset_odometry",
       [this](
@@ -274,7 +274,7 @@ private:
     calculator_->import_pose(pose);
   }
 
-  // ── State ─────────────────────────────────────────────────────────
+  // ── State ──
   std::string odom_frame_, base_frame_, steer_mode_, cmd_angular_mode_, cmd_vel_topic_, runtime_joint_states_topic_;
   bool     broadcast_tf_, pivot_turn_, publish_runtime_joint_states_;
   double   track_width_m_, wheelbase_m_;
@@ -338,7 +338,7 @@ private:
   std::unique_ptr<logic::IOdometryCalculator> calculator_;
   logic::DrivingMode current_mode_{logic::DrivingMode::SingleTrailer};
 
-  // ── ROS I/O ───────────────────────────────────────────────────────
+  // ── ROS I/O ──
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_pub_;
   rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr  articulation_pub_;
   rclcpp::Publisher<mtt_msgs::msg::MttArticulationState>::SharedPtr articulation_state_pub_;
@@ -437,7 +437,7 @@ private:
     joint_state_pub_->publish(msg);
   }
 
-  // ── Callbacks ─────────────────────────────────────────────────────
+  // ── Callbacks ──
   void on_hardware_articulation(const std_msgs::msg::Float64::SharedPtr msg) {
     if (!std::isfinite(msg->data)) {
       return;

@@ -45,7 +45,7 @@ struct TachometerState {
     return std::chrono::duration<double, std::milli>(age).count();
   }
 
-  // ── Speed calculations ────────────────────────────────────────────
+  // ── Speed calculations ──
 
   // Speed in m/s from raw RPS (unsigned)
   double speed_ms() const {
@@ -64,7 +64,7 @@ struct TachometerState {
            * VehicleParams::track_length_km * 3600.0;
   }
 
-  // ── Distance calculations ─────────────────────────────────────────
+  // ── Distance calculations ──
 
   // Absolute distance in meters from cumulative ticks
   double absolute_distance_m() const {

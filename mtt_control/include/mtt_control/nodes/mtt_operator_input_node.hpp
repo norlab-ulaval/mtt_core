@@ -78,17 +78,21 @@ private:
   rclcpp::Time rt_press_start_time_;
   bool rt_is_fully_pressed_{false};
 
-  // ---- COM motor mode ----
+  // ── COM motor mode ──
   // When com_mode_active_ is true, the right stick (angular_axis) drives the
   // COM motor via mtt_control/com_steer instead of the articulation servo.
+  // Button 7 press durations:
+  //   < 1.5 s  → toggle COM ON/OFF
+  //   1.5–4.0 s → set_home (save current position as home)
+  //   > 4.0 s   → park (return to home)
   bool   enable_com_mode_switch_{true};
   int    com_toggle_button_index_{7};
   bool   invert_com_steer_{false};
   bool   com_mode_active_{false};
-  // Double-press on com_toggle → park (return to home).
-  double             com_double_press_window_s_{0.4};
-  rclcpp::Time       last_com_toggle_press_time_{0, 0, RCL_ROS_TIME};
-  bool               com_btn_first_press_pending_{false};
+  double com_short_press_max_s_{1.5};
+  double com_long_press_min_s_{4.0};
+  rclcpp::Time       com_btn_press_time_{0, 0, RCL_ROS_TIME};
+  bool               com_btn_was_pressed_{false};
 
   JoystickState joystick_state_;
 
@@ -106,6 +110,7 @@ private:
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr    com_mode_pub_;
   rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr com_steer_pub_;
   rclcpp::Publisher<std_msgs::msg::Empty>::SharedPtr   com_park_pub_;
+  rclcpp::Publisher<std_msgs::msg::Empty>::SharedPtr   com_set_home_pub_;
 
   rclcpp::Client<mtt_interfaces::srv::SetSteerControlMode>::SharedPtr can_steer_mode_client_;
   rclcpp::Client<mtt_interfaces::srv::SetSteerControlMode>::SharedPtr odom_steer_mode_client_;

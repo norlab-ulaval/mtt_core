@@ -40,11 +40,12 @@ MttOperatorInputNode::MttOperatorInputNode(const rclcpp::NodeOptions & options)
   enable_steering_mode_switch_ = declare_parameter("enable_steering_mode_switch", true);
   steer_mode_switch_button_index_ = declare_parameter("steer_mode_switch_button_index", 4);
 
-  // COM motor mode toggle + double-press park
+  // COM motor mode — duration-based actions on button 7
   enable_com_mode_switch_      = declare_parameter("enable_com_mode_switch",      true);
   com_toggle_button_index_     = declare_parameter("com_toggle_button_index",     7);
   invert_com_steer_            = declare_parameter("invert_com_steer",            false);
-  com_double_press_window_s_   = declare_parameter("com_double_press_window_s",   0.4);
+  com_short_press_max_s_       = declare_parameter("com_short_press_max_s",       1.5);
+  com_long_press_min_s_        = declare_parameter("com_long_press_min_s",        4.0);
 
   joy_sub_ = create_subscription<sensor_msgs::msg::Joy>(
     "joy",
@@ -65,6 +66,7 @@ MttOperatorInputNode::MttOperatorInputNode(const rclcpp::NodeOptions & options)
   com_mode_pub_  = create_publisher<std_msgs::msg::Bool>  ("mtt_control/com_mode",  20);
   com_steer_pub_ = create_publisher<std_msgs::msg::Float64>("mtt_control/com_steer", 20);
   com_park_pub_  = create_publisher<std_msgs::msg::Empty> ("mtt_control/com_park",  10);
+  com_set_home_pub_ = create_publisher<std_msgs::msg::Empty>("mtt_control/com_set_home", 10);
 
   publish_timer_ = create_wall_timer(
     std::chrono::milliseconds(20),
@@ -156,40 +158,39 @@ void MttOperatorInputNode::on_joy(const sensor_msgs::msg::Joy::SharedPtr msg)
     toggle_steering_mode();
   }
 
-  // ---- COM motor mode toggle + double-press park ----
-  // Single press  → toggle COM ON/OFF.
-  // Double press (two presses < com_double_press_window_s apart) → park motor at home.
+  // ---- COM motor mode + duration-based actions on button 7 ----
+  // Short press (< com_short_press_max_s_) → toggle COM ON/OFF.
+  // Medium press (com_short_press_max_s_ – com_long_press_min_s_) → set_home.
+  // Long press (> com_long_press_min_s_) → park (return to home).
   if (enable_com_mode_switch_) {
-    const bool com_toggle_rising =
-      joystick_state_.button_rising(static_cast<std::size_t>(com_toggle_button_index_));
+    const bool btn_down = joystick_state_.button_pressed(
+      static_cast<std::size_t>(com_toggle_button_index_));
 
-    if (com_toggle_rising) {
-      const rclcpp::Time now_t = now();
-      const double elapsed = (now_t - last_com_toggle_press_time_).seconds();
+    // Rising edge: record press time
+    if (btn_down && !com_btn_was_pressed_) {
+      com_btn_press_time_ = now();
+    }
 
-      if (com_btn_first_press_pending_ && elapsed < com_double_press_window_s_) {
-        // Double press → park (do NOT toggle a second time)
-        com_btn_first_press_pending_ = false;
+    // Falling edge: calculate hold duration and act
+    if (!btn_down && com_btn_was_pressed_) {
+      const double hold_s = (now() - com_btn_press_time_).seconds();
+
+      if (hold_s >= com_long_press_min_s_) {
         RCLCPP_INFO(get_logger(),
-                    "COM double-press → PARK (return to home, save calibration)");
+                    "COM btn held %.1fs → PARK (return to home)", hold_s);
         com_park_pub_->publish(std_msgs::msg::Empty());
+      } else if (hold_s >= com_short_press_max_s_) {
+        RCLCPP_INFO(get_logger(),
+                    "COM btn held %.1fs → SET_HOME (save position)", hold_s);
+        com_set_home_pub_->publish(std_msgs::msg::Empty());
       } else {
-        // First press → toggle COM mode immediately
-        com_btn_first_press_pending_  = true;
-        last_com_toggle_press_time_   = now_t;
         com_mode_active_ = !com_mode_active_;
         RCLCPP_INFO(get_logger(), "COM motor mode: %s",
                     com_mode_active_ ? "ON (right stick → motor)" : "OFF (right stick → articulation)");
       }
     }
 
-    // Expire the pending window so it doesn't linger forever
-    if (com_btn_first_press_pending_) {
-      const double elapsed = (now() - last_com_toggle_press_time_).seconds();
-      if (elapsed >= com_double_press_window_s_) {
-        com_btn_first_press_pending_ = false;
-      }
-    }
+    com_btn_was_pressed_ = btn_down;
   }
 
   float linear_axis = joystick_state_.axis_value(static_cast<std::size_t>(linear_axis_index_));
@@ -401,7 +402,7 @@ void MttOperatorInputNode::publish_com_state(
   com_mode_pub_->publish(mode_msg);
 
   // com_steer: forward the already-shaped angular axis value.
-  // When COM is OFF we still publish 0 so the motor controller always gets a message.
+
   auto steer_msg = std_msgs::msg::Float64();
   steer_msg.data = com_mode_active_ && command_enabled
     ? static_cast<double>(invert_com_steer_ ? -shaped_angular_axis : shaped_angular_axis)

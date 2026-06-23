@@ -13,14 +13,14 @@
 
 namespace mtt::logic {
 
-// ── Driving modes ─────────────────────────────────────────────────────
+// ── Driving modes ──
 enum class DrivingMode : uint8_t {
   SingleTrailer      = 0,
   DualDifferential   = 1,
   DualSerpentine     = 2,
 };
 
-// ── Yaw rate source quality — used to scale heading covariance ────────
+// ── Yaw rate source quality — used to scale heading covariance ──
 enum class YawRateSource : uint8_t {
   MODEL_ONLY            = 0,  // open-loop command model, highest uncertainty
   HARDWARE_CLOSED_LOOP  = 1,  // hardware articulation angle in closed-loop
@@ -28,7 +28,7 @@ enum class YawRateSource : uint8_t {
   IMU_BLEND             = 3,  // complementary filter: IMU + model (best)
 };
 
-// ── Input snapshot passed to each odometry calculator ────────────────
+// ── Input snapshot passed to each odometry calculator ──
 struct OdometryInput {
   double   distance_km{0.0};        // Absolute cumulative distance from tachometer
   double   speed_ms{0.0};           // Instantaneous speed (signed with direction)
@@ -47,7 +47,7 @@ struct OdometryInput {
   YawRateSource yaw_rate_source{YawRateSource::MODEL_ONLY};
 };
 
-// ── Output pose from each calculator ─────────────────────────────────
+// ── Output pose from each calculator ──
 struct OdometryOutput {
   double x{0.0};
   double y{0.0};
@@ -62,14 +62,14 @@ struct OdometryOutput {
   double vel_cov{0.15};
 };
 
-// ── Serializable pose for mode-switch state preservation ─────────────
+// ── Serializable pose for mode-switch state preservation ──
 struct OdometryPose {
   double x{0.0}, y{0.0}, heading{0.0};
   double articulation_angle{0.0};
   std::optional<double> last_abs_m{};
 };
 
-// ── Abstract calculator ───────────────────────────────────────────────
+// ── Abstract calculator ──
 class IOdometryCalculator {
 public:
   virtual ~IOdometryCalculator() = default;
@@ -80,7 +80,7 @@ public:
   virtual std::string mode_name() const = 0;
 };
 
-// ── Single Trailer — articulated dynamics + encoder integration ───────
+// ── Single Trailer — articulated dynamics + encoder integration ──
 class SingleTrailerOdometry final : public IOdometryCalculator {
 public:
   explicit SingleTrailerOdometry();
@@ -103,7 +103,7 @@ private:
   bool use_imu_{true};
 };
 
-// ── Dual Differential — skid-steer fallback ───────────────────────────
+// ── Dual Differential — skid-steer fallback ──
 class DualDifferentialOdometry final : public IOdometryCalculator {
 public:
   explicit DualDifferentialOdometry(double track_width_m = VehicleParams::track_width);
@@ -120,7 +120,7 @@ private:
   std::optional<double> last_abs_m_{};
 };
 
-// ── Dual Serpentine — bicycle model ───────────────────────────────────
+// ── Dual Serpentine — bicycle model ──
 class DualSerpentineOdometry final : public IOdometryCalculator {
 public:
   explicit DualSerpentineOdometry(double wheelbase_m = VehicleParams::total_wheelbase());
@@ -137,7 +137,7 @@ private:
   std::optional<double> last_abs_m_{};
 };
 
-// ── Factory ───────────────────────────────────────────────────────────
+// ── Factory ──
 class OdometryFactory {
 public:
   static std::unique_ptr<IOdometryCalculator> create(

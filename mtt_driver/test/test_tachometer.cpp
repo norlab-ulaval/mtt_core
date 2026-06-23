@@ -6,7 +6,7 @@
 
 using namespace mtt;
 
-// ── Gear ratio ────────────────────────────────────────────────────────
+// ── Gear ratio ──
 TEST(Tachometer, GearRatioIs324)
 {
   // Per mtt_encoder_methodology.md: G_theory = (36/16)*(32/15)*(54/8) = 32.4
@@ -21,7 +21,7 @@ TEST(Tachometer, MechanicalGearRatioIs32_4)
   EXPECT_NEAR(g, 32.4, 1e-6);
 }
 
-// ── Speed calculation ─────────────────────────────────────────────────
+// ── Speed calculation ──
 TEST(Tachometer, SpeedAtZeroRPS)
 {
   TachometerState t;
@@ -53,7 +53,7 @@ TEST(Tachometer, SpeedTrackLength)
   EXPECT_NEAR(t.speed_ms(), expected_speed, 0.001);
 }
 
-// ── Distance calculation ──────────────────────────────────────────────
+// ── Distance calculation ──
 TEST(Tachometer, DistanceAtZeroTicks)
 {
   TachometerState t;

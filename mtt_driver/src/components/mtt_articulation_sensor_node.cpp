@@ -13,14 +13,14 @@ namespace mtt
 MttArticulationSensorNode::MttArticulationSensorNode(const rclcpp::NodeOptions & options)
 : rclcpp::Node("mtt_articulation_sensor_node", options)
 {
-  // ── Parameters ────────────────────────────────────────────────────────────
+  // ── Parameters ──
   serial_port_name_ = declare_parameter("serial_port",
     std::string("/dev/serial/by-id/usb-STMicroelectronics_STM32_STLink_066EFF373146363143225155-if02"));
   baud_rate_              = declare_parameter("baud_rate", 921600);
   publish_rate_hz_        = declare_parameter("publish_rate_hz", 100.0);
   filter_window_size_     = declare_parameter("filter_window_size", 50);
 
-  // ── Yaw (ADC2, 12-bit, PA6) ────────────────────────────────────────────
+  // ── Yaw (ADC2, 12-bit, PA6) ──
   // Convention: positive = left (CCW, REP-103). LUT from Badger driver.
   // Low bits ≈ +48° (left), high bits ≈ -49° (right) — do NOT invert by default.
   yaw_invert_sign_        = declare_parameter("invert_sign", false);
@@ -40,7 +40,7 @@ MttArticulationSensorNode::MttArticulationSensorNode(const rclcpp::NodeOptions &
     -20,-21,-28,-26,-30,-35,-40,-43,-45,-49
   });
 
-  // ── Pitch (ADC1, 8-bit, PA0) ───────────────────────────────────────────
+  // ── Pitch (ADC1, 8-bit, PA0) ──
   // Hitch longitudinal / tilt angle.
   // Two calibration modes (see header). Use whichever is available:
   //   Mode 1 — full LUT  : pitch_bit_coords + pitch_angle_coords_deg
@@ -59,7 +59,7 @@ MttArticulationSensorNode::MttArticulationSensorNode(const rclcpp::NodeOptions &
 
   pitch_lut_available_ = pitch_lut_full || pitch_linear;
 
-  // ── Publishers ────────────────────────────────────────────────────────────
+  // ── Publishers ──
   // Yaw — primary articulation steering angle (same topic as before)
   yaw_pub_ = create_publisher<std_msgs::msg::Float64>("/hardware/articulation_angle", 10);
 
@@ -82,13 +82,13 @@ MttArticulationSensorNode::MttArticulationSensorNode(const rclcpp::NodeOptions &
       "Set in mtt_articulation_sensor_node YAML.");
   }
 
-  // ── Timer ─────────────────────────────────────────────────────────────────
+  // ── Timer ──
   const auto timer_period = std::chrono::duration<double>(1.0 / publish_rate_hz_);
   publish_timer_ = create_wall_timer(
     std::chrono::duration_cast<std::chrono::milliseconds>(timer_period),
     std::bind(&MttArticulationSensorNode::publish_timer_callback, this));
 
-  // ── Serial ────────────────────────────────────────────────────────────────
+  // ── Serial ──
   try {
     io_context_  = std::make_unique<boost::asio::io_context>();
     serial_port_ = std::make_unique<boost::asio::serial_port>(*io_context_, serial_port_name_);
@@ -114,7 +114,7 @@ MttArticulationSensorNode::~MttArticulationSensorNode()
   }
 }
 
-// ── Serial reader ─────────────────────────────────────────────────────────
+// ── Serial reader ──
 
 void MttArticulationSensorNode::read_loop()
 {
@@ -133,7 +133,7 @@ void MttArticulationSensorNode::read_loop()
   }
 }
 
-// ── 6-byte frame parser ───────────────────────────────────────────────────
+// ── 6-byte frame parser ──
 //
 // STM32 Create_Tx_buffer layout:
 //   byte[0] = 0xAA          (sync)
@@ -175,7 +175,7 @@ void MttArticulationSensorNode::process_byte(uint8_t byte)
 
         std::lock_guard<std::mutex> lock(data_mutex_);
 
-        // ── Yaw (ADC2) ──────────────────────────────────────────────────
+        // ── Yaw (ADC2) ──
         yaw_filter_buf_.push_back(yaw_bits);
         while (static_cast<int>(yaw_filter_buf_.size()) > filter_window_size_) {
           yaw_filter_buf_.pop_front();
@@ -189,7 +189,7 @@ void MttArticulationSensorNode::process_byte(uint8_t byte)
           latest_yaw_rad_ = angle_rad + yaw_angle_offset_rad_;
         }
 
-        // ── Pitch (ADC1) ────────────────────────────────────────────────
+        // ── Pitch (ADC1) ──
         pitch_filter_buf_.push_back(pitch_bits);
         while (static_cast<int>(pitch_filter_buf_.size()) > filter_window_size_) {
           pitch_filter_buf_.pop_front();
@@ -228,7 +228,7 @@ void MttArticulationSensorNode::process_byte(uint8_t byte)
   }
 }
 
-// ── LUT interpolation (shared by yaw and pitch) ───────────────────────────
+// ── LUT interpolation (shared by yaw and pitch) ──
 
 double MttArticulationSensorNode::interpolate_lut(
   double bits,
@@ -247,7 +247,7 @@ double MttArticulationSensorNode::interpolate_lut(
   return y0 + (bits - x0) * (y1 - y0) / (x1 - x0);
 }
 
-// ── Publish timer ─────────────────────────────────────────────────────────
+// ── Publish timer ──
 
 void MttArticulationSensorNode::publish_timer_callback()
 {

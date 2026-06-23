@@ -28,7 +28,7 @@ def generate_launch_description():
     cloud_merger_enable_self_bbox_filter    = LaunchConfiguration('cloud_merger_enable_self_bbox_filter')
     cloud_merger_enable_trailer_bbox_filter = LaunchConfiguration('cloud_merger_enable_trailer_bbox_filter')
 
-    # ── trailer_detector_node (V1.5) — ALWAYS launched ──────────────────────
+    # ── trailer_detector_node (V1.5) — ALWAYS launched ──
     # Articulation angle KF: fast, proven, independent.
     # Feeds /trailer/articulation_angle to both legacy and new estimator.
     trailer_detector = Node(
@@ -39,7 +39,7 @@ def generate_launch_description():
         parameters=[config, {'use_sim_time': use_sim_time}],
     )
 
-    # ── NEW: mtt_trailer_estimator_node (V1.0) — unified EKF ──────────────────
+    # ── NEW: mtt_trailer_estimator_node (V1.0) — unified EKF ──
     # Enabled when enable_new_trailer_estimator=true (default).
     # Subscribes to /trailer/articulation_angle from trailer_detector_node.
     # Publishes: /trailer/pose, /trailer/pose_in_map, /trailer/odom,
@@ -54,7 +54,7 @@ def generate_launch_description():
         parameters=[config, {'use_sim_time': use_sim_time}],
     )
 
-    # ── LEGACY: trailer_pose_node (V4.0) — for A/B comparison only ──────────
+    # ── LEGACY: trailer_pose_node (V4.0) — for A/B comparison only ──
     # Enabled when enable_new_trailer_estimator=false.
     # Do not run both simultaneously — they publish to the same topics.
     trailer_pose = Node(
@@ -66,7 +66,7 @@ def generate_launch_description():
         parameters=[config, {'use_sim_time': use_sim_time}],
     )
 
-    # ── cloud_merger_node — unchanged ─────────────────────────────────────────
+    # ── cloud_merger_node — unchanged ──
     cloud_merger = Node(
         package='mtt_perception',
         executable='cloud_merger_node',

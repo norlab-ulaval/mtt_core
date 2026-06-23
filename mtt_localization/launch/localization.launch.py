@@ -11,7 +11,7 @@ def generate_launch_description():
 
     use_sim_time = LaunchConfiguration('use_sim_time')
 
-    # ── ISAM2 Factor Graph — tractor SE(3) pose + optimised φ ──────────────
+    # ── ISAM2 Factor Graph — tractor SE(3) pose + optimised φ ──
     # Subscribes: IMU, track odom, GPS, LiDAR odom, /mtt/articulation_state,
     #             /trailer/pose (base_link frame, from perception)
     # Publishes:  localization/odom (with 6×6 covariance from ISAM2 marginals)
@@ -24,7 +24,7 @@ def generate_launch_description():
         parameters=[config, {'use_sim_time': use_sim_time}],
     )
 
-    # ── Trailer Localizer — trailer SE(3) pose in map ───────────────────────
+    # ── Trailer Localizer — trailer SE(3) pose in map ──
     # Subscribes: localization/odom (T_map_tractor from factor_graph_node)
     #             /mtt/articulation_state (raw φ fallback)
     #             localization/articulation_angle (ISAM2 φ, preferred when fresh)

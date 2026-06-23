@@ -16,7 +16,7 @@ mtt_articulation_servo_node:
     position_cmd_topic: "/mtt_articulation_setpoint"
     velocity_cmd_topic: "/mtt_articulation_velocity_cmd"
 
-    # ── PD gains ────────────────────────────────────────────────────
+    # ── PD gains ──
     # Tuning guide:
     #   kp: start at 1.0, increase until fast response without oscillation.
     #       At error=0.1 rad (~5.7°), kp=2.0 → steer_cmd=0.20 (20% of full scale)
@@ -28,16 +28,16 @@ mtt_articulation_servo_node:
     ki: 0.0             # normalized_steer·s² / rad (disabled)
     integrator_limit: 0.30   # anti-windup clamp
 
-    # ── Limits ───────────────────────────────────────────────────────
+    # ── Limits ──
     max_steer: 1.0              # output saturation (full scale = ±60°)
     max_articulation_rad: 1.047 # ±60° physical joint limit
     max_velocity_rad_s: 0.50    # velocity mode rate limit (~29°/s)
 
-    # ── Safety ───────────────────────────────────────────────────────
+    # ── Safety ──
     # If encoder topic is not received within this window, the servo
     # stops publishing steer_cmd (CAN node falls back to cmd_vel angular.z).
     feedback_timeout_s: 0.30
     command_timeout_s: 0.25
 
-# ── CAN node addition (add to mtt_can_node params) ───────────────────────────
+# ── CAN node addition (add to mtt_can_node params) ──
 # servo_steer_timeout_s: 0.25   # how long servo steer_cmd stays valid without refresh

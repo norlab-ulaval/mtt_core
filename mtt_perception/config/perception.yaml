@@ -1,4 +1,4 @@
-# ── Trailer detector — V1 (articulation / timon zone) ────────────────────────
+# ── Trailer detector — V1 (articulation / timon zone) ──
 # ROI verified in CloudCompare (rsairy frame), with margin added.
 # topic: raw RS-Airy cloud so the node works independently of cloud_merger.
 # Switch to "/merged_points_filtered" if you want base_link frame.
@@ -47,7 +47,7 @@ trailer_detector_node:
     hitch_base_z:  0.35
     marker_length:  0.30   # total arrow length (metres)
 
-    # ── Kalman filter (replaces EMA) ─────────────────────────────────────────
+    # ── Kalman filter (replaces EMA) ──
     # Tune q_angle/q_omega higher → trust LiDAR more, less smoothing.
     # Tune r_lidar_base lower → trust LiDAR more, faster response.
     kf:
@@ -59,7 +59,7 @@ trailer_detector_node:
       gate_hard_sigma: 6.0     # reject measurement entirely beyond this
       gate_inflation:  2.0     # R inflation rate per σ beyond soft gate
 
-    # ── Command prediction (optional) ────────────────────────────────────────
+    # ── Command prediction (optional) ──
     # The model-estimated angle (/mtt_articulation_angle) feeds only the KF
     # prediction step. It never replaces the LiDAR measurement.
     command:
@@ -68,19 +68,19 @@ trailer_detector_node:
       gain: 0.5            # k_cmd: command contribution to angular rate prediction
       timeout_sec: 0.2     # ignore commands older than this
 
-    # ── Motor feedback (Badger/STM32 hardware sensor) ────────────────────────
+    # ── Motor feedback (Badger/STM32 hardware sensor) ──
     # When enabled: second KF measurement update after the LiDAR update.
     motor_feedback:
       enabled: true
       topic: "/hardware/articulation_angle"
       variance: 0.000064    # σ=0.008 rad — true hardware encoder precision (0.008²)
 
-    # ── Sliding ROI (future — disabled) ──────────────────────────────────────
+    # ── Sliding ROI (future — disabled) ──
     # When enabled: shift the ROI centre based on the predicted angle.
     sliding_roi:
       enabled: false
 
-# ── Trailer 3D pose estimator — V4.0 prior-locked constrained SE(3) ────────
+# ── Trailer 3D pose estimator — V4.0 prior-locked constrained SE(3) ──
 # Principle:
 #   /trailer/articulation_angle = validated mechanical prior.
 #   /mtt_articulation_angle     = command/debug/fallback only.
@@ -161,7 +161,7 @@ trailer_pose_node:
     roll_decay_to_zero: 0.70
     position_decay_to_prior: 0.70
 
-# ── Unified Trailer Estimator — EKF V1.0 ─────────────────────────────────────
+# ── Unified Trailer Estimator — EKF V1.0 ──
 # Single node replacing trailer_pose_node + trailer_localizer_node.
 # trailer_detector_node (V1.5) is kept unchanged and feeds /trailer/articulation_angle.
 #
@@ -297,7 +297,7 @@ mtt_trailer_estimator_node:
       validation_sigma:      0.025  # rad — 2-sigma disagreement threshold
       disagreement_timeout_s: 0.5   # s — how long before issuing a WARN
 
-# ── Dual-LiDAR merger ────────────────────────────────────────────────────────
+# ── Dual-LiDAR merger ──
 # Architecture: cache-based temporal pairing (replaces message_filters).
 #
 # anchor_sensor="hesai" (default): one merged cloud per Hesai scan (~20 Hz).

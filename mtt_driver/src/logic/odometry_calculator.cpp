@@ -80,9 +80,7 @@ DistanceStep resolve_distance_step(
 
 }  // namespace
 
-// ──────────────────────────────────────────────────────────────────────
-// Single Trailer
-// ──────────────────────────────────────────────────────────────────────
+// ── Single Trailer ──
 SingleTrailerOdometry::SingleTrailerOdometry() = default;
 
 OdometryOutput SingleTrailerOdometry::update(const OdometryInput& input)
@@ -196,9 +194,7 @@ void SingleTrailerOdometry::import_pose(const OdometryPose& pose)
   last_abs_m_ = pose.last_abs_m;
 }
 
-// ──────────────────────────────────────────────────────────────────────
-// Dual Differential
-// ──────────────────────────────────────────────────────────────────────
+// ── Dual Differential ──
 DualDifferentialOdometry::DualDifferentialOdometry(double track_width_m)
   : track_width_m_(track_width_m) {}
 
@@ -248,9 +244,7 @@ void DualDifferentialOdometry::import_pose(const OdometryPose& pose)
   last_abs_m_ = pose.last_abs_m;
 }
 
-// ──────────────────────────────────────────────────────────────────────
-// Dual Serpentine
-// ──────────────────────────────────────────────────────────────────────
+// ── Dual Serpentine ──
 DualSerpentineOdometry::DualSerpentineOdometry(double wheelbase_m)
   : wheelbase_m_(wheelbase_m) {}
 
@@ -326,9 +320,7 @@ void DualSerpentineOdometry::import_pose(const OdometryPose& pose)
   last_abs_m_ = pose.last_abs_m;
 }
 
-// ──────────────────────────────────────────────────────────────────────
-// Factory
-// ──────────────────────────────────────────────────────────────────────
+// ── Factory ──
 std::unique_ptr<IOdometryCalculator> OdometryFactory::create(
   DrivingMode mode, double track_width_m, double wheelbase_m)
 {

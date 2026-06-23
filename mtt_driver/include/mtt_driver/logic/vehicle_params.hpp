@@ -10,7 +10,7 @@
 namespace mtt {
 
 struct VehicleParams {
-  // ── Drivetrain ──────────────────────────────────────────────────────
+  // ── Drivetrain ──
   static constexpr double l_f = 0.9;              // Tractor: center-of-track → hitch pin (m)
   static constexpr double l_r = 1.5;              // Trailer: hitch pin → trailer axle (m)
   static constexpr double r_sprocket_eff = 0.0202; // Effective sprocket radius (m)
@@ -29,7 +29,7 @@ struct VehicleParams {
   static constexpr double track_length_m  = track_length_cm / 100.0;
   static constexpr double track_length_km = track_length_cm / 100000.0;
 
-  // ── Computed drivetrain ─────────────────────────────────────────────
+  // ── Computed drivetrain ──
   static constexpr double mechanical_gear_ratio() {
     return (static_cast<double>(gear2) / gear1)
          * (static_cast<double>(gear4) / gear3)
@@ -44,7 +44,7 @@ struct VehicleParams {
   static constexpr double total_wheelbase() { return l_f + l_r; }
   static constexpr double wheel_radius()    { return r_sprocket_eff; }
 
-  // ── Steering ────────────────────────────────────────────────────────
+  // ── Steering ──
   // Physical articulation limit measured from URDF yaw joint (±1.047 rad = ±60°).
   // Previously 50° — increased to match the actual mechanical joint range.
   static constexpr double max_articulation_deg = 60.0;
@@ -71,7 +71,7 @@ struct VehicleParams {
   static constexpr uint8_t steering_max_byte       = 255;
   static constexpr int     steering_halfspan_byte  = 100;
 
-  // ── Vehicle dynamics ────────────────────────────────────────────────
+  // ── Vehicle dynamics ──
   static constexpr double track_width          = 1.2;
   static constexpr double track_slip_coeff     = 0.05;
   static constexpr double track_grip_coeff     = 0.95;
@@ -82,7 +82,7 @@ struct VehicleParams {
   static constexpr double slip_speed_factor    = 0.02;
   static constexpr double min_speed_for_steering = 0.1;
 
-  // ── CAN command frame limits ────────────────────────────────────────
+  // ── CAN command frame limits ──
   static constexpr uint8_t throttle_max = 230;
   static constexpr uint8_t brake_max    = 255;
 };

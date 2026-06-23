@@ -494,7 +494,7 @@ TrailerPoseNode::Measurement TrailerPoseNode::estimateMeasurement(
   m.s_max = q95;
   m.span_s = std::max(0.0, q95 - q05);
 
-  // ── PCA 2D on (s,l) ──────────────────────────────────────────────────────
+  // ── PCA 2D on (s,l) ──
   double mean_s = 0.0;
   double mean_l = 0.0;
   for (const auto & p : points) {

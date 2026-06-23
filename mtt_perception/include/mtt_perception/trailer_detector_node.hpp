@@ -31,7 +31,7 @@ public:
     const rclcpp::NodeOptions & options = rclcpp::NodeOptions());
 
 private:
-  // ── Result of the 2-D PCA ─────────────────────────────────────────────────
+  // ── Result of the 2-D PCA ──
   struct PcaResult {
     bool           valid{false};
     Eigen::Vector2d axis{0.0, 1.0};   // sign-corrected principal direction
@@ -41,7 +41,7 @@ private:
     std::size_t     n_points{0};
   };
 
-  // ── Processing ────────────────────────────────────────────────────────────
+  // ── Processing ──
   void cloudCallback(sensor_msgs::msg::PointCloud2::ConstSharedPtr msg);
 
   // Optional command + future motor feedback callbacks
@@ -58,20 +58,20 @@ private:
 
   static double normalizeAngle(double a) noexcept;
 
-  // ── Publishers ────────────────────────────────────────────────────────────
+  // ── Publishers ──
   rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr         angle_pub_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr            detected_pub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr  roi_cloud_pub_;
   rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr marker_pub_;
 
-  // ── Subscribers ───────────────────────────────────────────────────────────
+  // ── Subscribers ──
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr cloud_sub_;
   // Created only if use_command_prediction_ = true:
   rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr cmd_sub_;
   // Created only if use_motor_feedback_ = true:
   rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr motor_fb_sub_;
 
-  // ── Parameters (loaded once at construction) ──────────────────────────────
+  // ── Parameters (loaded once at construction) ──
   float  roi_x_min_, roi_x_max_;
   float  roi_y_min_, roi_y_max_;
   float  roi_z_min_, roi_z_max_;
@@ -86,7 +86,7 @@ private:
   double hitch_base_x_, hitch_base_y_, hitch_base_z_;
   double marker_length_;
 
-  // ── Kalman filter — state and tuning ─────────────────────────────────────
+  // ── Kalman filter — state and tuning ──
   // State: x = [θ, ω]ᵀ  (angle rad, angular velocity rad/s)
   Eigen::Vector2d kf_x_{0.0, 0.0};
   Eigen::Matrix2d kf_P_{Eigen::Matrix2d::Identity() * 0.1};
@@ -101,7 +101,7 @@ private:
   double gate_hard_sigma_;  // reject measurement entirely (σ)
   double gate_inflation_;   // R multiplier rate beyond soft gate
 
-  // ── Command prediction (optional) ────────────────────────────────────────
+  // ── Command prediction (optional) ──
   // /mtt_articulation_angle (model-estimated) feeds the prediction step only.
   // It never replaces the LiDAR measurement.
   bool   use_command_prediction_;
@@ -110,14 +110,14 @@ private:
   std::optional<double> last_command_;
   rclcpp::Time          last_command_time_;
 
-  // ── Motor feedback (future — disabled by default) ─────────────────────────
+  // ── Motor feedback (future — disabled by default) ──
   // When enabled: second KF measurement update after the LiDAR update.
   bool   use_motor_feedback_;
   double motor_feedback_variance_;
   std::optional<double> last_motor_feedback_;
   rclcpp::Time          last_motor_feedback_time_;
 
-  // ── Sliding ROI (future — disabled by default) ───────────────────────────
+  // ── Sliding ROI (future — disabled by default) ──
   // When enabled: shift ROI centre based on predicted angle.
   bool   use_sliding_roi_;
 };

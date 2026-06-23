@@ -10,7 +10,7 @@ namespace mtt
 MttSpeedServoNode::MttSpeedServoNode(const rclcpp::NodeOptions & options)
 : rclcpp::Node("mtt_speed_servo_node", options)
 {
-  // ── Parameters ──────────────────────────────────────────────────────
+  // ── Parameters ──
   mode_ = declare_parameter("mode", std::string("speed"));
   if (mode_ != "speed" && mode_ != "characterize" && mode_ != "disabled") {
     RCLCPP_WARN(get_logger(), "Unknown mode '%s', falling back to 'speed'", mode_.c_str());
@@ -59,7 +59,7 @@ MttSpeedServoNode::MttSpeedServoNode(const rclcpp::NodeOptions & options)
   const auto output_cmd_topic = declare_parameter("output_cmd_vel_topic",
     std::string("controller/cmd_vel"));
 
-  // ── Subscribers ─────────────────────────────────────────────────────
+  // ── Subscribers ──
   setpoint_sub_ = create_subscription<std_msgs::msg::Float64>(
     setpoint_topic,
     rclcpp::QoS(10),
@@ -89,7 +89,7 @@ MttSpeedServoNode::MttSpeedServoNode(const rclcpp::NodeOptions & options)
       deadman_active_ = msg->data;
     });
 
-  // ── Publishers ───────────────────────────────────────────────────────
+  // ── Publishers ──
   cmd_vel_pub_       = create_publisher<geometry_msgs::msg::TwistStamped>(
     output_cmd_topic, rclcpp::QoS(20));
 
@@ -104,7 +104,7 @@ MttSpeedServoNode::MttSpeedServoNode(const rclcpp::NodeOptions & options)
   feedforward_map_pub_ = create_publisher<std_msgs::msg::Float64MultiArray>(
     "speed_servo/feedforward_map", rclcpp::QoS(10));
 
-  // ── Timer ─────────────────────────────────────────────────────────────
+  // ── Timer ──
   using ns = std::chrono::nanoseconds;
   const auto period = ns(static_cast<int64_t>(1e9 / std::max(1.0, control_frequency_hz_)));
   control_timer_ = create_wall_timer(period, [this]() { control_loop(); });
@@ -114,9 +114,7 @@ MttSpeedServoNode::MttSpeedServoNode(const rclcpp::NodeOptions & options)
     mode_.c_str(), p.kp, p.ki, p.kd, control_frequency_hz_);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Control loop (timer callback)
-// ─────────────────────────────────────────────────────────────────────────────
+// ── Control loop (timer callback) ──
 void MttSpeedServoNode::control_loop()
 {
   if (mode_ == "disabled") return;
@@ -187,9 +185,7 @@ void MttSpeedServoNode::control_loop()
   publish_diagnostics(dbg);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Characterization loop — step-ramp to build feedforward LUT
-// ─────────────────────────────────────────────────────────────────────────────
+// ── Characterization loop — step-ramp to build feedforward LUT ──
 void MttSpeedServoNode::characterize_loop()
 {
   // State machine driven by static state + timing
@@ -330,9 +326,7 @@ void MttSpeedServoNode::characterize_loop()
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Helpers
-// ─────────────────────────────────────────────────────────────────────────────
+// ── Helpers ──
 void MttSpeedServoNode::publish_zero_cmd()
 {
   geometry_msgs::msg::TwistStamped cmd;

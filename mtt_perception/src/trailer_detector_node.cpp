@@ -29,11 +29,11 @@
 
 namespace mtt_perception {
 
-// ── Constructor ───────────────────────────────────────────────────────────────
+// ── Constructor ──
 TrailerDetectorNode::TrailerDetectorNode(const rclcpp::NodeOptions & options)
 : Node("trailer_detector_node", options)
 {
-  // ── Declare parameters ────────────────────────────────────────────────────
+  // ── Declare parameters ──
   declare_parameter<std::string>("lidar_topic", "/rsairy_ns/points");
 
   // ROI around the articulation / timon (rsairy frame, verified in CloudCompare)
@@ -66,7 +66,7 @@ TrailerDetectorNode::TrailerDetectorNode(const rclcpp::NodeOptions & options)
   declare_parameter<double>("hitch_base_z",  0.301);
   declare_parameter<double>("marker_length",  0.60);
 
-  // ── Kalman filter tuning ──────────────────────────────────────────────────
+  // ── Kalman filter tuning ──
   declare_parameter<double>("kf.q_angle",         0.001);  // rad²/s
   declare_parameter<double>("kf.q_omega",         0.01);   // rad²/s³
   declare_parameter<double>("kf.r_lidar_base",    0.005);  // rad²
@@ -75,7 +75,7 @@ TrailerDetectorNode::TrailerDetectorNode(const rclcpp::NodeOptions & options)
   declare_parameter<double>("kf.gate_hard_sigma", 6.0);
   declare_parameter<double>("kf.gate_inflation",  2.0);
 
-  // ── Command prediction (optional) ─────────────────────────────────────────
+  // ── Command prediction (optional) ──
   // The command topic (model-estimated angle) feeds only the prediction step.
   // It never replaces the LiDAR measurement.
   declare_parameter<bool>       ("command.use_prediction", false);
@@ -83,17 +83,17 @@ TrailerDetectorNode::TrailerDetectorNode(const rclcpp::NodeOptions & options)
   declare_parameter<double>     ("command.gain",           0.5);
   declare_parameter<double>     ("command.timeout_sec",    0.2);
 
-  // ── Motor feedback (future measurement — disabled by default) ─────────────
+  // ── Motor feedback (future measurement — disabled by default) ──
   declare_parameter<bool>       ("motor_feedback.enabled",  false);
   // Default matches the hardware encoder published by mtt_articulation_sensor_node.
   // Enable with motor_feedback.enabled: true in the YAML config.
   declare_parameter<std::string>("motor_feedback.topic",    "/hardware/articulation_angle");
   declare_parameter<double>     ("motor_feedback.variance", 0.01);
 
-  // ── Sliding ROI (future — disabled by default) ────────────────────────────
+  // ── Sliding ROI (future — disabled by default) ──
   declare_parameter<bool>("sliding_roi.enabled", false);
 
-  // ── Load parameters ───────────────────────────────────────────────────────
+  // ── Load parameters ──
   roi_x_min_     = static_cast<float>(get_parameter("roi_x_min").as_double());
   roi_x_max_     = static_cast<float>(get_parameter("roi_x_max").as_double());
   roi_y_min_     = static_cast<float>(get_parameter("roi_y_min").as_double());
@@ -131,7 +131,7 @@ TrailerDetectorNode::TrailerDetectorNode(const rclcpp::NodeOptions & options)
 
   const auto lidar_topic   = get_parameter("lidar_topic").as_string();
 
-  // ── Publishers (SensorDataQoS = BEST_EFFORT + volatile) ───────────────────
+  // ── Publishers (SensorDataQoS = BEST_EFFORT + volatile) ──
   const auto sq = rclcpp::SensorDataQoS();
   angle_pub_     = create_publisher<std_msgs::msg::Float64>(
                      "trailer/articulation_angle",    sq);
@@ -142,7 +142,7 @@ TrailerDetectorNode::TrailerDetectorNode(const rclcpp::NodeOptions & options)
   marker_pub_    = create_publisher<visualization_msgs::msg::Marker>(
                      "trailer/articulation_axis_marker", 10);
 
-  // ── Subscribers ───────────────────────────────────────────────────────────
+  // ── Subscribers ──
   cloud_sub_ = create_subscription<sensor_msgs::msg::PointCloud2>(
     lidar_topic, rclcpp::SensorDataQoS(),
     [this](sensor_msgs::msg::PointCloud2::ConstSharedPtr msg) {
@@ -185,7 +185,7 @@ TrailerDetectorNode::TrailerDetectorNode(const rclcpp::NodeOptions & options)
     q_angle_, q_omega_, r_lidar_base_);
 }
 
-// ── Command callback ──────────────────────────────────────────────────────────
+// ── Command callback ──
 // Stores the latest model-estimated command angle for use in KF prediction.
 // This is a prediction input only — it never overrides the LiDAR measurement.
 void TrailerDetectorNode::commandCallback(
@@ -195,7 +195,7 @@ void TrailerDetectorNode::commandCallback(
   last_command_time_ = now();
 }
 
-// ── Motor feedback callback (future) ─────────────────────────────────────────
+// ── Motor feedback callback (future) ──
 // Stores the latest motor-side angle feedback for a second KF measurement update.
 // Not used until motor_feedback.enabled = true.
 void TrailerDetectorNode::motorFeedbackCallback(
@@ -205,7 +205,7 @@ void TrailerDetectorNode::motorFeedbackCallback(
   last_motor_feedback_time_ = now();
 }
 
-// ── Publish helper ────────────────────────────────────────────────────────────
+// ── Publish helper ──
 void TrailerDetectorNode::publishAngleAndMarker(
   const std_msgs::msg::Header & header, double angle, bool detected)
 {
@@ -259,13 +259,13 @@ void TrailerDetectorNode::publishAngleAndMarker(
   }
 }
 
-// ── Cloud callback ────────────────────────────────────────────────────────────
+// ── Cloud callback ──
 void TrailerDetectorNode::cloudCallback(
   sensor_msgs::msg::PointCloud2::ConstSharedPtr msg)
 {
   const rclcpp::Time stamp_now = msg->header.stamp;
 
-  // ── 1. Decode raw PointCloud2 → collect ROI points ───────────────────────
+  // ── 1. Decode raw PointCloud2 → collect ROI points ──
   // PointCloud2ConstIterator avoids a full pcl::fromROSMsg copy for the full cloud.
   std::vector<Eigen::Vector3f> roi_pts;
   roi_pts.reserve(512);
@@ -283,7 +283,7 @@ void TrailerDetectorNode::cloudCallback(
     roi_pts.emplace_back(x, y, z);
   }
 
-  // ── 2. Optional voxel grid ────────────────────────────────────────────────
+  // ── 2. Optional voxel grid ──
   if (enable_voxel_ && !roi_pts.empty()) {
     pcl::PointCloud<pcl::PointXYZ>::Ptr tmp(new pcl::PointCloud<pcl::PointXYZ>);
     tmp->reserve(roi_pts.size());
@@ -301,7 +301,7 @@ void TrailerDetectorNode::cloudCallback(
       roi_pts.emplace_back(p.x, p.y, p.z);
   }
 
-  // ── 3. Kalman predict step ────────────────────────────────────────────────
+  // ── 3. Kalman predict step ──
   // Always predict (when initialized) so the state stays time-consistent
   // even when PCA fails. If not yet initialized, we wait for the first valid
   // measurement to seed the state (see measurement update below).
@@ -336,7 +336,7 @@ void TrailerDetectorNode::cloudCallback(
     kf_P_ = F * kf_P_ * F.transpose() + Q;
   }
 
-  // ── 4. Sparse ROI → publish predicted angle, no measurement update ────────
+  // ── 4. Sparse ROI → publish predicted angle, no measurement update ──
   if (static_cast<int>(roi_pts.size()) < min_points_) {
     if (kf_initialized_) {
       publishAngleAndMarker(msg->header, kf_x_(0), false);
@@ -347,7 +347,7 @@ void TrailerDetectorNode::cloudCallback(
     return;
   }
 
-  // ── 5. Publish ROI cloud (Foxglove debug — only when subscribed) ──────────
+  // ── 5. Publish ROI cloud (Foxglove debug — only when subscribed) ──
   if (roi_cloud_pub_->get_subscription_count() > 0) {
     pcl::PointCloud<pcl::PointXYZ> roi_pcl;
     roi_pcl.reserve(roi_pts.size());
@@ -360,11 +360,11 @@ void TrailerDetectorNode::cloudCallback(
     roi_cloud_pub_->publish(roi_out);
   }
 
-  // ── 6. PCA 2D on (x, y) ──────────────────────────────────────────────────
+  // ── 6. PCA 2D on (x, y) ──
   const Eigen::Vector2d hitch(hitch_x_, hitch_y_);
   const PcaResult pca = computePca(roi_pts, hitch);
 
-  // ── 7. Weak PCA → publish predicted angle, no measurement update ──────────
+  // ── 7. Weak PCA → publish predicted angle, no measurement update ──
   if (!pca.valid || pca.ratio < pca_ratio_min_) {
     if (kf_initialized_) {
       publishAngleAndMarker(msg->header, kf_x_(0), false);
@@ -375,11 +375,11 @@ void TrailerDetectorNode::cloudCallback(
     return;
   }
 
-  // ── 8. LiDAR measurement  z = normalize(reference_yaw − yaw_pca) ─────────
+  // ── 8. LiDAR measurement  z = normalize(reference_yaw − yaw_pca) ──
   const double yaw_pca = std::atan2(pca.axis.y(), pca.axis.x());
   const double z_lidar = normalizeAngle(reference_yaw_ - yaw_pca);
 
-  // ── 9. KF — first measurement seeds the state ─────────────────────────────
+  // ── 9. KF — first measurement seeds the state ──
   if (!kf_initialized_) {
     kf_x_(0)         = z_lidar;
     kf_x_(1)         = 0.0;
@@ -388,7 +388,7 @@ void TrailerDetectorNode::cloudCallback(
     kf_initialized_  = true;
   }
 
-  // ── 10. KF — LiDAR measurement update (adaptive R + soft gating) ──────────
+  // ── 10. KF — LiDAR measurement update (adaptive R + soft gating) ──
   // Adaptive R: small when n_points and pca_ratio are high, larger otherwise.
   const double n_factor = std::clamp(
     1.0 - static_cast<double>(pca.n_points - min_points_) / 100.0, 0.0, 1.0);
@@ -426,7 +426,7 @@ void TrailerDetectorNode::cloudCallback(
       mahal, gate_hard_sigma_);
   }
 
-  // ── 11. Motor feedback measurement update (future, disabled by default) ────
+  // ── 11. Motor feedback measurement update (future, disabled by default) ──
   // When motor_feedback.enabled=true: second KF update with motor angle.
   // Less trusted than LiDAR initially; variance tuned via motor_feedback.variance.
   if (use_motor_feedback_ && last_motor_feedback_.has_value()) {
@@ -446,11 +446,11 @@ void TrailerDetectorNode::cloudCallback(
     }
   }
 
-  // ── 12. Publish angle + marker (LiDAR-confirmed) ──────────────────────────
+  // ── 12. Publish angle + marker (LiDAR-confirmed) ──
   const double angle = kf_x_(0);
   publishAngleAndMarker(msg->header, angle, true);
 
-  // ── 13. Throttled debug log ───────────────────────────────────────────────
+  // ── 13. Throttled debug log ──
   RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000,
     "articulation: %.4f rad (%.1f°)  ω=%.3f rad/s  "
     "n=%zu  pca_ratio=%.1f  R=%.4f  innov=%.4f  mahal=%.1f",
@@ -460,7 +460,7 @@ void TrailerDetectorNode::cloudCallback(
     R_lidar, innov, mahal);
 }
 
-// ── 2-D PCA ───────────────────────────────────────────────────────────────────
+// ── 2-D PCA ──
 //
 // Computes the principal direction of the X-Y projection of the point set.
 // Eigen 2×2 solver is analytical and O(n) — no iterations, no heap allocs.
@@ -473,7 +473,7 @@ TrailerDetectorNode::PcaResult TrailerDetectorNode::computePca(
   r.n_points = pts.size();
   if (r.n_points < 2) return r;
 
-  // ── Centroid ─────────────────────────────────────────────────────────────
+  // ── Centroid ──
   Eigen::Vector2d mu  = Eigen::Vector2d::Zero();
   double          mu_z = 0.0;
   for (const auto & p : pts) {
@@ -488,7 +488,7 @@ TrailerDetectorNode::PcaResult TrailerDetectorNode::computePca(
   r.centroid   = mu;
   r.centroid_z = mu_z;
 
-  // ── Covariance 2×2 ───────────────────────────────────────────────────────
+  // ── Covariance 2×2 ──
   Eigen::Matrix2d cov = Eigen::Matrix2d::Zero();
   for (const auto & p : pts) {
     const Eigen::Vector2d d(p.x() - mu.x(), p.y() - mu.y());
@@ -496,7 +496,7 @@ TrailerDetectorNode::PcaResult TrailerDetectorNode::computePca(
   }
   cov *= inv_n;
 
-  // ── Eigen decomposition (symmetric 2×2 — fast, analytical) ───────────────
+  // ── Eigen decomposition (symmetric 2×2 — fast, analytical) ──
   Eigen::SelfAdjointEigenSolver<Eigen::Matrix2d> es(cov, Eigen::ComputeEigenvectors);
 
   // Eigenvalues sorted ascending → col(0)=min, col(1)=max.
@@ -519,7 +519,7 @@ TrailerDetectorNode::PcaResult TrailerDetectorNode::computePca(
   return r;
 }
 
-// ── Angle normalisation ───────────────────────────────────────────────────────
+// ── Angle normalisation ──
 double TrailerDetectorNode::normalizeAngle(double a) noexcept
 {
   while (a >  M_PI) a -= 2.0 * M_PI;
@@ -529,7 +529,7 @@ double TrailerDetectorNode::normalizeAngle(double a) noexcept
 
 }  // namespace mtt_perception
 
-// ── Entry point ───────────────────────────────────────────────────────────────
+// ── Entry point ──
 int main(int argc, char * argv[])
 {
   rclcpp::init(argc, argv);

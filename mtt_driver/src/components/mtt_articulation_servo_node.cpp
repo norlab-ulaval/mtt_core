@@ -10,7 +10,7 @@ namespace mtt
 MttArticulationServoNode::MttArticulationServoNode(const rclcpp::NodeOptions & options)
 : rclcpp::Node("mtt_articulation_servo_node", options)
 {
-  // ── Parameters ──────────────────────────────────────────────────────
+  // ── Parameters ──
   mode_ = declare_parameter("mode", std::string("position"));
 
   logic::ArticulationServoParams p;
@@ -43,7 +43,7 @@ MttArticulationServoNode::MttArticulationServoNode(const rclcpp::NodeOptions & o
     mode_ = "position";
   }
 
-  // ── Subscribers ─────────────────────────────────────────────────────
+  // ── Subscribers ──
   // Hardware encoder — primary feedback (100 Hz from STM32)
   feedback_sub_ = create_subscription<std_msgs::msg::Float64>(
     feedback_topic,
@@ -74,7 +74,7 @@ MttArticulationServoNode::MttArticulationServoNode(const rclcpp::NodeOptions & o
       latest_command_stamp_ = get_clock()->now();
     });
 
-  // ── Publishers ──────────────────────────────────────────────────────
+  // ── Publishers ──
   steer_cmd_pub_    = create_publisher<std_msgs::msg::Float64>(
     "articulation_servo/steer_cmd", rclcpp::SensorDataQoS());
 
@@ -85,7 +85,7 @@ MttArticulationServoNode::MttArticulationServoNode(const rclcpp::NodeOptions & o
   diag_error_pub_    = create_publisher<std_msgs::msg::Float64>(
     "articulation_servo/error_rad", rclcpp::SensorDataQoS());
 
-  // ── Timer ────────────────────────────────────────────────────────────
+  // ── Timer ──
   using ns = std::chrono::nanoseconds;
   const auto period = ns(static_cast<int64_t>(1e9 / std::max(1.0, control_frequency_hz_)));
   control_timer_ = create_wall_timer(period, [this]() { control_loop(); });
@@ -95,9 +95,7 @@ MttArticulationServoNode::MttArticulationServoNode(const rclcpp::NodeOptions & o
     mode_.c_str(), p.kp, p.kd, p.ki, control_frequency_hz_);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Control loop (timer callback)
-// ─────────────────────────────────────────────────────────────────────────────
+// ── Control loop (timer callback) ──
 void MttArticulationServoNode::control_loop()
 {
   if (mode_ == "disabled") return;
@@ -139,18 +137,18 @@ void MttArticulationServoNode::control_loop()
   const double measured = *feedback_rad;
   const double dt = 1.0 / std::max(1.0, control_frequency_hz_);
 
-  // ── Update setpoint based on mode ─────────────────────────────────
+  // ── Update setpoint based on mode ──
   if (mode_ == "position" && position_cmd.has_value()) {
     servo_.set_position(*position_cmd);
   } else if (mode_ == "velocity" && velocity_cmd.has_value()) {
     servo_.step_velocity(*velocity_cmd, dt);
   }
 
-  // ── PD compute ────────────────────────────────────────────────────
+  // ── PD compute ──
   logic::ArticulationServoDebug dbg;
   const double steer_cmd = servo_.compute(measured, dt, dbg);
 
-  // ── Publish ────────────────────────────────────────────────────────
+  // ── Publish ──
   auto f64 = [](double v) {
     std_msgs::msg::Float64 m;
     m.data = v;

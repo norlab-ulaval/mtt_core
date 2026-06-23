@@ -43,7 +43,7 @@ public:
   ~MttCanNode() override;
 
 private:
-  // ── Parameters ──────────────────────────────────────────────────────
+  // ── Parameters ──
   std::string can_interface_name_;
   uint32_t    can_id_;
   double      control_freq_hz_;
@@ -71,15 +71,15 @@ private:
   bool        publish_can_debug_;
   std::string can_debug_topic_;
 
-  // ── Hardware ─────────────────────────────────────────────────────────
+  // ── Hardware ──
   std::shared_ptr<hardware::ICanInterface> can_;
   std::thread receiver_thread_;
   std::atomic<bool> receiver_running_{false};
 
-  // ── Parking hold state machine ────────────────────────────────────────
+  // ── Parking hold state machine ──
   enum class ParkingPhase : uint8_t { Inactive, Decelerate, Hold };
 
-  // ── State (protected by frame_mutex_) ────────────────────────────────
+  // ── State (protected by frame_mutex_) ──
   mutable std::mutex frame_mutex_;
   can::CommandFrame  command_frame_;
   TachometerState    tachometer_;
@@ -114,7 +114,7 @@ private:
   std::chrono::steady_clock::time_point last_servo_steer_time_{};
   double servo_steer_timeout_s_{0.25};
 
-  // ── ROS I/O ──────────────────────────────────────────────────────────
+  // ── ROS I/O ──
   rclcpp::Subscription<geometry_msgs::msg::TwistStamped>::SharedPtr cmd_vel_sub_;
   rclcpp::Subscription<mtt_msgs::msg::MttAuxCommand>::SharedPtr aux_cmd_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr estop_sub_;
@@ -141,7 +141,7 @@ private:
   rclcpp::TimerBase::SharedPtr can_send_timer_;
   std::string last_steering_source_;
 
-  // ── Methods ───────────────────────────────────────────────────────────
+  // ── Methods ──
   void init_can_interface();
   void receiver_loop();
 

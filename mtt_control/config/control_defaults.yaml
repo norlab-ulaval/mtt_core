@@ -35,12 +35,17 @@ mtt_operator_input_node:
     articulation_hold_mode_default: false
     articulation_hold_enabled: false
     articulation_hold_reset_on_deadman_release: true
-    # ---- COM motor mode toggle ----
-    # Button index (0-based) that switches the right stick between articulation and COM motor.
-    # Default 7 (paramétrable). Set enable_com_mode_switch: false to disable entirely.
+    # ---- COM motor — bouton 7 actions (durée d'appui) ----
+    # Button index (0-based) with duration-based actions:
+    #   court  (< 1.5s)  → toggle COM ON/OFF
+    #   moyen  (1.5–4.0s) → set_home (save position)
+    #   long   (> 4.0s)  → park (return to home)
+    # Default 7. Set enable_com_mode_switch: false to disable entirely.
     enable_com_mode_switch: true
     com_toggle_button_index: 7
     invert_com_steer: false
+    com_short_press_max_s: 1.5
+    com_long_press_min_s: 4.0
 
 mtt_manual_cmd_filter_node:
   ros__parameters:

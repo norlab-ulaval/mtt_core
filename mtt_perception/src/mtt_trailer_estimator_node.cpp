@@ -33,9 +33,7 @@
 namespace mtt_perception
 {
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Anonymous-namespace helpers — internal to this translation unit.
-// ─────────────────────────────────────────────────────────────────────────────
+// ── Anonymous-namespace helpers — internal to this translation unit ──
 namespace
 {
 
@@ -146,15 +144,13 @@ constexpr double kChi2_4dof_99 = 13.2767;  // χ²(4, p=0.99)
 
 }  // anonymous namespace
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Constructor
-// ─────────────────────────────────────────────────────────────────────────────
+// ── Constructor ──
 TrailerEstimatorNode::TrailerEstimatorNode(const rclcpp::NodeOptions & options)
 : rclcpp::Node("mtt_trailer_estimator_node", options),
   tf_buffer_(get_clock()),
   tf_listener_(tf_buffer_)
 {
-  // ── Declare parameters ──────────────────────────────────────────────────
+  // ── Declare parameters ──
   map_frame_         = declare_parameter("map_frame", std::string("map"));
   trailer_tf_frame_  = declare_parameter("trailer_tf_frame", std::string("trailer_body"));
   broadcast_tf_      = declare_parameter("broadcast_tf", true);
@@ -261,7 +257,7 @@ TrailerEstimatorNode::TrailerEstimatorNode(const rclcpp::NodeOptions & options)
   pitch_decay_     = declare_parameter("pca.pitch_decay",    0.80);
   position_decay_  = declare_parameter("pca.position_decay", 0.70);
 
-  // ── Build Q base matrix (diagonal) ────────────────────────────────────────
+  // ── Build Q base matrix (diagonal) ──
   // Q is scaled by dt in ekfPredict().  Units: variance per second.
   Q_base_.setZero();
   Q_base_(idx::kX,       idx::kX)       = q_xy_;
@@ -275,11 +271,11 @@ TrailerEstimatorNode::TrailerEstimatorNode(const rclcpp::NodeOptions & options)
   Q_base_(idx::kVz,      idx::kVz)      = q_vz_;
   Q_base_(idx::kYawRate, idx::kYawRate) = q_vyaw_;
 
-  // ── Precompute URDF chain and model ────────────────────────────────────────
+  // ── Precompute URDF chain and model ──
   initUrdfChain();
   initTrailerModel();
 
-  // ── Publishers ─────────────────────────────────────────────────────────────
+  // ── Publishers ──
   const rclcpp::SensorDataQoS sensor_qos;
 
   pose_pub_       = create_publisher<geometry_msgs::msg::PoseWithCovarianceStamped>(
@@ -316,7 +312,7 @@ TrailerEstimatorNode::TrailerEstimatorNode(const rclcpp::NodeOptions & options)
     tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
   }
 
-  // ── Subscribers ────────────────────────────────────────────────────────────
+  // ── Subscribers ──
   articulation_angle_sub_ = create_subscription<std_msgs::msg::Float64>(
     art_topic, sensor_qos,
     [this](std_msgs::msg::Float64::ConstSharedPtr m) { onArticulationAngle(m); });
@@ -347,11 +343,11 @@ TrailerEstimatorNode::TrailerEstimatorNode(const rclcpp::NodeOptions & options)
     imu_topic, sensor_qos,
     [this](sensor_msgs::msg::Imu::ConstSharedPtr m) { onImu(m); });
 
-  // ── Filter thread ──────────────────────────────────────────────────────────
+  // ── Filter thread ──
   stop_flag_.store(false, std::memory_order_relaxed);
   filter_thread_ = std::thread(&TrailerEstimatorNode::filterThreadFunc, this);
 
-  // ── Publish timer ──────────────────────────────────────────────────────────
+  // ── Publish timer ──
   const auto period = std::chrono::duration<double>(1.0 / publish_rate_);
   publish_timer_ = create_wall_timer(
     std::chrono::duration_cast<std::chrono::nanoseconds>(period),
@@ -372,19 +368,7 @@ TrailerEstimatorNode::~TrailerEstimatorNode()
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// initUrdfChain — precompute URDF kinematic constants.
-//
-// Values copied verbatim from mtt_description/urdf/robot.urdf.xacro and
-// cross-checked against trailer_localizer_node.cpp.  Do not edit independently.
-//
-// Kinematic chain: base_footprint → base_link → pitch → yaw → roll → MTT_remorque
-//
-// Δ(φ, α) = A_prefix_ · Rz(-π/2+α) · A_suffix_ · Rz(π/2+φ) · B_
-//   A_prefix_ = T_bf_bl · T_pitch_origin
-//   A_suffix_ = T_yaw_origin
-//   B_        = T_roll (constant)
-// ─────────────────────────────────────────────────────────────────────────────
+// ── initUrdfChain — precompute URDF kinematic constants. Values copied verbatim from mtt_description/urdf/robot.urdf.xacro and cross-checked against trailer_localizer_node.cpp.  Do not edit independently. Kinematic chain: base_footprint → base_link → pitch → yaw → roll → MTT_remorque Δ(φ, α) = A_prefix_ · Rz(-π/2+α) · A_suffix_ · Rz(π/2+φ) · B_ A_prefix_ = T_bf_bl · T_pitch_origin A_suffix_ = T_yaw_origin B_        = T_roll (constant) ──
 void TrailerEstimatorNode::initUrdfChain()
 {
   // base_footprint → base_link: fixed, z=-0.1
@@ -420,9 +404,7 @@ void TrailerEstimatorNode::initUrdfChain()
     yaw_delta_ref_);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// initTrailerModel — sample wireframe model into pts_local.
-// ─────────────────────────────────────────────────────────────────────────────
+// ── initTrailerModel — sample wireframe model into pts_local ──
 void TrailerEstimatorNode::initTrailerModel()
 {
   model_.pts_local.clear();
@@ -460,10 +442,7 @@ void TrailerEstimatorNode::initTrailerModel()
     2.0 * model_.l_half, model_.h_rail);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Kinematic chain computation — exact replica of TrailerLocalizerNode.
-// Δ(φ, α) = A_prefix_ · Rz(-π/2+α) · A_suffix_ · Rz(π/2+φ) · B_
-// ─────────────────────────────────────────────────────────────────────────────
+// ── Kinematic chain computation — exact replica of TrailerLocalizerNode. Δ(φ, α) = A_prefix_ · Rz(-π/2+α) · A_suffix_ · Rz(π/2+φ) · B_ ──
 Eigen::Isometry3d TrailerEstimatorNode::computeDelta(double phi, double alpha) const noexcept
 {
   const Eigen::Isometry3d R_pitch(Eigen::AngleAxisd(-kPi2 + alpha, Eigen::Vector3d::UnitZ()));
@@ -471,10 +450,7 @@ Eigen::Isometry3d TrailerEstimatorNode::computeDelta(double phi, double alpha) c
   return A_prefix_ * R_pitch * A_suffix_ * R_yaw * B_;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Sensor callbacks — fast, no heavy computation.
-// ─────────────────────────────────────────────────────────────────────────────
-
+// ── Sensor callbacks — fast, no heavy computation ──
 void TrailerEstimatorNode::onArticulationAngle(std_msgs::msg::Float64::ConstSharedPtr msg)
 {
   {
@@ -533,16 +509,7 @@ void TrailerEstimatorNode::onImu(sensor_msgs::msg::Imu::ConstSharedPtr msg)
   imu_pitch_.store(rpy.y(), std::memory_order_relaxed);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// computeAndQueueKinematicMeas — build the kinematic pseudo-measurement.
-//
-// Mathematical model:
-//   T_map_trailer = T_map_base_footprint · Δ(φ, α)
-//   z_kinematic = [x, y, z, yaw] extracted from T_map_trailer
-//
-// Covariance propagation ([TR] eq. 3.17-style first-order Jacobian):
-//   Σ_trailer ≈ J_T · Σ_tractor · J_T' + J_φ · σ²_φ · J_φ' + J_α · σ²_α · J_α'
-// ─────────────────────────────────────────────────────────────────────────────
+// ── computeAndQueueKinematicMeas — build the kinematic pseudo-measurement. Mathematical model: T_map_trailer = T_map_base_footprint · Δ(φ, α) z_kinematic = [x, y, z, yaw] extracted from T_map_trailer Covariance propagation ([TR] eq. 3.17-style first-order Jacobian): Σ_trailer ≈ J_T · Σ_tractor · J_T' + J_φ · σ²_φ · J_φ' + J_α · σ²_α · J_α' ──
 void TrailerEstimatorNode::computeAndQueueKinematicMeas(
   double phi, const rclcpp::Time & stamp)
 {
@@ -620,11 +587,7 @@ void TrailerEstimatorNode::computeAndQueueKinematicMeas(
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// jacobianPhi — ∂T_trailer/∂φ via central differences.
-// Returns 6×1 body-frame twist per radian of φ.
-// [TR] numerical Jacobian approach used in trailer_localizer_node.
-// ─────────────────────────────────────────────────────────────────────────────
+// ── jacobianPhi — ∂T_trailer/∂φ via central differences. Returns 6×1 body-frame twist per radian of φ. [TR] numerical Jacobian approach used in trailer_localizer_node ──
 Eigen::Matrix<double, 6, 1> TrailerEstimatorNode::jacobianPhi(
   const Eigen::Isometry3d & T_tractor, double phi, double alpha) const
 {
@@ -646,9 +609,7 @@ Eigen::Matrix<double, 6, 1> TrailerEstimatorNode::jacobianPhi(
   return (J_p - J_m) / (2.0 * kEps);  // central difference
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// propagateKinematicCov — project 6×6 tractor covariance to 4×4 trailer [x,y,z,yaw].
-// ─────────────────────────────────────────────────────────────────────────────
+// ── propagateKinematicCov — project 6×6 tractor covariance to 4×4 trailer [x,y,z,yaw] ──
 Cov4d TrailerEstimatorNode::propagateKinematicCov(
   const Cov6d & sigma_tractor,
   double sigma2_phi,
@@ -692,10 +653,7 @@ Cov4d TrailerEstimatorNode::propagateKinematicCov(
   return R;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// covFromOdom — extract 6×6 pose covariance from nav_msgs/Odometry.
-// ROS convention: [x,y,z,rx,ry,rz] row-major.  Fallback diagonal if all-zero.
-// ─────────────────────────────────────────────────────────────────────────────
+// ── covFromOdom — extract 6×6 pose covariance from nav_msgs/Odometry. ROS convention: [x,y,z,rx,ry,rz] row-major.  Fallback diagonal if all-zero ──
 Cov6d TrailerEstimatorNode::covFromOdom(const nav_msgs::msg::Odometry & odom) noexcept
 {
   const Cov6d cov = Eigen::Map<const Eigen::Matrix<double, 6, 6, Eigen::RowMajor>>(
@@ -711,9 +669,7 @@ Cov6d TrailerEstimatorNode::covFromOdom(const nav_msgs::msg::Odometry & odom) no
   return cov;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// lookupTfToMap — TF lookup with timeout, returns Isometry3d or nullopt.
-// ─────────────────────────────────────────────────────────────────────────────
+// ── lookupTfToMap — TF lookup with timeout, returns Isometry3d or nullopt ──
 std::optional<Eigen::Isometry3d> TrailerEstimatorNode::lookupTfToMap(
   const std::string & sensor_frame,
   const rclcpp::Time & stamp) const
@@ -736,14 +692,7 @@ std::optional<Eigen::Isometry3d> TrailerEstimatorNode::lookupTfToMap(
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// cacheStaticTf — look up sensor_frame ← base_link once and cache the result.
-//
-// The RS-Airy is rigidly mounted (URDF-defined), so this TF is static.
-// On first call: perform lookup using rclcpp::Time(0) (latest available).
-// Subsequent calls: return immediately if the same sensor_frame is cached.
-// Returns true when the TF has been successfully cached.
-// ─────────────────────────────────────────────────────────────────────────────
+// ── cacheStaticTf — look up sensor_frame ← base_link once and cache the result. The RS-Airy is rigidly mounted (URDF-defined), so this TF is static. On first call: perform lookup using rclcpp::Time(0) (latest available). Subsequent calls: return immediately if the same sensor_frame is cached. Returns true when the TF has been successfully cached ──
 bool TrailerEstimatorNode::cacheStaticTf(const std::string & sensor_frame)
 {
   if (tf_sensor_cached_ && cached_sensor_frame_ == sensor_frame) { return true; }
@@ -770,18 +719,7 @@ bool TrailerEstimatorNode::cacheStaticTf(const std::string & sensor_frame)
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// buildKinematicPrior — compute trailer ROI centre in base_link and sensor frame.
-//
-// Same formula as trailer_pose_node (V4.0):
-//   yaw_prior = π − theta   (theta = articulation angle from detector KF)
-//   u_base    = [cos(yaw_prior), sin(yaw_prior), 0]  — toward trailer rear
-//   p0_base   = hitch + body_offset * u_base          — trailer body centre
-//   p0_cloud  = R_sensor_from_bl * p0_base + t_sensor_from_bl
-//
-// Note: u_base points FROM hitch TOWARD the trailer rear (opposite to tractor +x).
-// The 2D PCA principal direction should be near u_cloud when aligned.
-// ─────────────────────────────────────────────────────────────────────────────
+// ── buildKinematicPrior — compute trailer ROI centre in base_link and sensor frame. Same formula as trailer_pose_node (V4.0): yaw_prior = π − theta   (theta = articulation angle from detector KF) u_base    = [cos(yaw_prior), sin(yaw_prior), 0]  — toward trailer rear p0_base   = hitch + body_offset * u_base          — trailer body centre p0_cloud  = R_sensor_from_bl * p0_base + t_sensor_from_bl Note: u_base points FROM hitch TOWARD the trailer rear (opposite to tractor +x). The 2D PCA principal direction should be near u_cloud when aligned ──
 KinematicPrior
 TrailerEstimatorNode::buildKinematicPrior(double theta) const
 {
@@ -803,17 +741,7 @@ TrailerEstimatorNode::buildKinematicPrior(double theta) const
   return pr;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// transformAndCropRoi — batch-transform cloud to map frame, then crop to trailer ROI.
-//
-// The ROI is an oriented box centred on the predicted trailer pose (from EKF state).
-// Axes:
-//   u = [cos(yaw), sin(yaw), 0]     longitudinal (s)
-//   n = [-sin(yaw), cos(yaw), 0]    lateral (l)
-//   k = [0, 0, 1]                   vertical (h)
-//
-// Uses vectorised Eigen matrix multiplication — no per-point TF calls.
-// ─────────────────────────────────────────────────────────────────────────────
+// ── transformAndCropRoi — batch-transform cloud to map frame, then crop to trailer ROI. The ROI is an oriented box centred on the predicted trailer pose (from EKF state). Axes: u = [cos(yaw), sin(yaw), 0]     longitudinal (s) n = [-sin(yaw), cos(yaw), 0]    lateral (l) k = [0, 0, 1]                   vertical (h) Uses vectorised Eigen matrix multiplication — no per-point TF calls ──
 std::vector<LocalPoint> TrailerEstimatorNode::transformAndCropRoi(
   const sensor_msgs::msg::PointCloud2 & cloud,
   const Eigen::Isometry3d & T_sensor_map,
@@ -875,13 +803,7 @@ std::vector<LocalPoint> TrailerEstimatorNode::transformAndCropRoi(
   return out;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// ransacGroundPlane — RANSAC plane fit with vertical-normal constraint.
-//
-// Plane equation: n'·p + d = 0, |n| = 1.
-// Normal must be within ground_max_tilt_rad_ of [0,0,1] (rejects walls).
-// Returns a boolean inlier mask over pts.
-// ─────────────────────────────────────────────────────────────────────────────
+// ── ransacGroundPlane — RANSAC plane fit with vertical-normal constraint. Plane equation: n'·p + d = 0, |n| = 1. Normal must be within ground_max_tilt_rad_ of [0,0,1] (rejects walls). Returns a boolean inlier mask over pts ──
 std::vector<bool> TrailerEstimatorNode::ransacGroundPlane(
   const std::vector<LocalPoint> & pts,
   double inlier_thresh_m) const
@@ -946,17 +868,7 @@ std::vector<bool> TrailerEstimatorNode::ransacGroundPlane(
   return mask;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// ransacLine3d — RANSAC 3D line fit followed by SVD-based least-squares refit.
-//
-// For k iterations:
-//   sample 2 points → define line direction d = normalize(p1 - p0)
-//   count inliers: points p with ‖(p - p0) - ((p - p0)·d)d‖ < threshold
-// After convergence: refit direction via SVD on centred inlier matrix.
-//
-// Cramér–Rao analogue for the residual variance:
-//   σ²_line = residual_variance / n_inliers → used to build R_lines.
-// ─────────────────────────────────────────────────────────────────────────────
+// ── ransacLine3d — RANSAC 3D line fit followed by SVD-based least-squares refit. For k iterations: sample 2 points → define line direction d = normalize(p1 - p0) count inliers: points p with ‖(p - p0) - ((p - p0)·d)d‖ < threshold After convergence: refit direction via SVD on centred inlier matrix. Cramér–Rao analogue for the residual variance: σ²_line = residual_variance / n_inliers → used to build R_lines ──
 TrailerEstimatorNode::RansacLine3d TrailerEstimatorNode::ransacLine3d(
   const std::vector<Eigen::Vector3d> & pts,
   double inlier_thresh_m,
@@ -1003,7 +915,7 @@ TrailerEstimatorNode::RansacLine3d TrailerEstimatorNode::ransacLine3d(
     return result;  // not enough inliers — line not found
   }
 
-  // ── SVD least-squares refit on inliers ──────────────────────────────────
+  // ── SVD least-squares refit on inliers ──
   // Centroid of inliers.
   Eigen::Vector3d centroid = Eigen::Vector3d::Zero();
   for (std::size_t idx : best_inlier_idx) { centroid += pts[idx]; }
@@ -1037,26 +949,7 @@ TrailerEstimatorNode::RansacLine3d TrailerEstimatorNode::ransacLine3d(
   return result;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// runIcp — constrained point-to-model ICP.
-//
-// Optimises [x, y, yaw] (3 DOF) in the map frame.
-// z, roll, pitch are fixed: z from EKF state, roll/pitch from IMU.
-//
-// At each iteration:
-//   1. Transform model points to map frame at current [x, y, yaw] estimate.
-//   2. Find nearest LiDAR point within icp_max_corr_dist_.
-//   3. Compute 2×1 residuals r_i = p_lidar - p_model.
-//   4. Jacobian J_i (2×3) wrt [x, y, yaw]:
-//        J_i = [1, 0, -sin(yaw)·m_s - cos(yaw)·m_l;
-//               0, 1,  cos(yaw)·m_s - sin(yaw)·m_l]
-//      where (m_s, m_l) are model point coords in local (s,l) frame.
-//   5. Gauss-Newton update: H = Σ J_i'·J_i, g = Σ J_i'·r_i, δ = H^{-1}·g.
-//   6. Convergence when ‖δ‖ < icp_convergence_tol_.
-//
-// ICP covariance (Hessian-based, [TR] eq. 6.9 analog):
-//   Σ_icp = (Σ J_i'·J_i)^{-1}  (computed at convergence)
-// ─────────────────────────────────────────────────────────────────────────────
+// ── runIcp — constrained point-to-model ICP. Optimises [x, y, yaw] (3 DOF) in the map frame. z, roll, pitch are fixed: z from EKF state, roll/pitch from IMU. At each iteration: 1. Transform model points to map frame at current [x, y, yaw] estimate. 2. Find nearest LiDAR point within icp_max_corr_dist_. 3. Compute 2×1 residuals r_i = p_lidar - p_model. 4. Jacobian J_i (2×3) wrt [x, y, yaw]: J_i = [1, 0, -sin(yaw)·m_s - cos(yaw)·m_l; 0, 1,  cos(yaw)·m_s - sin(yaw)·m_l] where (m_s, m_l) are model point coords in local (s,l) frame. 5. Gauss-Newton update: H = Σ J_i'·J_i, g = Σ J_i'·r_i, δ = H^{-1}·g. 6. Convergence when ‖δ‖ < icp_convergence_tol_. ICP covariance (Hessian-based, [TR] eq. 6.9 analog): Σ_icp = (Σ J_i'·J_i)^{-1}  (computed at convergence) ──
 TrailerEstimatorNode::IcpResult TrailerEstimatorNode::runIcp(
   const std::vector<LocalPoint> & pts_map,
   const State10d & x_init) const
@@ -1183,11 +1076,7 @@ TrailerEstimatorNode::IcpResult TrailerEstimatorNode::runIcp(
   return result;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// updatePcaFilter — EMA filter identical to trailer_pose_node V4.0.
-// Called from the RS-Airy LiDAR callback (single-threaded per sensor).
-// pca_mutex_ must NOT be held by the caller.
-// ─────────────────────────────────────────────────────────────────────────────
+// ── updatePcaFilter — EMA filter identical to trailer_pose_node V4.0. Called from the RS-Airy LiDAR callback (single-threaded per sensor). pca_mutex_ must NOT be held by the caller ──
 void TrailerEstimatorNode::updatePcaFilter(const PcaMeasurement & m)
 {
   std::lock_guard<std::mutex> lk(pca_mutex_);
@@ -1233,9 +1122,7 @@ void TrailerEstimatorNode::updatePcaFilter(const PcaMeasurement & m)
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// filteredPositionBase — filtered trailer body centre in base_link.
-// ─────────────────────────────────────────────────────────────────────────────
+// ── filteredPositionBase — filtered trailer body centre in base_link ──
 Eigen::Vector3d TrailerEstimatorNode::filteredPositionBase(const KinematicPrior & prior) const
 {
   std::lock_guard<std::mutex> lk(pca_mutex_);
@@ -1245,9 +1132,7 @@ Eigen::Vector3d TrailerEstimatorNode::filteredPositionBase(const KinematicPrior 
     + pca_state_.dh * prior.k_base;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// makeTrailerRotation — Rz(yaw)*Ry(pitch)*Rx(roll), same as trailer_pose_node.
-// ─────────────────────────────────────────────────────────────────────────────
+// ── makeTrailerRotation — Rz(yaw)*Ry(pitch)*Rx(roll), same as trailer_pose_node ──
 Eigen::Matrix3d TrailerEstimatorNode::makeTrailerRotation(
   double yaw, double pitch, double roll) noexcept
 {
@@ -1269,18 +1154,7 @@ Eigen::Matrix3d TrailerEstimatorNode::makeTrailerRotation(
   return R;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// processLidarCloud — trailer_pose_node V4.0 pipeline adapted for the EKF.
-//
-// Detection is identical to trailer_pose_node V4.0:
-//   1. Cache static TF sensor_frame ← base_link (once).
-//   2. activeTheta: phi_lidar primary, phi_hardware fallback.
-//   3. buildKinematicPrior → ROI in sensor frame (no EKF dependency).
-//   4. cropToOrientedRoi → ground quantile filter → centroid voxel.
-//   5. SelfAdjointEigenSolver 2D PCA → quality gates.
-//   6. updatePcaFilter (EMA with decay-to-prior on invalid frames).
-//   7. Convert EMA-filtered pose to map frame → push LidarMeas.
-// ─────────────────────────────────────────────────────────────────────────────
+// ── processLidarCloud — trailer_pose_node V4.0 pipeline adapted for the EKF. Detection is identical to trailer_pose_node V4.0: 1. Cache static TF sensor_frame ← base_link (once). 2. activeTheta: phi_lidar primary, phi_hardware fallback. 3. buildKinematicPrior → ROI in sensor frame (no EKF dependency). 4. cropToOrientedRoi → ground quantile filter → centroid voxel. 5. SelfAdjointEigenSolver 2D PCA → quality gates. 6. updatePcaFilter (EMA with decay-to-prior on invalid frames). 7. Convert EMA-filtered pose to map frame → push LidarMeas ──
 void TrailerEstimatorNode::processLidarCloud(
   const sensor_msgs::msg::PointCloud2 & cloud,
   SpscRingBuffer<LidarMeas, 32> & queue,
@@ -1290,10 +1164,10 @@ void TrailerEstimatorNode::processLidarCloud(
 
   const rclcpp::Time stamp(cloud.header.stamp);
 
-  // ── Step 1: Cache static TF sensor ← base_link (one-time). ────────────────
+  // ── Step 1: Cache static TF sensor ← base_link (one-time). ──
   if (!cacheStaticTf(cloud.header.frame_id)) { return; }
 
-  // ── Step 2: activeTheta — phi_lidar primary, phi_hardware fallback. ───────
+  // ── Step 2: activeTheta — phi_lidar primary, phi_hardware fallback. ──
   double theta{0.0};
   {
     std::lock_guard<std::mutex> lk(mutex_phi_);
@@ -1317,10 +1191,10 @@ void TrailerEstimatorNode::processLidarCloud(
     }
   }
 
-  // ── Step 3: Build kinematic prior (trailer_pose_node V4.0 formula). ───────
+  // ── Step 3: Build kinematic prior (trailer_pose_node V4.0 formula). ──
   const KinematicPrior prior = buildKinematicPrior(theta);
 
-  // ── Step 4: Crop oriented ROI in sensor frame (no dynamic TF needed). ─────
+  // ── Step 4: Crop oriented ROI in sensor frame (no dynamic TF needed). ──
   // Symmetric ±roi_half_x_ along s, ±roi_half_y_ along l, ±roi_half_z_ along h.
   struct SensorPt { Eigen::Vector3d p; double s, l, h; };
   std::vector<SensorPt> roi_pts;
@@ -1377,7 +1251,7 @@ void TrailerEstimatorNode::processLidarCloud(
     return;
   }
 
-  // ── Step 6: Centroid voxel downsample (trailer_pose_node style). ──────────
+  // ── Step 6: Centroid voxel downsample (trailer_pose_node style). ──
   if (voxel_size_ > 1e-6) {
     struct VAccum { double s{0}, l{0}, h{0}; Eigen::Vector3d p{Eigen::Vector3d::Zero()}; int n{0}; };
     const double inv = 1.0 / voxel_size_;
@@ -1405,7 +1279,7 @@ void TrailerEstimatorNode::processLidarCloud(
   const int N = static_cast<int>(roi_pts.size());
   if (N < static_cast<int>(pca_min_points_after_ground_)) { return; }
 
-  // ── Step 7: Collect (s,l,h) vectors for PCA + corrections. ───────────────
+  // ── Step 7: Collect (s,l,h) vectors for PCA + corrections. ──
   std::vector<double> svec, lvec, hvec2;
   svec.reserve(N); lvec.reserve(N); hvec2.reserve(N);
   double mean_s = 0.0, mean_l = 0.0;
@@ -1533,7 +1407,7 @@ void TrailerEstimatorNode::processLidarCloud(
     last_roi_header_ = cloud.header;  // keep original sensor frame_id
   }
 
-  // ── Step 11: Convert EMA-filtered pose to map frame → push LidarMeas. ─────
+  // ── Step 11: Convert EMA-filtered pose to map frame → push LidarMeas. ──
   // Read EMA state.
   double yaw_corr_f{0.0}, pitch_f{0.0}, ds{0.0}, dl{0.0}, dh{0.0};
   {
@@ -1583,20 +1457,7 @@ void TrailerEstimatorNode::processLidarCloud(
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// EKF — predict step.
-//
-// Constant-velocity model with velocity decay (prevents drift when unobserved).
-//
-// State transition: F(dt):
-//   x_new[i]     = x[i] + v[i]*dt   for i in {x,y,z}
-//   yaw_new      = yaw + yaw_rate*dt
-//   roll_new     = roll  (assumed slow, driven by kinematic meas)
-//   pitch_new    = pitch
-//   v_new[i]     = decay * v[i]      for i in {vx,vy,vz,yaw_rate}
-//
-// Process covariance: P = F·P·F' + Q·dt  [TR] eq. 3.5.
-// ─────────────────────────────────────────────────────────────────────────────
+// ── EKF — predict step. Constant-velocity model with velocity decay (prevents drift when unobserved). State transition: F(dt): x_new[i]     = x[i] + v[i]*dt   for i in {x,y,z} yaw_new      = yaw + yaw_rate*dt roll_new     = roll  (assumed slow, driven by kinematic meas) pitch_new    = pitch v_new[i]     = decay * v[i]      for i in {vx,vy,vz,yaw_rate} Process covariance: P = F·P·F' + Q·dt  [TR] eq. 3.5 ──
 void TrailerEstimatorNode::ekfPredict(FilterState & state, double dt) const
 {
   static_assert(idx::kNDof == 10, "State dimension mismatch");
@@ -1635,21 +1496,7 @@ void TrailerEstimatorNode::ekfPredict(FilterState & state, double dt) const
   state.P = 0.5 * (state.P + state.P.transpose());
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// ekfUpdate — Joseph-form update with Mahalanobis gating.
-//
-// Template parameter M = measurement DOF.
-//
-// Standard EKF update [TR] Algorithm 3.1:
-//   ν   = z - H·x                         (innovation)
-//   S   = H·P·H' + R                       (innovation covariance)
-//   K   = P·H'·S^{-1}                      (Kalman gain)
-//   x   = x + K·ν
-//   P   = (I - K·H)·P·(I - K·H)' + K·R·K' (Joseph form — PSD guaranteed)
-//
-// Mahalanobis gate [TR] eq. 6.27:
-//   γ = ν'·S^{-1}·ν   < χ²_threshold  (reject outliers)
-// ─────────────────────────────────────────────────────────────────────────────
+// ── ekfUpdate — Joseph-form update with Mahalanobis gating. Template parameter M = measurement DOF. Standard EKF update [TR] Algorithm 3.1: ν   = z - H·x                         (innovation) S   = H·P·H' + R                       (innovation covariance) K   = P·H'·S^{-1}                      (Kalman gain) x   = x + K·ν P   = (I - K·H)·P·(I - K·H)' + K·R·K' (Joseph form — PSD guaranteed) Mahalanobis gate [TR] eq. 6.27: γ = ν'·S^{-1}·ν   < χ²_threshold  (reject outliers) ──
 template<int M>
 bool TrailerEstimatorNode::ekfUpdate(
   FilterState & state,
@@ -1707,9 +1554,7 @@ template bool TrailerEstimatorNode::ekfUpdate<3>(
 template bool TrailerEstimatorNode::ekfUpdate<4>(
   FilterState &, const Vec4d &, const H4x10 &, const Cov4d &, double) const;
 
-// ─────────────────────────────────────────────────────────────────────────────
-// checkAndHandleDivergence — re-initialise filter if it has diverged.
-// ─────────────────────────────────────────────────────────────────────────────
+// ── checkAndHandleDivergence — re-initialise filter if it has diverged ──
 void TrailerEstimatorNode::checkAndHandleDivergence(FilterState & state)
 {
   const double trace = state.P.trace();
@@ -1720,12 +1565,7 @@ void TrailerEstimatorNode::checkAndHandleDivergence(FilterState & state)
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// applyKinematicMeas — process one kinematic measurement in the filter thread.
-//
-// Measurement model (H_kinematic):
-//   z = [x, y, z, yaw]'  →  selects rows {kX, kY, kZ, kYaw} from state.
-// ─────────────────────────────────────────────────────────────────────────────
+// ── applyKinematicMeas — process one kinematic measurement in the filter thread. Measurement model (H_kinematic): z = [x, y, z, yaw]'  →  selects rows {kX, kY, kZ, kYaw} from state ──
 void TrailerEstimatorNode::applyKinematicMeas(
   FilterState & state, const KinematicMeas & meas)
 {
@@ -1809,12 +1649,7 @@ template bool TrailerEstimatorNode::ekfUpdate<2>(
   const Eigen::Matrix<double, 2, 2> &,
   double) const;
 
-// ─────────────────────────────────────────────────────────────────────────────
-// applyLidarMeas — process one LiDAR ICP measurement in the filter thread.
-//
-// Measurement model (H_lidar):
-//   z = [x, y, yaw]'  →  selects rows {kX, kY, kYaw} from state.
-// ─────────────────────────────────────────────────────────────────────────────
+// ── applyLidarMeas — process one LiDAR ICP measurement in the filter thread. Measurement model (H_lidar): z = [x, y, yaw]'  →  selects rows {kX, kY, kYaw} from state ──
 void TrailerEstimatorNode::applyLidarMeas(
   FilterState & state, const LidarMeas & meas)
 {
@@ -1836,13 +1671,7 @@ void TrailerEstimatorNode::applyLidarMeas(
   checkAndHandleDivergence(state);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// filterThreadFunc — runs at filter_period_ms_, drains all queues.
-//
-// All queues are drained in a single pass; measurements are applied in order.
-// The filter state is updated under state_mutex_ (unique_lock) only while
-// writing, then released — allowing the 50 Hz publish timer to proceed.
-// ─────────────────────────────────────────────────────────────────────────────
+// ── filterThreadFunc — runs at filter_period_ms_, drains all queues. All queues are drained in a single pass; measurements are applied in order. The filter state is updated under state_mutex_ (unique_lock) only while writing, then released — allowing the 50 Hz publish timer to proceed ──
 void TrailerEstimatorNode::filterThreadFunc()
 {
   const std::chrono::milliseconds period(filter_period_ms_);
@@ -1897,9 +1726,7 @@ void TrailerEstimatorNode::filterThreadFunc()
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// publishTimerCallback — 50 Hz, reads filter state and publishes all outputs.
-// ─────────────────────────────────────────────────────────────────────────────
+// ── publishTimerCallback — 50 Hz, reads filter state and publishes all outputs ──
 void TrailerEstimatorNode::publishTimerCallback()
 {
   const rclcpp::Time now = get_clock()->now();
@@ -1945,9 +1772,7 @@ void TrailerEstimatorNode::publishTimerCallback()
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// publishPose — /trailer/pose and /trailer/pose_in_map.
-// ─────────────────────────────────────────────────────────────────────────────
+// ── publishPose — /trailer/pose and /trailer/pose_in_map ──
 void TrailerEstimatorNode::publishPose(const FilterState & state) const
 {
   const rclcpp::Time stamp = state.stamp;
@@ -1995,9 +1820,7 @@ void TrailerEstimatorNode::publishPose(const FilterState & state) const
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// publishOdom — /trailer/odom (with velocity from filter state).
-// ─────────────────────────────────────────────────────────────────────────────
+// ── publishOdom — /trailer/odom (with velocity from filter state) ──
 void TrailerEstimatorNode::publishOdom(const FilterState & state) const
 {
   const Eigen::Quaterniond q(
@@ -2041,24 +1864,11 @@ void TrailerEstimatorNode::publishOdom(const FilterState & state) const
   odom_pub_->publish(odom);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// publishMarkers — trailer_pose_node V4.0 style.
-//
-// Drawn in base_link frame (TF does the map conversion for Foxglove).
-// Requires the static TF cache to be ready; silently skips if not.
-//
-//  ID 0  "trailer_roi"      — translucent cyan ROI cube (kinematic prior)
-//  ID 1  "trailer_skeleton" — prior centre line (blue, thin)
-//  ID 2  "trailer_skeleton" — filtered centre line (yellow, thick)
-//  ID 3  "trailer_skeleton" — left side rail (green)
-//  ID 4  "trailer_skeleton" — right side rail (magenta)
-//  ID 5  "trailer_pose"     — arrow at filtered body centre (orange)
-//  ID 6  "trailer_debug"    — text overlay with PCA stats
-// ─────────────────────────────────────────────────────────────────────────────
+// ── publishMarkers — trailer_pose_node V4.0 style. Drawn in base_link frame (TF does the map conversion for Foxglove). Requires the static TF cache to be ready; silently skips if not. ID 0  "trailer_roi"      — translucent cyan ROI cube (kinematic prior) ID 1  "trailer_skeleton" — prior centre line (blue, thin) ID 2  "trailer_skeleton" — filtered centre line (yellow, thick) ID 3  "trailer_skeleton" — left side rail (green) ID 4  "trailer_skeleton" — right side rail (magenta) ID 5  "trailer_pose"     — arrow at filtered body centre (orange) ID 6  "trailer_debug"    — text overlay with PCA stats ──
 void TrailerEstimatorNode::publishMarkers(
   const FilterState & /*state*/, const rclcpp::Time & now) const
 {
-  // ── activeTheta (same logic as processLidarCloud) ─────────────────────────
+  // ── activeTheta (same logic as processLidarCloud) ──
   double theta{0.0};
   {
     std::lock_guard<std::mutex> lk(mutex_phi_);
@@ -2078,10 +1888,10 @@ void TrailerEstimatorNode::publishMarkers(
     }
   }
 
-  // ── Kinematic prior in base_link ──────────────────────────────────────────
+  // ── Kinematic prior in base_link ──
   const KinematicPrior prior = buildKinematicPrior(theta);
 
-  // ── EMA-filtered corrections ──────────────────────────────────────────────
+  // ── EMA-filtered corrections ──
   double yaw_corr{0.0}, pitch_f{0.0}, roll_f{0.0};
   double ds{0.0}, dl{0.0}, dh{0.0};
   bool pca_ok{false};
@@ -2113,7 +1923,7 @@ void TrailerEstimatorNode::publishMarkers(
     ? prior.p0_base + ds * prior.u_base + dl * prior.n_base + dh * prior.k_base
     : prior.p0_base;
 
-  // ── Hitch-anchored skeleton points ────────────────────────────────────────
+  // ── Hitch-anchored skeleton points ──
   const Eigen::Vector3d & h = prior.hitch_base;
   const Eigen::Vector3d & up = prior.u_base;  // prior direction
 
@@ -2137,7 +1947,7 @@ void TrailerEstimatorNode::publishMarkers(
     return m;
   };
 
-  // ── 0. ROI cube (kinematic prior, translucent) ────────────────────────────
+  // ── 0. ROI cube (kinematic prior, translucent) ──
   {
     const Eigen::Quaterniond q_prior(Eigen::AngleAxisd(prior.yaw_prior, Eigen::Vector3d::UnitZ()));
     auto cube = baseMarker(0, "trailer_roi", visualization_msgs::msg::Marker::CUBE);
@@ -2169,18 +1979,18 @@ void TrailerEstimatorNode::publishMarkers(
     ma.markers.push_back(m);
   };
 
-  // ── 1. Prior centre line (blue, thin) ─────────────────────────────────────
+  // ── 1. Prior centre line (blue, thin) ──
   makeLine(1, "trailer_skeleton", prior_front, prior_rear, 0.2f, 0.4f, 1.0f, 0.018);
 
-  // ── 2. Filtered centre line (yellow, thick) ───────────────────────────────
+  // ── 2. Filtered centre line (yellow, thick) ──
   makeLine(2, "trailer_skeleton", front, rear, 1.0f, 0.8f, 0.0f, 0.035);
 
-  // ── 3 & 4. Side rails ─────────────────────────────────────────────────────
+  // ── 3 & 4. Side rails ──
   const double hw = 0.5 * (2.0 * model_.l_half);  // full width / 2
   makeLine(3, "trailer_skeleton", front + hw * n, rear + hw * n, 0.0f, 1.0f, 0.2f, 0.026);
   makeLine(4, "trailer_skeleton", front - hw * n, rear - hw * n, 1.0f, 0.0f, 1.0f, 0.026);
 
-  // ── 5. Arrow at filtered body centre ─────────────────────────────────────
+  // ── 5. Arrow at filtered body centre ──
   {
     auto arrow = baseMarker(5, "trailer_pose", visualization_msgs::msg::Marker::ARROW);
     arrow.points.push_back(pointMsg(pos_base));
@@ -2193,7 +2003,7 @@ void TrailerEstimatorNode::publishMarkers(
     ma.markers.push_back(arrow);
   }
 
-  // ── 6. Debug text ─────────────────────────────────────────────────────────
+  // ── 6. Debug text ──
   {
     auto text = baseMarker(6, "trailer_debug",
       visualization_msgs::msg::Marker::TEXT_VIEW_FACING);
@@ -2216,9 +2026,7 @@ void TrailerEstimatorNode::publishMarkers(
   markers_pub_->publish(ma);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// publishRoiCloud — /trailer/trailer_roi_cloud as sensor_msgs/PointCloud2.
-// ─────────────────────────────────────────────────────────────────────────────
+// ── publishRoiCloud — /trailer/trailer_roi_cloud as sensor_msgs/PointCloud2 ──
 void TrailerEstimatorNode::publishRoiCloud(
   const std::vector<LocalPoint> & pts,
   const std_msgs::msg::Header & header) const
@@ -2249,15 +2057,7 @@ void TrailerEstimatorNode::publishRoiCloud(
   roi_cloud_pub_->publish(cloud);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// publishHitchAngle — back-compute φ from filter state, cross-validate with hardware.
-//
-// φ_estimated = atan2(trailer_y - hitch_y, trailer_x - hitch_x) - tractor_yaw
-//
-// Cross-validation [TR] probabilistic interpretation:
-//   |φ_estimated - φ_hardware| > 2·σ_validation  for > hitch_disagreement_timeout_
-//   → WARN diagnostic (possible trailer disengagement or sensor fault).
-// ─────────────────────────────────────────────────────────────────────────────
+// ── publishHitchAngle — back-compute φ from filter state, cross-validate with hardware. φ_estimated = atan2(trailer_y - hitch_y, trailer_x - hitch_x) - tractor_yaw Cross-validation [TR] probabilistic interpretation: |φ_estimated - φ_hardware| > 2·σ_validation  for > hitch_disagreement_timeout_ → WARN diagnostic (possible trailer disengagement or sensor fault) ──
 void TrailerEstimatorNode::publishHitchAngle(
   const FilterState & state, const rclcpp::Time & now)
 {
@@ -2320,9 +2120,7 @@ void TrailerEstimatorNode::publishHitchAngle(
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// publishDiagnostics — Float64 KPI topics at ~1 Hz.
-// ─────────────────────────────────────────────────────────────────────────────
+// ── publishDiagnostics — Float64 KPI topics at ~1 Hz ──
 void TrailerEstimatorNode::publishDiagnostics(
   double latency_ms, double lidar_error_m, double inlier_ratio) const
 {
@@ -2336,9 +2134,7 @@ void TrailerEstimatorNode::publishDiagnostics(
   pub(diag_inlier_ratio_pub_, inlier_ratio);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Helpers
-// ─────────────────────────────────────────────────────────────────────────────
+// ── Helpers ──
 double TrailerEstimatorNode::normalizeAngle(double a) noexcept
 {
   return ::mtt_perception::normalizeAngle(a);

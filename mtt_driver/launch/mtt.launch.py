@@ -229,7 +229,7 @@ def generate_launch_description():
         GroupAction(actions=[
             PushROSNamespace(condition=IfCondition(use_namespace), namespace=robot_namespace),
 
-            # ── MTT Core: MultiThreaded composable container ────────────
+            # ── MTT Core: MultiThreaded composable container ──
             # We use an OpaqueFunction to conditionally exclude the CAN node in simulation
             OpaqueFunction(function=lambda context: [
                 ComposableNodeContainer(

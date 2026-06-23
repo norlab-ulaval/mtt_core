@@ -51,11 +51,11 @@ struct ArticulationServoDebug
 class ArticulationServo
 {
 public:
-  // ── Configuration ─────────────────────────────────────────────────
+  // ── Configuration ──
   void set_params(const ArticulationServoParams & p) { params_ = p; }
   const ArticulationServoParams & params() const { return params_; }
 
-  // ── State reset (call on mode switch or when feedback lost) ────────
+  // ── State reset (call on mode switch or when feedback lost) ──
   void reset(double initial_setpoint_rad = 0.0)
   {
     setpoint_rad_ = std::clamp(initial_setpoint_rad,
@@ -65,7 +65,7 @@ public:
     prev_error_initialized_ = false;
   }
 
-  // ── Setpoint generators ────────────────────────────────────────────
+  // ── Setpoint generators ──
 
   /// Position mode: set absolute target angle (radians, clamped to ±max_articulation_rad)
   void set_position(double target_rad)
@@ -83,7 +83,7 @@ public:
       -params_.max_articulation_rad, params_.max_articulation_rad);
   }
 
-  // ── Main update — call at fixed rate ──────────────────────────────
+  // ── Main update — call at fixed rate ──
   /// Returns clamped normalized steer command [-1,+1] and fills debug.
   double compute(double measured_rad, double dt, ArticulationServoDebug & dbg)
   {

@@ -70,7 +70,7 @@ localization:
     # Covariance: extract ISAM2 marginal and publish on localization/odom
     extract_covariance: true
 
-# ─── Trailer Localizer ──────────────────────────────────────────────────────
+# ─── Trailer Localizer ──
 # Computes trailer pose in map frame via SE(3) URDF kinematics.
 #
 # Two operating modes (switch via tractor_odom_topic + fusion_mode):

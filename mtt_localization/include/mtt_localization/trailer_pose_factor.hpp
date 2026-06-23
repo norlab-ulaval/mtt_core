@@ -1,7 +1,7 @@
 /// TrailerPoseFactor — Custom GTSAM unary factor on the hitch yaw angle φ.
 ///
 /// Mathematical formulation
-/// ────────────────────────
+/// ──
 /// State variable : φ ∈ ℝ  (hitch yaw angle, symbol 'h')
 ///
 /// Kinematic model (same URDF chain as TrailerLocalizerNode):
@@ -18,7 +18,7 @@
 ///   H = [ e(φ+ε) − e(φ−ε) ] / (2ε)
 ///
 /// Why is this elegant?
-/// ────────────────────
+/// ──
 /// The measurement T_measured is 6-dimensional but φ is 1-dimensional.
 /// The system is overdetermined: all 6 components of the pose residual
 /// constrain φ through the URDF kinematic chain.  Translation x/y primarily
@@ -44,9 +44,7 @@
 namespace mtt_loc
 {
 
-// ─────────────────────────────────────────────────────────────────────────────
-// URDF kinematic constants (base_footprint → MTT_remorque)
-// ─────────────────────────────────────────────────────────────────────────────
+// ── URDF kinematic constants (base_footprint → MTT_remorque) ──
 namespace hitch_kinematics
 {
 
@@ -123,9 +121,7 @@ inline gtsam::Pose3 computeDelta(double phi, double alpha = 0.0)
 
 }  // namespace hitch_kinematics
 
-// ─────────────────────────────────────────────────────────────────────────────
-// TrailerPoseFactor
-// ─────────────────────────────────────────────────────────────────────────────
+// ── TrailerPoseFactor ──
 class TrailerPoseFactor : public gtsam::NoiseModelFactor1<double>
 {
 public:
@@ -178,9 +174,7 @@ private:
   gtsam::Pose3 measured_;
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// TrailerPoseFactorFull — joint factor on (φ, α)
-// ─────────────────────────────────────────────────────────────────────────────
+// ── TrailerPoseFactorFull — joint factor on (φ, α) ──
 /// 2-variable factor constraining BOTH hitch yaw H(k)=φ and pitch P(k)=α
 /// from a single 6D trailer/pose measurement.
 ///

@@ -18,7 +18,7 @@ using namespace std::chrono_literals;
 MttCanNode::MttCanNode(const rclcpp::NodeOptions& options)
 : rclcpp::Node("mtt_can_node", options)
 {
-  // ── Declare parameters ──────────────────────────────────────────────
+  // ── Declare parameters ──
   can_interface_name_  = declare_parameter("can_interface",        std::string("can0"));
   can_id_              = static_cast<uint32_t>(declare_parameter("can_id",              0x001));
   control_freq_hz_     = declare_parameter("control_frequency_hz", 50.0);
@@ -98,7 +98,7 @@ MttCanNode::MttCanNode(const rclcpp::NodeOptions& options)
   synthetic_motion_model_.set_params(motion_model_params_);
   hold_assist_controller_.set_params(hold_assist_params_);
 
-  // ── Initialize command frame to safe defaults ────────────────────────
+  // ── Initialize command frame to safe defaults ──
   {
     std::lock_guard<std::mutex> lock(frame_mutex_);
     command_frame_.init_defaults();
@@ -114,10 +114,10 @@ MttCanNode::MttCanNode(const rclcpp::NodeOptions& options)
   //  - mtt_operator_input zeroes angular when deadman not pressed
   //  - mtt_manual_cmd_filter publishes zero once at startup
 
-  // ── Open CAN interface ───────────────────────────────────────────────
+  // ── Open CAN interface ──
   init_can_interface();
 
-  // ── Publishers ───────────────────────────────────────────────────────
+  // ── Publishers ──
   // SensorDataQoS (BEST_EFFORT) matches all subscribers (mtt_odometry, joint_state_builder, health).
   tachometer_pub_   = create_publisher<mtt_msgs::msg::MttTachometerData>("mtt_tachometer", rclcpp::SensorDataQoS());
   status_pub_       = create_publisher<mtt_msgs::msg::MttVehicleStatus>("mtt_status", 10);
@@ -130,7 +130,7 @@ MttCanNode::MttCanNode(const rclcpp::NodeOptions& options)
     can_debug_pub_ = create_publisher<mtt_msgs::msg::MttCanFrame>(can_debug_topic_, 50);
   }
 
-  // ── Subscribers ──────────────────────────────────────────────────────
+  // ── Subscribers ──
   cmd_vel_sub_ = create_subscription<geometry_msgs::msg::TwistStamped>(
     "cmd_vel", 10,
     [this](const geometry_msgs::msg::TwistStamped::SharedPtr msg){ on_cmd_vel(msg); });
@@ -159,7 +159,7 @@ MttCanNode::MttCanNode(const rclcpp::NodeOptions& options)
       last_servo_steer_time_ = std::chrono::steady_clock::now();
     });
 
-  // ── Services ─────────────────────────────────────────────────────────
+  // ── Services ──
   set_mode_srv_ = create_service<mtt_interfaces::srv::SetVehiculeTypeSrv>(
     "mtt/set_driving_mode",
     [this](
@@ -179,14 +179,14 @@ MttCanNode::MttCanNode(const rclcpp::NodeOptions& options)
       mtt_interfaces::srv::SetSteerControlMode::Response::SharedPtr res
     ){ on_set_steer_mode(req, res); });
 
-  // ── Timers ───────────────────────────────────────────────────────────
+  // ── Timers ──
   using ms = std::chrono::duration<double, std::milli>;
   auto ctrl_ms = ms(1000.0 / std::max(1e-3, control_freq_hz_));
   auto can_ms  = ms(1000.0 / std::max(1e-3, can_frame_freq_hz_));
   control_timer_  = create_wall_timer(ctrl_ms, [this](){ control_loop(); });
   can_send_timer_ = create_wall_timer(can_ms,  [this](){ send_can_frame(); });
 
-  // ── CAN receive thread ───────────────────────────────────────────────
+  // ── CAN receive thread ──
   receiver_running_ = true;
   receiver_thread_ = std::thread([this](){ receiver_loop(); });
 
@@ -222,7 +222,7 @@ MttCanNode::~MttCanNode()
   if (can_) can_->close();
 }
 
-// ── Hardware init ─────────────────────────────────────────────────────
+// ── Hardware init ──
 void MttCanNode::init_can_interface()
 {
   can_ = std::make_shared<hardware::LinuxSocketCan>();
@@ -233,7 +233,7 @@ void MttCanNode::init_can_interface()
   RCLCPP_INFO(get_logger(), "CAN interface %s opened", can_interface_name_.c_str());
 }
 
-// ── Dedicated receiver thread ─────────────────────────────────────────
+// ── Dedicated receiver thread ──
 void MttCanNode::receiver_loop()
 {
   const auto timeout_ms = std::chrono::milliseconds(100);
@@ -276,7 +276,7 @@ void MttCanNode::receiver_loop()
   }
 }
 
-// ── cmd_vel callback ──────────────────────────────────────────────────
+// ── cmd_vel callback ──
 void MttCanNode::on_cmd_vel(const geometry_msgs::msg::TwistStamped::SharedPtr msg)
 {
   const double lin   = msg->twist.linear.x;
@@ -312,7 +312,7 @@ can::Direction MttCanNode::infer_tachometer_direction(can::Direction commanded_d
     : can::Direction::Reverse;
 }
 
-// ── aux_cmd callback ──────────────────────────────────────────────────
+// ── aux_cmd callback ──
 void MttCanNode::on_aux_cmd(const mtt_msgs::msg::MttAuxCommand::SharedPtr msg)
 {
   std::lock_guard<std::mutex> lock(frame_mutex_);
@@ -325,7 +325,7 @@ void MttCanNode::on_aux_cmd(const mtt_msgs::msg::MttAuxCommand::SharedPtr msg)
   }
 }
 
-// ── estop callback ────────────────────────────────────────────────────
+// ── estop callback ──
 void MttCanNode::on_estop(const std_msgs::msg::Bool::SharedPtr msg)
 {
   teleop_estop_seen_   = true;
@@ -367,7 +367,7 @@ void MttCanNode::on_control_mode(const std_msgs::msg::String::SharedPtr msg)
   }
 }
 
-// ── Control loop (publish + timeout watchdog) ─────────────────────────
+// ── Control loop (publish + timeout watchdog) ──
 void MttCanNode::control_loop()
 {
   apply_command_timeout_if_needed();
@@ -460,7 +460,7 @@ void MttCanNode::refresh_command_frame()
     last_steering_source_ = steering_source;
   }
 
-  // ── Kinetic Safety Layer ──────────────────────────────────────────────
+  // ── Kinetic Safety Layer ──
   //
   // Three-phase parking state machine:
   //   Inactive   → normal drive
@@ -473,7 +473,7 @@ void MttCanNode::refresh_command_frame()
 
   const bool parking_brake_engaged = (command_frame_.brake_raw() >= 250);
 
-  // ── Phase transitions ─────────────────────────────────────────────────
+  // ── Phase transitions ──
   if (!parking_brake_engaged) {
     if (parking_phase_ != ParkingPhase::Inactive) {
       parking_phase_ = ParkingPhase::Inactive;
@@ -494,7 +494,7 @@ void MttCanNode::refresh_command_frame()
       ? can::Direction::Forward : can::Direction::Reverse;
   }
 
-  // ── Wrong-way protection (normal driving only) ────────────────────────
+  // ── Wrong-way protection (normal driving only) ──
   // Only relevant when parking is inactive.  During parking, the state machine
   // already owns direction control.
   bool wrong_way_detected = false;
@@ -505,7 +505,7 @@ void MttCanNode::refresh_command_frame()
     }
   }
 
-  // ── Command application ───────────────────────────────────────────────
+  // ── Command application ──
   if (safety_locked) {
     command_frame_.set_throttle(0.0);
     command_frame_.set_brake(1.0);
@@ -567,7 +567,7 @@ void MttCanNode::refresh_command_frame()
   }
 }
 
-// ── CAN send timer ────────────────────────────────────────────────────
+// ── CAN send timer ──
 void MttCanNode::send_can_frame()
 {
   if (!can_ || !can_->is_open()) return;
@@ -586,7 +586,7 @@ void MttCanNode::send_can_frame()
   }
 }
 
-// ── Command timeout ───────────────────────────────────────────────────
+// ── Command timeout ──
 bool MttCanNode::cmd_vel_is_fresh() const
 {
   std::lock_guard<std::mutex> lock(frame_mutex_);
@@ -633,7 +633,7 @@ void MttCanNode::apply_command_timeout_if_needed()
   }
 }
 
-// ── Safety lock management ────────────────────────────────────────────
+// ── Safety lock management ──
 void MttCanNode::set_safety_lock(const std::string& reason, bool active)
 {
   if (active) safety_locks_.insert(reason);
@@ -671,7 +671,7 @@ std::string MttCanNode::describe_safety_state(const std::string& state) const
   return state + ":" + reasons;
 }
 
-// ── Publish vehicle data ──────────────────────────────────────────────
+// ── Publish vehicle data ──
 void MttCanNode::publish_vehicle_data()
 {
   TachometerState tach_snap;
@@ -1032,7 +1032,7 @@ void MttCanNode::publish_can_debug_frame(
   can_debug_pub_->publish(msg);
 }
 
-// ── Services ─────────────────────────────────────────────────────────
+// ── Services ──
 void MttCanNode::on_set_mode(
   const mtt_interfaces::srv::SetVehiculeTypeSrv::Request::SharedPtr req,
   mtt_interfaces::srv::SetVehiculeTypeSrv::Response::SharedPtr res)

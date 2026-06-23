@@ -15,7 +15,7 @@ mtt_speed_servo_node:
     # Output goes to the arbiter's auto input (same as path follower)
     output_cmd_vel_topic: "controller/cmd_vel"
 
-    # ── PI gains ─────────────────────────────────────────────────────────
+    # ── PI gains ──
     # Tuning guide:
     #   kp: start at 1.0. At 0.1 m/s error, kp=1.5 → 0.15 throttle correction.
     #       Increase until fast response without hunting.
@@ -27,14 +27,14 @@ mtt_speed_servo_node:
     kd: 0.0
     integrator_limit: 0.30   # [throttle units] anti-windup clamp
 
-    # ── Limits ───────────────────────────────────────────────────────────
+    # ── Limits ──
     max_throttle: 1.0         # output saturation [0, 1]
     # MUST equal mtt_can_node.max_linear_speed_ms — see demos/common/config/speed_servo.yaml
     max_speed_ms: 5.56
     max_accel_ms2: 2.0        # rate limiter: max acceleration (m/s²)
     max_decel_ms2: 3.5        # rate limiter: max deceleration (m/s² — can be more aggressive)
 
-    # ── Feedforward LUT (speed_ms → throttle_normalized) ─────────────────
+    # ── Feedforward LUT (speed_ms → throttle_normalized) ──
     # Set feedforward_gain: 0.0 until LUT is characterized.
     # After characterization (mode: "characterize"), copy the logged YAML here.
     # Then set feedforward_gain: 1.0 for full feedforward assistance.
@@ -45,13 +45,13 @@ mtt_speed_servo_node:
     feedforward_gain: 0.0
     feedforward_lut: []
 
-    # ── Safety ───────────────────────────────────────────────────────────
+    # ── Safety ──
     # If tachometer not received within this window, output zero (don't control)
     feedback_timeout_s: 0.50
     # If setpoint not received within this window, ramp setpoint to zero
     command_timeout_s: 0.50
 
-    # ── Characterization mode ─────────────────────────────────────────────
+    # ── Characterization mode ──
     # Throttle increment per step (0.05 = 20 steps from 0 to 1.0)
     characterize_throttle_step: 0.05
     # Hold each throttle level this long before sampling (for speed to stabilize)

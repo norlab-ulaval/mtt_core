@@ -44,7 +44,7 @@ private:
     const std::vector<double> & angle_coords_deg) const;
   void process_byte(uint8_t byte);
 
-  // ── Parameters ─────────────────────────────────────────────────────────
+  // ── Parameters ──
   std::string serial_port_name_;
   int baud_rate_;
   double publish_rate_hz_;
@@ -75,20 +75,20 @@ private:
   double pitch_bits_zero_;    // linear mode: ADC1 bits at α=0
   double pitch_deg_per_bit_;  // linear mode: deg/bit (0 = uncalibrated)
 
-  // ── Serial ─────────────────────────────────────────────────────────────
+  // ── Serial ──
   std::unique_ptr<boost::asio::io_context> io_context_;
   std::unique_ptr<boost::asio::serial_port> serial_port_;
   std::thread read_thread_;
   std::atomic<bool> running_{false};
 
-  // ── Frame parser state machine (6-byte frame) ──────────────────────────
+  // ── Frame parser state machine (6-byte frame) ──
   uint8_t parse_state_{0};
   uint8_t adc1_low_{0};
   uint8_t adc1_high_{0};
   uint8_t adc2_low_{0};
   uint8_t adc2_high_{0};
 
-  // ── DSP ────────────────────────────────────────────────────────────────
+  // ── DSP ──
   std::mutex data_mutex_;
 
   // Yaw
@@ -101,7 +101,7 @@ private:
   double latest_pitch_rad_{0.0};       // calibrated, or 0 if no LUT
   bool pitch_lut_available_{false};
 
-  // ── ROS ────────────────────────────────────────────────────────────────
+  // ── ROS ──
   // Yaw — primary articulation angle
   rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr yaw_pub_;
   // Pitch — raw bits (always published, useful before calibration)

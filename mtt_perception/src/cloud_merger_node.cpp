@@ -22,7 +22,7 @@
 //   /hesai_in_base            — only when publish_debug_inputs=true
 //   /rsairy_in_base           — only when publish_debug_inputs=true
 //
-// ── Fusion math ─────────────────────────────────────────────────────────────
+// ── Fusion math ──
 //
 // For each point p_L expressed in LiDAR frame L, the rigid-body transform to
 // the target frame B (base_link) is:
@@ -71,11 +71,11 @@
 
 using PointCloud2 = sensor_msgs::msg::PointCloud2;
 
-// ─── sensor identity ─────────────────────────────────────────────────────────
+// ─── sensor identity ──
 
 enum class SensorId : uint16_t { HESAI = 0, RSAIRY = 1 };
 
-// ─── timestamped cache entry ─────────────────────────────────────────────────
+// ─── timestamped cache entry ──
 
 struct CachedCloud {
   PointCloud2::ConstSharedPtr msg;
@@ -83,7 +83,7 @@ struct CachedCloud {
   uint64_t                    seq_id;
 };
 
-// ─── free helpers ────────────────────────────────────────────────────────────
+// ─── free helpers ──
 
 static inline uint32_t countPoints(const PointCloud2 & c)
 {
@@ -128,7 +128,7 @@ static bool fieldsCompatible(const PointCloud2 & a, const PointCloud2 & b)
   return true;
 }
 
-// ── Path A: fast compatible concat ───────────────────────────────────────────
+// ── Path A: fast compatible concat ──
 //
 // Both clouds have an identical field layout.  Allocates the output buffer
 // once and copies both data payloads with two memcpy calls.
@@ -154,7 +154,7 @@ static PointCloud2 concatCompatible(const PointCloud2 & a,
   return out;
 }
 
-// ── Intensity field descriptor ────────────────────────────────────────────────
+// ── Intensity field descriptor ──
 //
 // Carries the validated offset and datatype for an intensity field so the
 // per-point reader can dispatch correctly without re-scanning the field list.
@@ -210,7 +210,7 @@ static inline float readIntensity(const uint8_t * p, const IntensityField & fi)
   }
 }
 
-// ── Path B: manual normalized concat ─────────────────────────────────────────
+// ── Path B: manual normalized concat ──
 //
 // Used when field layouts differ, or when normalize_fields=true is set.
 // Extracts x/y/z/intensity from raw PointCloud2 bytes without going through
@@ -317,7 +317,7 @@ static PointCloud2 concatNormalized(const PointCloud2 & a, SensorId id_a,
   return out;
 }
 
-// ── Bounding-box self-filter (in-place) ──────────────────────────────────────
+// ── Bounding-box self-filter (in-place) ──
 //
 // Removes points strictly inside [x_min,x_max] × [y_min,y_max] × [z_min,z_max].
 // Operates directly on the serialized buffer — no PCL conversion.
@@ -389,7 +389,7 @@ static PointCloud2 strideSampleCloud(const PointCloud2 & cloud, int stride)
   return out;
 }
 
-// ─── node ─────────────────────────────────────────────────────────────────────
+// ─── node ──
 
 class CloudMergerNode : public rclcpp::Node
 {
@@ -403,7 +403,7 @@ public:
     tf_drop_count_(0), reuse_count_(0),
     pair_dt_sum_(0.0), pair_dt_max_(0.0)
   {
-    // ── Parameters ─────────────────────────────────────────────────────────
+    // ── Parameters ──
     target_frame_             = declare_parameter<std::string>("target_frame",           "base_link");
     anchor_sensor_str_        = declare_parameter<std::string>("anchor_sensor",          "hesai");
     max_pair_dt_              = declare_parameter<double>     ("max_pair_dt",             0.075);
@@ -445,17 +445,17 @@ public:
       anchor_sensor_str_ = "hesai";
     }
 
-    // ── TF ─────────────────────────────────────────────────────────────────
+    // ── TF ──
     tf_buffer_   = std::make_shared<tf2_ros::Buffer>(get_clock());
     tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
 
-    // ── QoS ────────────────────────────────────────────────────────────────
+    // ── QoS ──
     // Raw fusion output: best-effort so a slow subscriber never blocks fusion.
     // Filtered output: reliable for mapper nodes that require it.
     const auto sensor_qos   = rclcpp::SensorDataQoS();
     const auto reliable_qos = rclcpp::QoS(10).reliable();
 
-    // ── Publishers ─────────────────────────────────────────────────────────
+    // ── Publishers ──
     pub_raw_  = create_publisher<PointCloud2>("merged_points_raw", sensor_qos);
     pub_full_ = create_publisher<PointCloud2>("merged_points",     sensor_qos);  // compat alias
 
@@ -470,7 +470,7 @@ public:
       pub_rsairy_in_base_ = create_publisher<PointCloud2>("rsairy_in_base", sensor_qos);
     }
 
-    // ── Callback groups ────────────────────────────────────────────────────
+    // ── Callback groups ──
     // Separate groups so Hesai and RS-Airy callbacks can execute concurrently
     // on the MultiThreadedExecutor without blocking each other.
     cb_group_hesai_  = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
@@ -510,7 +510,7 @@ public:
 private:
   enum class AnchorMode { HESAI, RSAIRY, EITHER };
 
-  // ── Subscription callbacks ────────────────────────────────────────────────
+  // ── Subscription callbacks ──
 
   void hesaiCallback(const PointCloud2::ConstSharedPtr msg)
   {
@@ -544,7 +544,7 @@ private:
       tryFuseFromAnchor(msg, SensorId::RSAIRY, seq);
   }
 
-  // ── Core fusion driver ────────────────────────────────────────────────────
+  // ── Core fusion driver ──
   //
   // Called for each anchor scan.  Looks up the nearest scan from the opposite
   // sensor, transforms both to target_frame, concatenates, and publishes.
@@ -558,7 +558,7 @@ private:
       (rsairy_inject_every_n_ <= 1) ||
       (anchor_seq % static_cast<uint64_t>(rsairy_inject_every_n_) == 0);
 
-    // ── 1. Find nearest matching cloud from the other sensor ───────────────
+    // ── 1. Find nearest matching cloud from the other sensor ──
     CachedCloud other;
     bool has_other = findNearestInCache(anchor_stamp, anchor_id, other);
     if (!has_other && (anchor_id != SensorId::HESAI || request_rsairy)) {
@@ -576,7 +576,7 @@ private:
     bool include_rsairy = (anchor_id == SensorId::HESAI) && request_rsairy && has_other;
     const double dt = has_other ? std::abs((anchor_stamp - other.stamp).seconds()) : 0.0;
 
-    // ── 2. Deduplicate in "either" mode ────────────────────────────────────
+    // ── 2. Deduplicate in "either" mode ──
     // Build a canonical pair hash: high 32 bits = hesai seq, low 32 = rsairy seq.
     // Prevents publishing the same physical pair twice when both sensors trigger.
     if (has_other && anchor_mode_ == AnchorMode::EITHER) {
@@ -591,7 +591,7 @@ private:
       }
     }
 
-    // ── 3. Reuse tracking (single-anchor modes only) ───────────────────────
+    // ── 3. Reuse tracking (single-anchor modes only) ──
     bool reused_other = false;
     if (has_other && include_rsairy && anchor_mode_ != AnchorMode::EITHER) {
       std::lock_guard<std::mutex> lk(reuse_mtx_);
@@ -608,13 +608,13 @@ private:
       last_used_other_seq_ = other.seq_id;
     }
 
-    // ── 4. Resolve which pointer is Hesai and which is RS-Airy ────────────
+    // ── 4. Resolve which pointer is Hesai and which is RS-Airy ──
     const PointCloud2::ConstSharedPtr & hesai_msg  =
       (anchor_id == SensorId::HESAI || !has_other) ? anchor_msg : other.msg;
     const PointCloud2::ConstSharedPtr rsairy_msg =
       include_rsairy ? ((anchor_id == SensorId::RSAIRY) ? anchor_msg : other.msg) : nullptr;
 
-    // ── 5. Transform both into target_frame ───────────────────────────────
+    // ── 5. Transform both into target_frame ──
     // SE(3) transform: p_B = R_BL * p_L + t_BL  (see file header for full math)
     PointCloud2 hesai_tf, rsairy_tf;
     if (!transformCloud(*hesai_msg, hesai_tf)) {
@@ -629,7 +629,7 @@ private:
     if (include_rsairy && rsairy_stride_ > 1)
       rsairy_tf = strideSampleCloud(rsairy_tf, rsairy_stride_);
 
-    // ── 6. Concatenate ─────────────────────────────────────────────────────
+    // ── 6. Concatenate ──
     // Build the output header once: stamp = anchor scan time (always correct
     // regardless of which sensor is the anchor), frame_id = target_frame.
     std_msgs::msg::Header out_header = anchor_msg->header;
@@ -659,7 +659,7 @@ private:
                                 out_header, remove_invalid_points_);
     }
 
-    // ── 7. Diagnostics ─────────────────────────────────────────────────────
+    // ── 7. Diagnostics ──
     const uint32_t n_hesai  = countPoints(hesai_tf);
     const uint32_t n_rsairy = include_rsairy ? countPoints(rsairy_tf) : 0u;
     const uint32_t n_merged = countPoints(merged);
@@ -692,7 +692,7 @@ private:
       pub_snap, np_snap, tf_snap, ru_snap,
       avg_dt_snap, max_dt_snap);
 
-    // ── 8. Publish raw merged cloud ────────────────────────────────────────
+    // ── 8. Publish raw merged cloud ──
     // The raw cloud is never filtered.  Publish to both /merged_points_raw and
     // /merged_points (backward-compat alias).  Check subscriber count to
     // avoid serialization overhead when nobody is listening.
@@ -703,7 +703,7 @@ private:
     if (pub_reliable_raw_ && pub_reliable_raw_->get_subscription_count() > 0)
       pub_reliable_raw_->publish(merged);
 
-    // ── 9. Debug: individual transformed clouds ────────────────────────────
+    // ── 9. Debug: individual transformed clouds ──
     if (publish_debug_inputs_) {
       if (pub_hesai_in_base_ && pub_hesai_in_base_->get_subscription_count() > 0)
         pub_hesai_in_base_->publish(hesai_tf);
@@ -711,7 +711,7 @@ private:
         pub_rsairy_in_base_->publish(rsairy_tf);
     }
 
-    // ── 10. Self-filtered cloud (optional, never touches raw) ─────────────
+    // ── 10. Self-filtered cloud (optional, never touches raw) ──
     if (publish_filtered_ && pub_filtered_ &&
         pub_filtered_->get_subscription_count() > 0) {
       PointCloud2 filtered = merged;  // deep copy — raw output remains clean
@@ -747,7 +747,7 @@ private:
     }
   }
 
-  // ── Cache lookup ──────────────────────────────────────────────────────────
+  // ── Cache lookup ──
   //
   // Finds the entry in the cache of the sensor opposite to anchor_id whose
   // stamp is closest to anchor_stamp, provided abs(dt) <= max_pair_dt_.
@@ -779,7 +779,7 @@ private:
     return true;
   }
 
-  // ── SE(3) transform helper ────────────────────────────────────────────────
+  // ── SE(3) transform helper ──
   //
   // Queries T_{target_frame ← in.frame_id} from the TF tree at in.stamp, then
   // applies the rigid-body transform to every point:
@@ -823,7 +823,7 @@ private:
     }
   }
 
-  // ── Member variables ──────────────────────────────────────────────────────
+  // ── Member variables ──
 
   // Parameters
   std::string         target_frame_;
@@ -896,7 +896,7 @@ private:
   std::mutex            diag_mtx_;
 };
 
-// ─── main ─────────────────────────────────────────────────────────────────────
+// ─── main ──
 
 int main(int argc, char * argv[])
 {

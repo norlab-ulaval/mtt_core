@@ -47,20 +47,20 @@ public:
   explicit MttArticulationServoNode(const rclcpp::NodeOptions & options);
 
 private:
-  // ── Timer callback — runs PD controller ────────────────────────────
+  // ── Timer callback — runs PD controller ──
   void control_loop();
 
-  // ── Parameters ─────────────────────────────────────────────────────
+  // ── Parameters ──
   std::string mode_;            ///< "position" | "velocity" | "disabled"
   double feedback_timeout_s_;   ///< drop to open-loop if encoder stale > this
   double command_timeout_s_;    ///< stop publishing override if command is stale
   double control_frequency_hz_;
   double max_articulation_rad_; ///< ±physical limit (rad)
 
-  // ── Controller ─────────────────────────────────────────────────────
+  // ── Controller ──
   logic::ArticulationServo servo_;
 
-  // ── Shared state (mutex protected) ────────────────────────────────
+  // ── Shared state (mutex protected) ──
   mutable std::mutex state_mutex_;
 
   std::optional<double> latest_feedback_rad_;
@@ -70,7 +70,7 @@ private:
   std::optional<double> latest_velocity_cmd_rad_s_;
   rclcpp::Time          latest_command_stamp_{0, 0, RCL_ROS_TIME};
 
-  // ── ROS interfaces ────────────────────────────────────────────────
+  // ── ROS interfaces ──
   // Subscriptions
   rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr position_cmd_sub_;
   rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr velocity_cmd_sub_;
