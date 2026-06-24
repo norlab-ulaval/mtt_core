@@ -20,6 +20,8 @@
 <exec_depend>service_msgs</exec_depend>
 
   <depend>action_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>std_msgs</depend>
 
 
   <export>
