@@ -1,6 +1,19 @@
 <?xml version="1.0"?>
 <robot name="onshape"  xmlns:xacro="https://www.ros.org/wiki/xacro">
 
+<!-- ── Runtime flags ────────────────────────────────────────────────────── -->
+<!-- simulation  : true → include Gazebo sensor plugins + sim-only LiDAR links  -->
+<!-- dual_gps    : true → include legacy dual-antenna GPS frames                 -->
+<!-- calibration : v1 (pre-displacement) | v2 (post-displacement, run calib first) -->
+<xacro:arg name="simulation"  default="false"/>
+<xacro:arg name="dual_gps"    default="false"/>
+<xacro:arg name="calibration" default="v1"/>
+<!-- calib_dir: absolute path to the calibrations/ directory.
+     description_calib.launch.py passes the SOURCE tree path so no install-tree
+     rebuild is needed after editing calib_*.xacro files. -->
+<xacro:arg name="calib_dir"   default="$(find mtt_description)/urdf/calibrations"/>
+<xacro:include filename="$(arg calib_dir)/calib_$(arg calibration).xacro"/>
+
     <xacro:macro name="default_transmission" params="joint_name">
         <transmission name="transmission_${joint_name}">
             <plugin>transmission_interface/SimpleTransmission</plugin>
@@ -1237,10 +1250,10 @@
     </gazebo>
 
     
-<!-- LiDAR Link -->
+<!-- Legacy placeholder link — only needed for Gazebo bridging in simulation -->
+<xacro:if value="$(arg simulation)">
 <link name="lidar_link">
   <pose>0 0 0.2 0 0 0</pose>
-
   <visual>
     <geometry>
       <cylinder length="0.05" radius="0.02"/>
@@ -1249,13 +1262,11 @@
       <color rgba="0 1 0 1"/>
     </material>
   </visual>
-
   <collision>
     <geometry>
       <cylinder length="0.05" radius="0.02"/>
     </geometry>
   </collision>
-
   <inertial>
     <mass value="0.1"/>
     <inertia ixx="0.0001" ixy="0.0" ixz="0.0"
@@ -1263,6 +1274,7 @@
              izz="0.0001"/>
   </inertial>
 </link>
+</xacro:if>
 
 <!-- Physical pencil mark reference point -->
 <link name="reference_point">
@@ -1283,8 +1295,10 @@
   <origin xyz="-0.7174808381178577409 0.21597831029643155 0.52330103716210749187" rpy="0 0 0"/>
 </joint>
 
-<!-- Center LiDAR -->
-<link name="center_lidar_link">
+<!-- Hesai XT-32 — single direct joint from reference_point.
+     The old center_lidar_link intermediate frame (zero-offset alias) is removed.
+     Driver publishes with frame_id=hesai_lidar; rpy π/2 matches physical mounting. -->
+<link name="hesai_lidar">
   <visual>
     <origin xyz="0 0 0" rpy="0 0 0"/>
     <geometry>
@@ -1303,36 +1317,23 @@
   </inertial>
 </link>
 
-<joint name="center_lidar_joint" type="fixed">
-  <parent link="reference_point"/>
-  <child link="center_lidar_link"/>
-  <origin xyz="0.62 -0.266 0.355" rpy="0 0 ${pi/2}"/>
-</joint>
-
-<!-- Hesai driver compatibility frame.
-     The live stack publishes point clouds with frame_id=hesai_lidar while the
-     MTT URDF uses center_lidar_link as the physical mount point. Keep both
-     names in the TF tree so mapping, Foxglove, and bags see one connected tree. -->
-<link name="hesai_lidar"/>
-
 <joint name="hesai_lidar_joint" type="fixed">
-  <parent link="center_lidar_link"/>
+  <parent link="reference_point"/>
   <child link="hesai_lidar"/>
-  <origin xyz="0 0 0" rpy="0 0 0"/>
+  <origin xyz="${hesai_calib_xyz}" rpy="${hesai_calib_rpy}"/>
 </joint>
 
-<!-- Runtime sensor mounts observed on the live robot snapshot.
-     These were previously only present in the old norlab_robot/main.urdf tree,
-     which left the current MTT description without the real sensor chain. Keep
-     them here so /robot_description matches the frames published by the live
-     stack. Field measurements should still confirm these poses later. -->
+<!-- Runtime sensor mounts — all under hesai_lidar so they travel with the cage.
+     xyz/rpy values come from calib_*.xacro properties so each calibration version
+     can express positions in its own frame convention (v1: X=LEFT/Y=BACKWARD,
+     v2: X=BACKWARD/Y=RIGHT). -->
 
 <link name="imu_link"/>
 
 <joint name="imu_joint" type="fixed">
   <parent link="hesai_lidar"/>
   <child link="imu_link"/>
-  <origin xyz="0.0 0.0 0.061" rpy="3.141596 0 0"/>
+  <origin xyz="${imu_calib_xyz}" rpy="${imu_calib_rpy}"/>
 </joint>
 
 <link name="mti10_imu_link_right"/>
@@ -1340,7 +1341,7 @@
 <joint name="mti10_imu_joint_right" type="fixed">
   <parent link="hesai_lidar"/>
   <child link="mti10_imu_link_right"/>
-  <origin xyz="-0.295 -0.030 -0.785" rpy="0 1.570796 0"/>
+  <origin xyz="${mti10_right_calib_xyz}" rpy="${mti10_right_calib_rpy}"/>
 </joint>
 
 <link name="mti10_imu_link_left"/>
@@ -1348,7 +1349,7 @@
 <joint name="mti10_imu_joint_left" type="fixed">
   <parent link="hesai_lidar"/>
   <child link="mti10_imu_link_left"/>
-  <origin xyz="0.295 -0.030 -0.785" rpy="0 1.570796 3.141596"/>
+  <origin xyz="${mti10_left_calib_xyz}" rpy="${mti10_left_calib_rpy}"/>
 </joint>
 
 <link name="zed_camera_link"/>
@@ -1356,7 +1357,7 @@
 <joint name="zed2i_mount_joint" type="fixed">
   <parent link="hesai_lidar"/>
   <child link="zed_camera_link"/>
-  <origin xyz="0.0 -0.47 -0.1627" rpy="0.0 0.0 -1.57079"/>
+  <origin xyz="${zed2i_calib_xyz}" rpy="${zed2i_calib_rpy}"/>
 </joint>
 
 <!-- ZED 2i internal frames.
@@ -1398,6 +1399,9 @@
   <origin xyz="0 0 0" rpy="-1.57079632679 0 -1.57079632679"/>
 </joint>
 
+<!-- Simulation-only LiDAR placeholders — not present in the live TF tree -->
+<xacro:if value="$(arg simulation)">
+
 <link name="front_lidar_link">
   <visual>
     <origin xyz="0 0 0" rpy="0 0 0"/>
@@ -1423,7 +1427,6 @@
   <origin xyz="1.24 -0.266 0.3302" rpy="0 0 0"/>
 </joint>
 
-<!-- Rear LiDAR -->
 <link name="rear_lidar_link">
   <visual>
     <origin xyz="0 0 0" rpy="0 0 0"/>
@@ -1449,6 +1452,8 @@
   <origin xyz="0.01 -0.266 0.3302" rpy="0 0 0"/>
 </joint>
 
+</xacro:if>
+
 <!-- RoboSense RS Bpearl runtime frame.
      The old live robot description carried a measured rsairy mount that is not
      the same as the generic rear_lidar_link added for simulation. Keep the
@@ -1459,10 +1464,10 @@
 <joint name="rsairy_mount_joint" type="fixed">
   <parent link="hesai_lidar"/>
   <child link="rsairy"/>
-  <!-- Calibrated 2026-04-21 with calibrate_static_bag.py (P2P→P2Pl→GICP on bag_0.mcap).
-       Previous (nominal): xyz="0.125 0.86 0.0" rpy="0.0 -1.91986 -1.5707"
-       ICP result: Δt=7.74cm Δr=0.95° vs nominal. RMSE=3.07cm at voxel=2cm. -->
-  <origin xyz="0.060281 0.850474 -0.020308" rpy="3.115775 -1.215034 1.582805"/>
+  <!-- Calibrated 2026-04-21 (P2P→P2Pl→GICP on bag_0.mcap, RMSE=3.07cm at voxel=2cm).
+       Values come from calib_*.xacro — expressed in the hesai_lidar frame convention
+       of the active calibration (v1: X=LEFT/Y=BACKWARD, v2: X=BACKWARD/Y=RIGHT). -->
+  <origin xyz="${rsairy_calib_xyz}" rpy="${rsairy_calib_rpy}"/>
 </joint>
 
 <!-- OAK-D base mount.
@@ -1527,12 +1532,13 @@
   <origin xyz="0 0 0" rpy="-1.5707963 0.0 -1.5707963"/>
 </joint>
 
-<!-- Legacy LiDAR (kept for compatibility) -->
+<xacro:if value="$(arg simulation)">
 <joint name="lidar_joint" type="fixed">
   <parent link="base_link"/>
   <child link="lidar_link"/>
   <origin xyz="0 0 0.8" rpy="0 0 0"/>
 </joint>
+</xacro:if>
 
 <!-- GPS Rover Antenna (Emlid Reach RS — single rover, RTK via LoRa from external base) -->
 <!-- Approximate live mount: right side, roughly midway between the Hesai and rear RS/OAK cluster. -->
@@ -1554,8 +1560,9 @@
   <origin xyz="0.315 -0.466 0.55" rpy="0 0 0"/>
 </joint>
 
-<!-- GPS Left Antenna (Emlid Reach RS — dual-antenna legacy, kept for reference) -->
-<!-- Only used when gps_antennas:=dual. Not active in single-rover mode.          -->
+<!-- Dual-antenna GPS frames — only included when dual_gps:=true.
+     Parent moved from the removed center_lidar_link to hesai_lidar (same origin). -->
+<xacro:if value="$(arg dual_gps)">
 <link name="gps_left_link">
   <inertial>
     <origin xyz="0 0 0" rpy="0 0 0"/>
@@ -1564,12 +1571,11 @@
   </inertial>
 </link>
 <joint name="gps_left_joint" type="fixed">
-  <parent link="center_lidar_link"/>
+  <parent link="hesai_lidar"/>
   <child link="gps_left_link"/>
-  <origin xyz="0.0 0.55 0.15" rpy="0 0 0"/>
+  <origin xyz="0.55 0.0 0.15" rpy="0 0 0"/>
 </joint>
 
-<!-- GPS Right Antenna (Emlid Reach RS — dual-antenna legacy) -->
 <link name="gps_right_link">
   <inertial>
     <origin xyz="0 0 0" rpy="0 0 0"/>
@@ -1578,18 +1584,21 @@
   </inertial>
 </link>
 <joint name="gps_right_joint" type="fixed">
-  <parent link="center_lidar_link"/>
+  <parent link="hesai_lidar"/>
   <child link="gps_right_link"/>
-  <origin xyz="0.0 -0.55 0.15" rpy="0 0 0"/>
+  <origin xyz="-0.55 0.0 0.15" rpy="0 0 0"/>
 </joint>
+</xacro:if>
 
 
 
 
-<!-- Gazebo sensor plugin for Center LiDAR -->
-<gazebo reference="center_lidar_link">
+<!-- Gazebo sensor plugins — only active when simulation:=true -->
+<xacro:if value="$(arg simulation)">
+
+<gazebo reference="hesai_lidar">
   <sensor name="center_lidar" type="gpu_lidar">
-    <gz_frame_id>center_lidar_link</gz_frame_id>
+    <gz_frame_id>hesai_lidar</gz_frame_id>
     <pose>0 0 0 0 0 0</pose>
     <update_rate>10</update_rate>
     <ray>
@@ -1655,6 +1664,7 @@
   </sensor>
 </gazebo>
 
+</xacro:if>
 
 <gazebo>
   <plugin
@@ -1664,5 +1674,13 @@
 </plugin>
 
 </gazebo>
+
+<!-- Emlid Reach M+ GPS Antenna (5cm au dessus de la camera ZED) -->
+<link name="gps_link"/>
+<joint name="gps_joint" type="fixed">
+  <parent link="zed_camera_link"/>
+  <child link="gps_link"/>
+  <origin xyz="0 0 0.05" rpy="0 0 0"/>
+</joint>
 
 </robot>
