@@ -1,0 +1,34 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <!--
+    Calibration v1 — sensor cage BEFORE the backward displacement.
+    Validated: bags recorded up to and including 2026-06-24.
+
+    hesai_lidar frame convention (rpy=π/2): X=LEFT, Y=BACKWARD, Z=UP.
+    All sensor xyz/rpy below are expressed in this frame.
+
+    RS-Airy relative mount calibrated 2026-04-21 (calibrate_static_bag.py
+    P2P→P2Pl→GICP on bag_0.mcap, RMSE=3.07 cm at voxel=2 cm).
+  -->
+
+  <!-- hesai_lidar origin relative to reference_point -->
+  <xacro:property name="hesai_calib_xyz" value="0.62 -0.266 0.355"/>
+  <xacro:property name="hesai_calib_rpy" value="0 0 1.5707963267948966"/>
+
+  <!-- IMU (Xsens MTi-100) — in hesai_lidar frame (X=LEFT, Y=BACKWARD) -->
+  <xacro:property name="imu_calib_xyz" value="0.0 0.0 0.061"/>
+  <xacro:property name="imu_calib_rpy" value="3.141596 0 0"/>
+  <xacro:property name="mti10_right_calib_xyz" value="-0.295 -0.030 -0.785"/>
+  <xacro:property name="mti10_right_calib_rpy" value="0 1.570796 0"/>
+  <xacro:property name="mti10_left_calib_xyz" value="0.295 -0.030 -0.785"/>
+  <xacro:property name="mti10_left_calib_rpy" value="0 1.570796 3.141596"/>
+
+  <!-- ZED 2i — in hesai_lidar frame (X=LEFT, Y=BACKWARD) -->
+  <xacro:property name="zed2i_calib_xyz" value="0.0 -0.47 -0.1627"/>
+  <xacro:property name="zed2i_calib_rpy" value="0.0 0.0 -1.5707963267948966"/>
+
+  <!-- RS-Airy — in hesai_lidar frame (X=LEFT, Y=BACKWARD) -->
+  <xacro:property name="rsairy_calib_xyz" value="0.060281 0.850474 -0.020308"/>
+  <xacro:property name="rsairy_calib_rpy" value="3.115775 -1.215034 1.582805"/>
+
+</robot>
