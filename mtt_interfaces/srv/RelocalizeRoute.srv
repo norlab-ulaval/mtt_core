@@ -1,0 +1,27 @@
+# Align an old route map (.vtk) against the current live map and republish
+# the route trajectory corrected by the SE(3) registration transform.
+#
+# The service is called by mtt_route_manager when loading a route so that
+# the taught trajectory is always expressed in the current live map frame.
+
+# Path to the route's saved point-cloud map (e.g. route.ltr.vtk)
+string map_file
+
+# Name of the route (used for logging / diagnostics only)
+string route_name
+
+---
+
+# True if the registration succeeded and the trajectory was republished.
+bool success
+
+# Overlap ratio between old and live maps after registration [0,1].
+# < overlap_min_ratio → fallback to identity (success=false).
+float32 overlap_ratio
+
+# Flat 4×4 SE(3) registration matrix in row-major order (T_live_old).
+# All zeros if registration failed.
+float64[16] transform_row_major
+
+# Human-readable result: "ok | T=[…]" or reason for failure.
+string message
