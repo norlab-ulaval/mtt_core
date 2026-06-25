@@ -1,0 +1,6 @@
+nav_msgs/Path path
+---
+bool valid
+float32 min_clearance_m
+int32 first_invalid_pose
+string message
