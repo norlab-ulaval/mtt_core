@@ -1,6 +1,9 @@
 <?xml version="1.0"?>
 <robot name="onshape"  xmlns:xacro="https://www.ros.org/wiki/xacro">
 
+<xacro:arg name="calibration" default="v1"/>
+<xacro:include filename="$(find mtt_description)/urdf/calibrations/calib_$(arg calibration).xacro"/>
+
     <xacro:macro name="default_transmission" params="joint_name">
         <transmission name="transmission_${joint_name}">
             <plugin>transmission_interface/SimpleTransmission</plugin>
@@ -1161,8 +1164,8 @@
   <origin xyz="-0.7174808381178577409 0.21597831029643155 0.52330103716210749187" rpy="0 0 0"/>
 </joint>
 
-<!-- Center LiDAR -->
-<link name="center_lidar_link">
+<!-- Hesai XT-32 — direct joint from reference_point (center_lidar_link alias removed) -->
+<link name="hesai_lidar">
   <visual>
     <origin xyz="0 0 0" rpy="0 0 0"/>
     <geometry>
@@ -1181,21 +1184,10 @@
   </inertial>
 </link>
 
-<joint name="center_lidar_joint" type="fixed">
-  <parent link="reference_point"/>
-  <child link="center_lidar_link"/>
-  <origin xyz="0.62 -0.266 0.355" rpy="0 0 ${pi/2}"/>
-</joint>
-
-<!-- Hesai driver compatibility frame.
-     Keep the same center LiDAR alias as the real robot so point clouds,
-     mapping, and TF consumers see one consistent tree in sim and live runs. -->
-<link name="hesai_lidar"/>
-
 <joint name="hesai_lidar_joint" type="fixed">
-  <parent link="center_lidar_link"/>
+  <parent link="reference_point"/>
   <child link="hesai_lidar"/>
-  <origin xyz="0 0 0" rpy="0 0 0"/>
+  <origin xyz="${hesai_calib_xyz}" rpy="${hesai_calib_rpy}"/>
 </joint>
 
 <!-- Runtime sensor mounts mirrored from the live robot description.
@@ -1376,7 +1368,7 @@
 </link>
 
 <joint name="gps_left_joint" type="fixed">
-  <parent link="center_lidar_link"/>
+  <parent link="hesai_lidar"/>
   <child link="gps_left_link"/>
   <origin xyz="0.0 0.55 0.15" rpy="0 0 0"/>
 </joint>
@@ -1390,7 +1382,7 @@
 </link>
 
 <joint name="gps_right_joint" type="fixed">
-  <parent link="center_lidar_link"/>
+  <parent link="hesai_lidar"/>
   <child link="gps_right_link"/>
   <origin xyz="0.0 -0.55 0.15" rpy="0 0 0"/>
 </joint>
@@ -1398,9 +1390,9 @@
 
 
 <!-- Gazebo sensor plugin for Center LiDAR -->
-<gazebo reference="center_lidar_link">
+<gazebo reference="hesai_lidar">
   <sensor name="center_lidar" type="gpu_lidar">
-    <gz_frame_id>center_lidar_link</gz_frame_id>
+    <gz_frame_id>hesai_lidar</gz_frame_id>
     <pose>0 0 0 0 0 0</pose>
     <update_rate>10</update_rate>
     <ray>
