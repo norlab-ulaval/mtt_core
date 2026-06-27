@@ -48,6 +48,58 @@ struct ArticulationServoDebug
   bool saturated{false};    ///< true if output hit max_steer
 };
 
+struct ArticulationFeedbackWatchdogParams
+{
+  bool enabled{true};
+  double min_error_rad{0.05};
+  double min_effort{0.15};
+  double movement_epsilon_rad{0.005};
+  double stuck_timeout_s{0.75};
+};
+
+/// Detects a feedback signal that remains fixed despite a meaningful position
+/// error and sustained control effort. Returning true tells the ROS wrapper to
+/// stop publishing the software override so the CAN controller can fall back to
+/// its configured native open/closed-loop mode.
+class ArticulationFeedbackWatchdog
+{
+public:
+  void set_params(const ArticulationFeedbackWatchdogParams & params) { params_ = params; }
+
+  void reset(double feedback_rad = 0.0)
+  {
+    anchor_feedback_rad_ = feedback_rad;
+    immobile_time_s_ = 0.0;
+    initialized_ = true;
+  }
+
+  bool update(double feedback_rad, double error_rad, double effort, double dt)
+  {
+    if (!params_.enabled || std::abs(error_rad) < params_.min_error_rad ||
+        std::abs(effort) < params_.min_effort)
+    {
+      reset(feedback_rad);
+      return false;
+    }
+
+    if (!initialized_ ||
+        std::abs(feedback_rad - anchor_feedback_rad_) > params_.movement_epsilon_rad)
+    {
+      reset(feedback_rad);
+      return false;
+    }
+
+    immobile_time_s_ += std::max(dt, 0.0);
+    return immobile_time_s_ >= params_.stuck_timeout_s;
+  }
+
+private:
+  ArticulationFeedbackWatchdogParams params_;
+  double anchor_feedback_rad_{0.0};
+  double immobile_time_s_{0.0};
+  bool initialized_{false};
+};
+
 class ArticulationServo
 {
 public:
