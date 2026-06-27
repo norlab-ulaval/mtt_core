@@ -40,6 +40,7 @@ struct OdometryInput {
   bool synthetic_model_valid{false};
   double articulation_command_rad{0.0};
   double articulation_effective_rad{0.0};
+  bool articulation_measurement_valid{false};
   double curvature_nominal_m_inv{0.0};
   double curvature_effective_m_inv{0.0};
   double yaw_rate_nominal_rad_s{0.0};
