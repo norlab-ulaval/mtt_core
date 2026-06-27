@@ -11,6 +11,8 @@ mtt_articulation_servo_node:
 
     # Feedback source (primary: STM32 hardware encoder, 100 Hz)
     feedback_topic: "/hardware/articulation_angle"
+    prefer_state_feedback: false
+    state_feedback_topic: "/mtt/articulation_state"
 
     # Command topics
     position_cmd_topic: "/mtt_articulation_setpoint"
