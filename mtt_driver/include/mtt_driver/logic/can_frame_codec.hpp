@@ -16,10 +16,16 @@ namespace mtt::can {
 
 // ── CAN IDs ──
 constexpr uint32_t kCommandId    = 0x001;
-constexpr uint32_t kExternalCommandId = 0x100;
+// NOTE: 0x100 is NOT a duplicate drive frame with higher priority.
+// Live bus capture (candump) confirmed it controls the COM/winch motor
+// with a different byte layout than 0x001. Do NOT use it for drive commands.
+constexpr uint32_t kComMotorCommandId = 0x100;
 constexpr uint32_t kTelemetryId  = 0x2FF;
-constexpr uint32_t kMainControllerVersionId   = 0x300;
-constexpr uint32_t kBatteryControllerVersionId = 0x301;
+constexpr uint32_t kMainControllerVersionId        = 0x300;
+constexpr uint32_t kBatteryControllerVersionId     = 0x301;
+// 0x351: COM motor controller version frame (same format as 0x300/0x301).
+// Confirmed via live candump — not in original DBC but present on real bus.
+constexpr uint32_t kComControllerVersionId         = 0x351;
 
 // ── Byte positions in the 8-byte command frame ──
 enum FrameIndex : uint8_t {
@@ -231,10 +237,13 @@ struct TelemetryDecoder {
 
 // ── BMS CAN IDs ──
 // ROYPOW S51105 BMS broadcasts on 4 frames.
-constexpr uint32_t kBmsCellTempsId  = 0x600;  // CellTemp1..4
-constexpr uint32_t kBmsSysTempsId   = 0x601;  // AmbientTemp, MosfetTemp, HeatpadA/B
-constexpr uint32_t kBmsCoreId       = 0x602;  // SOC, current, voltage, heatpad state
-constexpr uint32_t kBmsDateTimeId   = 0x603;  // Timestamp / extra (not decoded here)
+// IMPORTANT: IDs confirmed via live candump on real robot.
+// The original DBC listed 0x600-0x603 but the real bus uses 0x650-0x653.
+// The 0x600-0x603 range belongs to a different BMS variant; DO NOT revert.
+constexpr uint32_t kBmsCellTempsId  = 0x650;  // CellTemp1..4
+constexpr uint32_t kBmsSysTempsId   = 0x651;  // AmbientTemp, MosfetTemp, HeatpadA/B
+constexpr uint32_t kBmsCoreId       = 0x652;  // SOC, current, voltage, heatpad state
+constexpr uint32_t kBmsDateTimeId   = 0x653;  // Timestamp / extra (not decoded here)
 constexpr uint32_t kChargerCommandId = 0x1806E5F4;
 constexpr uint32_t kChargerStatusId  = 0x18FF50E5;
 
@@ -243,22 +252,24 @@ inline const char* frame_name_from_id(uint32_t id)
   switch (id) {
     case kCommandId:
       return "MTT_Control_Joystick_001";
-    case kExternalCommandId:
-      return "MTT_Control_External_100";
+    case kComMotorCommandId:
+      return "MTT_COM_Motor_Command_100";
     case kTelemetryId:
       return "MTT_Main_Status_2FF";
     case kMainControllerVersionId:
       return "MTT_Main_Controller_Version_300";
     case kBatteryControllerVersionId:
       return "MTT_Battery_Controller_Version_301";
+    case kComControllerVersionId:
+      return "MTT_COM_Controller_Version_351";
     case kBmsCellTempsId:
-      return "MTT_BMS_Cell_Temperatures_600";
+      return "MTT_BMS_Cell_Temperatures_650";
     case kBmsSysTempsId:
-      return "MTT_BMS_System_Temperatures_601";
+      return "MTT_BMS_System_Temperatures_651";
     case kBmsCoreId:
-      return "MTT_BMS_Core_Status_602";
+      return "MTT_BMS_Core_Status_652";
     case kBmsDateTimeId:
-      return "MTT_BMS_Date_Time_Remaining_603";
+      return "MTT_BMS_Date_Time_Remaining_653";
     case kChargerCommandId:
       return "MTT_Charger_Command_1806E5F4";
     case kChargerStatusId:
@@ -271,10 +282,11 @@ inline const char* frame_name_from_id(uint32_t id)
 inline bool is_known_mtt_frame(uint32_t id)
 {
   return id == kCommandId ||
-         id == kExternalCommandId ||
+         id == kComMotorCommandId ||
          id == kTelemetryId ||
          id == kMainControllerVersionId ||
          id == kBatteryControllerVersionId ||
+         id == kComControllerVersionId ||
          id == kBmsCellTempsId ||
          id == kBmsSysTempsId ||
          id == kBmsCoreId ||
