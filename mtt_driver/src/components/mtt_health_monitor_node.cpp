@@ -505,7 +505,7 @@ void MttHealthMonitorNode::publish_health()
   msg.header.frame_id = base_frame_;
   msg.can_interface = has_status ? status.can_interface : "";
   msg.command_can_id = has_status ? status.command_can_id : 0u;
-  msg.external_control_active = has_status && status.command_can_id == can::kExternalCommandId;
+  msg.external_control_active = has_status && status.command_can_id == can::kComMotorCommandId;
   msg.can_debug_enabled = has_status && status.can_debug_enabled;
   msg.can_debug_available = can_debug_available;
   msg.steer_control_mode = steer_control_mode_;
