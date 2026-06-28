@@ -15,9 +15,10 @@ MttArticulationSensorNode::MttArticulationSensorNode(const rclcpp::NodeOptions &
 {
   // ── Parameters ──
   serial_port_name_ = declare_parameter("serial_port",
-    std::string("/dev/serial/by-id/usb-STMicroelectronics_STM32_STLink_066EFF373146363143225155-if02"));
+    std::string("/dev/serial/by-id/usb-STMicroelectronics_STM32_STLink_066FFF373146363143224542-if02"));
   baud_rate_              = declare_parameter("baud_rate", 921600);
   publish_rate_hz_        = declare_parameter("publish_rate_hz", 100.0);
+  data_timeout_s_         = declare_parameter("data_timeout_s", 0.25);
   filter_window_size_     = declare_parameter("filter_window_size", 50);
 
   // ── Yaw (ADC2, 12-bit, PA6) ──
@@ -51,6 +52,8 @@ MttArticulationSensorNode::MttArticulationSensorNode(const rclcpp::NodeOptions &
   pitch_angle_coords_deg_ = declare_parameter("pitch_angle_coords_deg", std::vector<double>{});
   pitch_bits_zero_        = declare_parameter("pitch_bits_zero",    128.0); // ADC1 bits at α=0
   pitch_deg_per_bit_      = declare_parameter("pitch_deg_per_bit",    0.0); // deg/bit (0 = uncalibrated)
+
+  reconnect_delay_s_ = declare_parameter("reconnect_delay_s", 1.0);
 
   const bool pitch_lut_full =
     !pitch_bit_coords_.empty() && !pitch_angle_coords_deg_.empty() &&
@@ -118,22 +121,91 @@ MttArticulationSensorNode::~MttArticulationSensorNode()
 
 void MttArticulationSensorNode::read_loop()
 {
-  uint8_t buf[1];
+  uint8_t buf[64];  // block read: much more efficient than 1 byte at a time
   while (running_ && rclcpp::ok()) {
+    // If port not open (init failure or disconnect): try to reconnect
+    if (!serial_port_ || !serial_port_->is_open()) {
+      close_and_reopen_serial();
+      std::this_thread::sleep_for(
+        std::chrono::duration<double>(reconnect_delay_s_));
+      continue;
+    }
     try {
       boost::system::error_code ec;
-      size_t len = serial_port_->read_some(boost::asio::buffer(buf, 1), ec);
+      const size_t len = serial_port_->read_some(
+        boost::asio::buffer(buf, sizeof(buf)), ec);
       if (!ec && len > 0) {
-        process_byte(buf[0]);
+        for (size_t i = 0; i < len; ++i) {
+          process_byte(buf[i]);
+        }
+      } else if (ec) {
+        // Serial error (USB CDC reset, cable pull, STM32 brownout...)
+        RCLCPP_WARN(get_logger(),
+          "Serial error: %s — closing and will reconnect in %.1fs",
+          ec.message().c_str(), reconnect_delay_s_);
+        close_and_reopen_serial();
+        std::this_thread::sleep_for(
+          std::chrono::duration<double>(reconnect_delay_s_));
       }
     } catch (const std::exception & e) {
-      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
-        "Serial read error: %s", e.what());
+      RCLCPP_WARN(get_logger(),
+        "Serial exception: %s — closing and will reconnect in %.1fs",
+        e.what(), reconnect_delay_s_);
+      close_and_reopen_serial();
+      std::this_thread::sleep_for(
+        std::chrono::duration<double>(reconnect_delay_s_));
     }
   }
 }
+// ── Serial auto-reconnect ──
+//
+// Called on any serial error or when the port is found closed.
+// Closes the current port (if open), increments reconnect counter,
+// and tries to reopen on the same device path.
+// The caller is responsible for sleeping reconnect_delay_s_ before retrying.
+void MttArticulationSensorNode::close_and_reopen_serial()
+{
+  // Close whatever we have
+  try {
+    if (serial_port_ && serial_port_->is_open()) {
+      serial_port_->close();
+    }
+  } catch (...) {}
+  serial_port_.reset();
 
-// ── 6-byte frame parser ──
+  ++reconnect_count_;
+  RCLCPP_WARN(get_logger(),
+    "Articulation serial reconnect #%d on %s @ %d baud —"
+    " likely STM32 USB-CDC reset (thermal/power event).",
+    reconnect_count_, serial_port_name_.c_str(), baud_rate_);
+
+  try {
+    // io_context stays alive — just create a new serial_port on it
+    serial_port_ = std::make_unique<boost::asio::serial_port>(
+      *io_context_, serial_port_name_);
+    serial_port_->set_option(
+      boost::asio::serial_port_base::baud_rate(baud_rate_));
+    RCLCPP_INFO(get_logger(),
+      "Articulation serial reconnected (attempt #%d) on %s @ %d baud",
+      reconnect_count_, serial_port_name_.c_str(), baud_rate_);
+    // Reset frame parser so stale partial frame from before disconnect is discarded
+    parse_state_ = 0;
+  } catch (const std::exception & e) {
+    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 10000,
+      "Reconnect #%d failed: %s — will retry in %.1fs",
+      reconnect_count_, e.what(), reconnect_delay_s_);
+    serial_port_.reset();
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(data_mutex_);
+    has_valid_frame_ = false;
+    yaw_filter_buf_.clear();
+    pitch_filter_buf_.clear();
+  }
+}
+
+
 //
 // STM32 Create_Tx_buffer layout:
 //   byte[0] = 0xAA          (sync)
@@ -217,6 +289,9 @@ void MttArticulationSensorNode::process_byte(uint8_t byte)
           if (pitch_invert_sign_) { pitch_rad = -pitch_rad; }
           latest_pitch_rad_ = pitch_rad + pitch_angle_offset_rad_;
         }
+
+        has_valid_frame_ = true;
+        last_valid_frame_time_ = std::chrono::steady_clock::now();
       }
       // Back to sync hunt regardless of checksum result
       parse_state_ = 0;
@@ -252,11 +327,25 @@ double MttArticulationSensorNode::interpolate_lut(
 void MttArticulationSensorNode::publish_timer_callback()
 {
   std_msgs::msg::Float64 yaw_msg, pitch_bits_msg, pitch_rad_msg;
+  bool data_fresh = false;
   {
     std::lock_guard<std::mutex> lock(data_mutex_);
-    yaw_msg.data        = latest_yaw_rad_;
-    pitch_bits_msg.data = latest_pitch_bits_;
-    pitch_rad_msg.data  = latest_pitch_rad_;
+    data_fresh = has_valid_frame_ &&
+      std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - last_valid_frame_time_).count() <= data_timeout_s_;
+    if (data_fresh) {
+      yaw_msg.data        = latest_yaw_rad_;
+      pitch_bits_msg.data = latest_pitch_bits_;
+      pitch_rad_msg.data  = latest_pitch_rad_;
+    }
+  }
+
+  if (!data_fresh) {
+    RCLCPP_WARN_THROTTLE(
+      get_logger(), *get_clock(), 5000,
+      "No valid STM32 articulation frame within %.2fs; suppressing stale feedback",
+      data_timeout_s_);
+    return;
   }
 
   yaw_pub_->publish(yaw_msg);
