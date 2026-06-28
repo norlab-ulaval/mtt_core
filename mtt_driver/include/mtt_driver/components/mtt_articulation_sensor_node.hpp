@@ -2,6 +2,7 @@
 #define MTT_DRIVER__COMPONENTS__MTT_ARTICULATION_SENSOR_NODE_HPP_
 
 #include <atomic>
+#include <chrono>
 #include <deque>
 #include <memory>
 #include <mutex>
@@ -39,6 +40,7 @@ public:
 private:
   void read_loop();
   void publish_timer_callback();
+  void close_and_reopen_serial();  // Auto-reconnect on USB-CDC reset (thermal/power event)
   double interpolate_lut(double bits,
     const std::vector<double> & bit_coords,
     const std::vector<double> & angle_coords_deg) const;
@@ -48,6 +50,7 @@ private:
   std::string serial_port_name_;
   int baud_rate_;
   double publish_rate_hz_;
+  double data_timeout_s_{0.25};
   int filter_window_size_;
 
   // Yaw (ADC2)
@@ -80,6 +83,8 @@ private:
   std::unique_ptr<boost::asio::serial_port> serial_port_;
   std::thread read_thread_;
   std::atomic<bool> running_{false};
+  double reconnect_delay_s_{1.0};  // seconds to wait between reconnect attempts
+  int    reconnect_count_{0};      // diagnostic: number of reconnects since start
 
   // ── Frame parser state machine (6-byte frame) ──
   uint8_t parse_state_{0};
@@ -90,6 +95,8 @@ private:
 
   // ── DSP ──
   std::mutex data_mutex_;
+  bool has_valid_frame_{false};
+  std::chrono::steady_clock::time_point last_valid_frame_time_{};
 
   // Yaw
   std::deque<int> yaw_filter_buf_;
