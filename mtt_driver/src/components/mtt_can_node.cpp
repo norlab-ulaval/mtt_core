@@ -62,10 +62,10 @@ MttCanNode::MttCanNode(const rclcpp::NodeOptions& options)
   base_frame_          = declare_parameter("base_frame",           std::string("base_footprint"));
   cmd_angular_mode_    = declare_parameter("cmd_angular_mode",     std::string("normalized_steer"));
   steer_control_mode_  = declare_parameter("steer_control_mode",   std::string("closed_loop"));
-  tachometer_mode_     = declare_parameter("tachometer_mode",      std::string("real"));
+  tachometer_mode_ = declare_parameter("tachometer_mode", std::string("real"));
   invert_inferred_tachometer_direction_ =
     declare_parameter("invert_inferred_tachometer_direction", false);
-  publish_can_debug_   = declare_parameter("publish_can_debug",    false);
+  publish_can_debug_ = declare_parameter("publish_can_debug", false);
   can_debug_topic_     = declare_parameter("can_debug_topic",      std::string("mtt_can/debug_frames"));
 
   if (cmd_angular_mode_ != "normalized_steer" && cmd_angular_mode_ != "yaw_rate") {
@@ -155,7 +155,7 @@ MttCanNode::MttCanNode(const rclcpp::NodeOptions& options)
     [this](const std_msgs::msg::Float64::SharedPtr msg) {
       std::lock_guard<std::mutex> lock(frame_mutex_);
       servo_steer_override_ = std::clamp(msg->data, -1.0, 1.0);
-      servo_steer_active_ = servo_override_allowed_;
+      servo_steer_active_ = true;
       last_servo_steer_time_ = std::chrono::steady_clock::now();
     });
 
@@ -340,12 +340,11 @@ void MttCanNode::on_deadman(const std_msgs::msg::Bool::SharedPtr msg)
   teleop_deadman_seen_ = true;
   teleop_deadman_active_ = msg->data;
 
-  // On deadman release: immediately zero commands and reset hold assist.
-  // Defense-in-depth — even if upstream node fails to send zero, CAN node stops the robot.
+  // On deadman release: zero linear command and reset hold assist.
+  // We leave servo_steer_active_ alone so the software PID can execute return-to-center.
   if (manual_control_active_ && was_active && !teleop_deadman_active_) {
     current_linear_command_ms_ = 0.0;
     current_steering_input_ = 0.0;
-    servo_steer_active_ = false;   // also deactivate servo override on deadman release
     hold_assist_controller_.reset();
   }
 }
@@ -354,11 +353,9 @@ void MttCanNode::on_control_mode(const std_msgs::msg::String::SharedPtr msg)
 {
   std::lock_guard<std::mutex> lock(frame_mutex_);
   manual_control_active_ = msg->data == "MANUAL";
-  servo_override_allowed_ = msg->data == "AUTO";
-  if (!servo_override_allowed_) {
-    servo_steer_active_ = false;
-    servo_steer_override_ = 0.0;
-  }
+  
+  // Always allow servo override if a fresh message is received (handled in servo_steer_sub_)
+  
   if (msg->data == "STOP" ||
       (manual_control_active_ && teleop_deadman_seen_ && !teleop_deadman_active_)) {
     current_linear_command_ms_ = 0.0;
@@ -437,11 +434,21 @@ void MttCanNode::refresh_command_frame()
       servo_steer_active_ = false;  // expired — fall back to cmd_vel angular
     }
   }
-  const double effective_steer = servo_override_allowed_ && servo_steer_active_
+  const double effective_steer = servo_steer_active_
     ? servo_steer_override_
     : current_steering_input_;
 
   command_frame_.set_steer(effective_steer);
+
+  // CRITICAL SAFETY: If Software PID (servo) is driving the steering, we MUST force
+  // the CAN controller into Hardware OpenLoop. Otherwise, the CAN controller interprets
+  // the PID PWM output as a Target Position, leading to violent oscillation and overheating.
+  if (servo_steer_active_) {
+    command_frame_.set_steering_mode(can::SteeringMode::OpenLoop);
+  } else if (!safety_locked) { // Use the configured mode if not locked
+    command_frame_.set_steering_mode(
+      steer_control_mode_ == "closed_loop" ? can::SteeringMode::CloseLoop : can::SteeringMode::OpenLoop);
+  }
 
   std::string steering_source = "cmd_vel";
   if (safety_locked) {
@@ -450,7 +457,7 @@ void MttCanNode::refresh_command_frame()
     steering_source = "deadman_stop";
   } else if (command_timeout_active_) {
     steering_source = "command_timeout";
-  } else if (servo_override_allowed_ && servo_steer_active_) {
+  } else if (servo_steer_active_) {
     steering_source = "articulation_servo";
   }
   if (steering_source != last_steering_source_) {
