@@ -34,7 +34,11 @@
 #include <string>
 
 #include "rclcpp/rclcpp.hpp"
+#include "std_msgs/msg/bool.hpp"
 #include "std_msgs/msg/float64.hpp"
+#include "std_msgs/msg/string.hpp"
+
+#include "mtt_msgs/msg/mtt_articulation_state.hpp"
 
 #include "mtt_driver/logic/articulation_servo.hpp"
 
@@ -56,15 +60,18 @@ private:
   double command_timeout_s_;    ///< stop publishing override if command is stale
   double control_frequency_hz_;
   double max_articulation_rad_; ///< ±physical limit (rad)
+  bool prefer_state_feedback_{true};
 
   // ── Controller ──
   logic::ArticulationServo servo_;
+  logic::ArticulationFeedbackWatchdog feedback_watchdog_;
 
   // ── Shared state (mutex protected) ──
   mutable std::mutex state_mutex_;
 
   std::optional<double> latest_feedback_rad_;
   rclcpp::Time          latest_feedback_stamp_{0, 0, RCL_ROS_TIME};
+  std::string           latest_feedback_source_{"none"};
 
   std::optional<double> latest_position_cmd_rad_;
   std::optional<double> latest_velocity_cmd_rad_s_;
@@ -75,6 +82,7 @@ private:
   rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr position_cmd_sub_;
   rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr velocity_cmd_sub_;
   rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr feedback_sub_;
+  rclcpp::Subscription<mtt_msgs::msg::MttArticulationState>::SharedPtr state_feedback_sub_;
 
   // Output
   rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr steer_cmd_pub_;
@@ -83,6 +91,8 @@ private:
   rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr diag_setpoint_pub_;
   rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr diag_measured_pub_;
   rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr diag_error_pub_;
+  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr diag_feedback_healthy_pub_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr diag_feedback_source_pub_;
 
   rclcpp::TimerBase::SharedPtr control_timer_;
 };
