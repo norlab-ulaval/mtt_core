@@ -29,9 +29,24 @@ MttArticulationServoNode::MttArticulationServoNode(const rclcpp::NodeOptions & o
   command_timeout_s_    = declare_parameter("command_timeout_s", 0.25);
 
   control_frequency_hz_ = declare_parameter("control_frequency_hz", 50.0);
+  prefer_state_feedback_ = declare_parameter("prefer_state_feedback", true);
+
+  logic::ArticulationFeedbackWatchdogParams watchdog_params;
+  watchdog_params.enabled = declare_parameter("feedback_watchdog.enabled", true);
+  watchdog_params.min_error_rad =
+    declare_parameter("feedback_watchdog.min_error_rad", 0.05);
+  watchdog_params.min_effort =
+    declare_parameter("feedback_watchdog.min_effort", 0.15);
+  watchdog_params.movement_epsilon_rad =
+    declare_parameter("feedback_watchdog.movement_epsilon_rad", 0.005);
+  watchdog_params.stuck_timeout_s =
+    declare_parameter("feedback_watchdog.stuck_timeout_s", 0.75);
+  feedback_watchdog_.set_params(watchdog_params);
 
   const auto feedback_topic  = declare_parameter("feedback_topic",
     std::string("/hardware/articulation_angle"));
+  const auto state_feedback_topic = declare_parameter(
+    "state_feedback_topic", std::string("/mtt/articulation_state"));
   const auto position_topic  = declare_parameter("position_cmd_topic",
     std::string("/mtt_articulation_setpoint"));
   const auto velocity_topic  = declare_parameter("velocity_cmd_topic",
@@ -44,15 +59,41 @@ MttArticulationServoNode::MttArticulationServoNode(const rclcpp::NodeOptions & o
   }
 
   // ── Subscribers ──
-  // Hardware encoder — primary feedback (100 Hz from STM32)
-  feedback_sub_ = create_subscription<std_msgs::msg::Float64>(
-    feedback_topic,
-    rclcpp::SensorDataQoS(),
-    [this](std_msgs::msg::Float64::ConstSharedPtr msg) {
-      std::lock_guard<std::mutex> lock(state_mutex_);
-      latest_feedback_rad_   = msg->data;
-      latest_feedback_stamp_ = get_clock()->now();
-    });
+  if (prefer_state_feedback_) {
+    state_feedback_sub_ = create_subscription<mtt_msgs::msg::MttArticulationState>(
+      state_feedback_topic,
+      rclcpp::SensorDataQoS(),
+      [this](mtt_msgs::msg::MttArticulationState::ConstSharedPtr msg) {
+        const bool measured_source =
+          msg->effective_source == "lidar" ||
+          msg->effective_source == "hardware" ||
+          msg->effective_source == "state_lidar" ||
+          msg->effective_source == "state_hardware" ||
+          msg->effective_source == "state_effective";
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        if (!measured_source || !std::isfinite(msg->effective_rad)) {
+          latest_feedback_rad_.reset();
+          latest_feedback_source_ = "invalid";
+          return;
+        }
+        latest_feedback_rad_ = msg->effective_rad;
+        latest_feedback_stamp_ = get_clock()->now();
+        latest_feedback_source_ = msg->effective_source;
+      });
+  } else {
+    feedback_sub_ = create_subscription<std_msgs::msg::Float64>(
+      feedback_topic,
+      rclcpp::SensorDataQoS(),
+      [this](std_msgs::msg::Float64::ConstSharedPtr msg) {
+        if (!std::isfinite(msg->data)) {
+          return;
+        }
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        latest_feedback_rad_   = msg->data;
+        latest_feedback_stamp_ = get_clock()->now();
+        latest_feedback_source_ = "direct";
+      });
+  }
 
   // Position setpoint (rad, absolute)
   position_cmd_sub_ = create_subscription<std_msgs::msg::Float64>(
@@ -62,6 +103,7 @@ MttArticulationServoNode::MttArticulationServoNode(const rclcpp::NodeOptions & o
       std::lock_guard<std::mutex> lock(state_mutex_);
       latest_position_cmd_rad_ = msg->data;
       latest_command_stamp_ = get_clock()->now();
+      mode_ = "position";
     });
 
   // Velocity command (rad/s)
@@ -72,6 +114,7 @@ MttArticulationServoNode::MttArticulationServoNode(const rclcpp::NodeOptions & o
       std::lock_guard<std::mutex> lock(state_mutex_);
       latest_velocity_cmd_rad_s_ = msg->data;
       latest_command_stamp_ = get_clock()->now();
+      mode_ = "velocity";
     });
 
   // ── Publishers ──
@@ -84,6 +127,10 @@ MttArticulationServoNode::MttArticulationServoNode(const rclcpp::NodeOptions & o
     "articulation_servo/measured_rad", rclcpp::SensorDataQoS());
   diag_error_pub_    = create_publisher<std_msgs::msg::Float64>(
     "articulation_servo/error_rad", rclcpp::SensorDataQoS());
+  diag_feedback_healthy_pub_ = create_publisher<std_msgs::msg::Bool>(
+    "articulation_servo/feedback_healthy", rclcpp::SensorDataQoS());
+  diag_feedback_source_pub_ = create_publisher<std_msgs::msg::String>(
+    "articulation_servo/feedback_source", rclcpp::SensorDataQoS());
 
   // ── Timer ──
   using ns = std::chrono::nanoseconds;
@@ -91,8 +138,9 @@ MttArticulationServoNode::MttArticulationServoNode(const rclcpp::NodeOptions & o
   control_timer_ = create_wall_timer(period, [this]() { control_loop(); });
 
   RCLCPP_INFO(get_logger(),
-    "MttArticulationServoNode started (mode=%s, kp=%.2f, kd=%.3f, ki=%.4f, rate=%.0f Hz)",
-    mode_.c_str(), p.kp, p.kd, p.ki, control_frequency_hz_);
+    "MttArticulationServoNode started (mode=%s, kp=%.2f, kd=%.3f, ki=%.4f, rate=%.0f Hz, feedback=%s)",
+    mode_.c_str(), p.kp, p.kd, p.ki, control_frequency_hz_,
+    prefer_state_feedback_ ? state_feedback_topic.c_str() : feedback_topic.c_str());
 }
 
 // ── Control loop (timer callback) ──
@@ -106,6 +154,7 @@ void MttArticulationServoNode::control_loop()
   std::optional<double> position_cmd;
   std::optional<double> velocity_cmd;
   rclcpp::Time          command_stamp{0, 0, RCL_ROS_TIME};
+  std::string           feedback_source{"none"};
   {
     std::lock_guard<std::mutex> lock(state_mutex_);
     feedback_rad   = latest_feedback_rad_;
@@ -113,7 +162,17 @@ void MttArticulationServoNode::control_loop()
     position_cmd   = latest_position_cmd_rad_;
     velocity_cmd   = latest_velocity_cmd_rad_s_;
     command_stamp  = latest_command_stamp_;
+    feedback_source = latest_feedback_source_;
   }
+
+  auto publish_feedback_status = [this, &feedback_source](bool healthy) {
+    std_msgs::msg::Bool health_msg;
+    health_msg.data = healthy;
+    diag_feedback_healthy_pub_->publish(health_msg);
+    std_msgs::msg::String source_msg;
+    source_msg.data = feedback_source;
+    diag_feedback_source_pub_->publish(source_msg);
+  };
 
   // Check feedback freshness
   const rclcpp::Time now = get_clock()->now();
@@ -123,6 +182,8 @@ void MttArticulationServoNode::control_loop()
 
   if (!feedback_fresh) {
     // Encoder stale — do not send any servo override so CAN node uses cmd_vel
+    feedback_watchdog_.reset();
+    publish_feedback_status(false);
     return;
   }
 
@@ -131,6 +192,8 @@ void MttArticulationServoNode::control_loop()
     (now - command_stamp).seconds() < command_timeout_s_;
   if (!command_fresh) {
     servo_.reset(*feedback_rad);
+    feedback_watchdog_.reset(*feedback_rad);
+    publish_feedback_status(true);
     return;
   }
 
@@ -147,6 +210,17 @@ void MttArticulationServoNode::control_loop()
   // ── PD compute ──
   logic::ArticulationServoDebug dbg;
   const double steer_cmd = servo_.compute(measured, dt, dbg);
+
+  if (feedback_watchdog_.update(measured, dbg.error_rad, steer_cmd, dt)) {
+    RCLCPP_ERROR_THROTTLE(
+      get_logger(), *get_clock(), 1000,
+      "Articulation feedback '%s' is frozen under control effort; disabling software PID override so CAN falls back to native mode",
+      feedback_source.c_str());
+    servo_.reset(measured);
+    publish_feedback_status(false);
+    return;
+  }
+  publish_feedback_status(true);
 
   // ── Publish ──
   auto f64 = [](double v) {
