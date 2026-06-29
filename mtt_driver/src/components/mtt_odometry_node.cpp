@@ -17,6 +17,7 @@
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
+#include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/float64.hpp>
 #include <tf2/utils.h>
 #include <tf2_ros/transform_broadcaster.h>
@@ -28,6 +29,7 @@
 #include <std_srvs/srv/trigger.hpp>
 
 #include "mtt_driver/logic/command_motion_model.hpp"
+#include "mtt_driver/logic/articulation_source_selector.hpp"
 #include "mtt_driver/logic/odometry_calculator.hpp"
 #include "mtt_driver/logic/vehicle_params.hpp"
 
@@ -74,7 +76,17 @@ public:
     articulation_state_topic_ = declare_parameter("articulation_state_topic", std::string(""));
     articulation_state_output_topic_ = declare_parameter("articulation_state_output_topic", std::string("mtt/articulation_state"));
     articulation_state_timeout_s_ = declare_parameter("articulation_state_timeout_seconds", 0.5);
-    use_articulation_state_lidar_ = declare_parameter("use_articulation_state_lidar", false);
+    // Default true: fall back to trailer_detector_node's LiDAR-detected angle
+    // (proven reliable — see CLAUDE.md: "authoritative phi source") when the
+    // hardware potentiometer is stale/absent, instead of silently dropping
+    // straight to the open-loop kinematic model estimate. Only engages when
+    // hardware is NOT fresh, so this cannot degrade the hardware-available case.
+    use_articulation_state_lidar_ = declare_parameter("use_articulation_state_lidar", true);
+    prefer_lidar_articulation_ = declare_parameter("prefer_lidar_articulation", true);
+    lidar_articulation_topic_ = declare_parameter(
+      "lidar_articulation_topic", std::string("trailer/articulation_angle"));
+    lidar_detected_topic_ = declare_parameter(
+      "lidar_articulation_detected_topic", std::string("trailer/articulation_detected"));
     lidar_articulation_timeout_s_ = declare_parameter("lidar_articulation_timeout_seconds", 0.5);
     imu_yaw_rate_topic_ = declare_parameter("imu_yaw_rate_topic", std::string(""));
     imu_yaw_rate_timeout_s_ = declare_parameter("imu_yaw_rate_timeout_seconds", 0.2);
@@ -168,8 +180,16 @@ public:
         pitch_rad_calibrated_ = true;
       });
     lidar_articulation_sub_ = create_subscription<std_msgs::msg::Float64>(
-      "trailer/articulation_angle", rclcpp::SensorDataQoS(),
+      lidar_articulation_topic_, rclcpp::SensorDataQoS(),
       [this](const std_msgs::msg::Float64::SharedPtr msg){ on_lidar_articulation(msg); });
+    lidar_detected_sub_ = create_subscription<std_msgs::msg::Bool>(
+      lidar_detected_topic_, rclcpp::SensorDataQoS(),
+      [this](const std_msgs::msg::Bool::SharedPtr msg) {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        lidar_articulation_detected_ = msg->data;
+        has_lidar_detection_state_ = true;
+        last_lidar_detection_time_ = std::chrono::steady_clock::now();
+      });
 
     // ── Tacho watchdog — warn if no tachometer data arrives after 5s ──
     tacho_watchdog_timer_ = create_wall_timer(std::chrono::seconds(5), [this]() {
@@ -301,13 +321,19 @@ private:
   std::string articulation_state_topic_;
   std::string articulation_state_output_topic_;
   bool     use_articulation_state_lidar_{false};
+  bool     prefer_lidar_articulation_{true};
   double   state_articulation_rad_{0.0};
   bool     has_state_articulation_{false};
   std::string state_articulation_source_;
   std::chrono::steady_clock::time_point last_state_articulation_time_{};
   double   lidar_articulation_rad_{0.0};
   bool     has_lidar_articulation_{false};
+  bool     lidar_articulation_detected_{false};
+  bool     has_lidar_detection_state_{false};
+  std::string lidar_articulation_topic_;
+  std::string lidar_detected_topic_;
   std::chrono::steady_clock::time_point last_lidar_articulation_time_{};
+  std::chrono::steady_clock::time_point last_lidar_detection_time_{};
   std::string imu_yaw_rate_topic_;
   double   imu_yaw_rate_rad_s_{0.0};
   double   imu_heading_rad_{0.0};
@@ -354,6 +380,7 @@ private:
   rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr pitch_bits_sub_;
   rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr pitch_rad_sub_;
   rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr lidar_articulation_sub_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr lidar_detected_sub_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr  reset_srv_;
   rclcpp::Service<mtt_interfaces::srv::SetSteerControlMode>::SharedPtr steer_mode_srv_;
   std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
@@ -583,10 +610,11 @@ private:
     }
     last_tacho_distance_m_ = cur_tacho_distance_m;
 
-    // Use measured articulation when available. Direct hardware has priority;
-    // recorded replay bags can provide the same information through the
-    // composite MttArticulationState message.
+    // Use only validated measurements. Live operation prefers LiDAR when it is
+    // explicitly detected; STM remains the secondary source. Replay can provide
+    // the same information through an external composite state message.
     bool direct_hardware_is_fresh = false;
+    bool direct_lidar_is_fresh = false;
     double direct_hardware_angle = 0.0;
     bool measured_articulation_is_fresh = false;
     double measured_articulation_angle = 0.0;
@@ -601,14 +629,33 @@ private:
       const bool state_articulation_is_fresh =
         has_state_articulation_ &&
         std::chrono::duration<double>(wall_now - last_state_articulation_time_).count() <= articulation_state_timeout_s_;
-      if (direct_hardware_is_fresh) {
-        measured_articulation_is_fresh = true;
-        measured_articulation_angle = direct_hardware_angle;
-        measured_articulation_source = "hardware";
-      } else if (state_articulation_is_fresh) {
-        measured_articulation_is_fresh = true;
-        measured_articulation_angle = state_articulation_rad_;
-        measured_articulation_source = state_articulation_source_;
+      const bool detection_is_fresh = has_lidar_detection_state_ &&
+        std::chrono::duration<double>(
+          wall_now - last_lidar_detection_time_).count() <= lidar_articulation_timeout_s_;
+      direct_lidar_is_fresh = use_articulation_state_lidar_ &&
+        has_lidar_articulation_ &&
+        detection_is_fresh && lidar_articulation_detected_ &&
+        std::chrono::duration<double>(
+          wall_now - last_lidar_articulation_time_).count() <= lidar_articulation_timeout_s_;
+      const auto selection = logic::select_articulation_measurement(
+        prefer_lidar_articulation_,
+        direct_lidar_is_fresh, lidar_articulation_rad_,
+        direct_hardware_is_fresh, direct_hardware_angle,
+        state_articulation_is_fresh, state_articulation_rad_);
+      measured_articulation_is_fresh = selection.valid;
+      measured_articulation_angle = selection.angle_rad;
+      switch (selection.source) {
+        case logic::ArticulationMeasurementSource::LIDAR:
+          measured_articulation_source = "lidar";
+          break;
+        case logic::ArticulationMeasurementSource::HARDWARE:
+          measured_articulation_source = "hardware";
+          break;
+        case logic::ArticulationMeasurementSource::EXTERNAL_STATE:
+          measured_articulation_source = state_articulation_source_;
+          break;
+        case logic::ArticulationMeasurementSource::NONE:
+          break;
       }
       imu_yaw_rate_is_fresh = has_imu_yaw_rate_ &&
         std::chrono::duration<double>(wall_now - last_imu_yaw_rate_time_).count() <= imu_yaw_rate_timeout_s_;
@@ -682,6 +729,7 @@ private:
     }
     input.synthetic_model_valid = msg->model_state_valid;
     input.articulation_command_rad = msg->model_articulation_command_rad;
+    input.articulation_measurement_valid = measured_articulation_is_fresh;
     input.yaw_rate_source  = yaw_rate_source_snapshot_;
 
     if (measured_articulation_is_fresh) {
@@ -739,8 +787,7 @@ private:
       bool lidar_detected = false;
       {
         std::lock_guard<std::mutex> lock(state_mutex_);
-        lidar_detected = has_lidar_articulation_ &&
-          std::chrono::duration<double>(wall_now - last_lidar_articulation_time_).count() <= lidar_articulation_timeout_s_;
+        lidar_detected = direct_lidar_is_fresh;
         lidar_rad = lidar_articulation_rad_;
       }
 
