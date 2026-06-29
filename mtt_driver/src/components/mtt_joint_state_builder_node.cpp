@@ -59,8 +59,14 @@ MttJointStateBuilderNode::MttJointStateBuilderNode(const rclcpp::NodeOptions & o
   }
 
   joint_state_pub_ = create_publisher<sensor_msgs::msg::JointState>(joint_state_topic_, 10);
+  // SensorDataQoS (BEST_EFFORT): the default topic (mtt_articulation_angle,
+  // RELIABLE-compatible) still matches fine, but a RELIABLE subscriber (the
+  // previous plain "10" QoS) cannot receive from a BEST_EFFORT publisher —
+  // e.g. trailer_detector_node's /trailer/articulation_angle. Zero messages
+  // get through in that case (not an error, just silent), which looked like
+  // the visual trailer going rigid when articulation_topic was pointed there.
   articulation_sub_ = create_subscription<std_msgs::msg::Float64>(
-    articulation_topic_, 10,
+    articulation_topic_, rclcpp::SensorDataQoS(),
     std::bind(&MttJointStateBuilderNode::on_articulation, this, std::placeholders::_1));
   if (!articulation_state_topic_.empty()) {
     articulation_state_sub_ = create_subscription<mtt_msgs::msg::MttArticulationState>(
@@ -139,7 +145,7 @@ void MttJointStateBuilderNode::publish_joint_states()
   bool use_sim_time = false;
   (void)get_parameter("use_sim_time", use_sim_time);
   const auto stamp = now();
-  if (use_sim_time && (stamp.nanoseconds() <= 0 || stamp.seconds() >= 1.0e8)) {
+  if (use_sim_time && stamp.nanoseconds() <= 0) {
     return;
   }
 
