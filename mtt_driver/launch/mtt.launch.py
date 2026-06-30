@@ -94,7 +94,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'articulation_serial_port',
-            default_value='/dev/serial/by-id/usb-STMicroelectronics_STM32_STLink_066EFF373146363143225155-if02',
+            default_value='/dev/serial/by-id/usb-STMicroelectronics_STM32_STLink_066FFF373146363143224542-if02',
             description='Serial port for the STM32 articulation sensor'
         ),
         DeclareLaunchArgument(
@@ -300,11 +300,22 @@ def generate_launch_description():
                             }],
                             extra_arguments=[{'use_intra_process_comms': True}],
                         ),
+                        ComposableNode(
+                            package='mtt_driver',
+                            plugin='mtt::MttArticulationServoNode',
+                            name='mtt_articulation_servo_node',
+                            parameters=[
+                                LaunchConfiguration('driver_params_file'),
+                                LaunchConfiguration('control_params_file')
+                            ],
+                            extra_arguments=[{'use_intra_process_comms': True}]
+                        ),
                     ],
                     output='screen',
                     emulate_tty=True,
                 )
             ]),
+
 
             Node(
                 package='mtt_driver',
