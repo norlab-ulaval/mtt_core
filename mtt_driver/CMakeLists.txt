@@ -259,6 +259,7 @@ ament_target_dependencies(mtt_articulation_servo_node
   rclcpp
   rclcpp_components
   std_msgs
+  mtt_msgs
 )
 rclcpp_components_register_node(mtt_articulation_servo_node
   PLUGIN "mtt::MttArticulationServoNode"
@@ -317,6 +318,14 @@ if(BUILD_TESTING)
 
   ament_add_gtest(test_odometry_calculator test/test_odometry_calculator.cpp)
   target_link_libraries(test_odometry_calculator mtt_logic)
+
+  ament_add_gtest(test_articulation_feedback_watchdog
+    test/test_articulation_feedback_watchdog.cpp)
+  target_link_libraries(test_articulation_feedback_watchdog mtt_logic)
+
+  ament_add_gtest(test_articulation_source_selector
+    test/test_articulation_source_selector.cpp)
+  target_link_libraries(test_articulation_source_selector mtt_logic)
 endif()
 
 ament_package()
