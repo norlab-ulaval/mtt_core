@@ -102,11 +102,20 @@ OdometryOutput SingleTrailerOdometry::update(const OdometryInput& input)
   const double commanded_phi = input.synthetic_model_valid
     ? input.articulation_command_rad
     : VehicleParams::normalized_steer_to_articulation_rad(input.steer_cmd);
-  const double effective_phi_target = input.synthetic_model_valid
+  const double effective_phi_target =
+    (input.articulation_measurement_valid || input.synthetic_model_valid)
     ? input.articulation_effective_rad
     : commanded_phi;
-  const double articulation_alpha = std::clamp(articulation_response_gain_ * input.dt, 0.0, 1.0);
-  articulation_angle_ += (effective_phi_target - articulation_angle_) * articulation_alpha;
+  if (input.articulation_measurement_valid) {
+    // A fresh encoder value is already the effective articulation state. Do not
+    // run it through the command-response model or the published state lags the
+    // real joint and can remain at the neutral command while stationary.
+    articulation_angle_ = effective_phi_target;
+  } else {
+    const double articulation_alpha =
+      std::clamp(articulation_response_gain_ * input.dt, 0.0, 1.0);
+    articulation_angle_ += (effective_phi_target - articulation_angle_) * articulation_alpha;
+  }
   articulation_angle_ = std::clamp(
     articulation_angle_,
     -VehicleParams::max_articulation_rad,
