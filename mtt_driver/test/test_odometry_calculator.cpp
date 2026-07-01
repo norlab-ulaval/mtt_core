@@ -72,6 +72,19 @@ TEST(OdometryCalculator, SingleTrailerRejectsStuckCumulativeDistanceWhileMoving)
   EXPECT_NEAR(out2.vx, 1.0, 1e-9);
 }
 
+TEST(OdometryCalculator, SingleTrailerPublishesFreshMeasuredArticulation)
+{
+  SingleTrailerOdometry odom;
+  auto input = base_input(0.0);
+  input.steer_cmd = 0.0;
+  input.articulation_effective_rad = -0.044;
+  input.articulation_measurement_valid = true;
+
+  const auto out = odom.update(input);
+
+  EXPECT_NEAR(out.articulation_angle, -0.044, 1e-12);
+}
+
 TEST(OdometryCalculator, DualDifferentialRejectsImpossibleCumulativeDistanceJump)
 {
   DualDifferentialOdometry odom;
