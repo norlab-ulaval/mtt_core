@@ -51,7 +51,7 @@ def generate_launch_description():
         DeclareLaunchArgument("odometry_broadcast_tf", default_value="true"),
         DeclareLaunchArgument(
             "articulation_serial_port",
-            default_value="/dev/serial/by-id/usb-STMicroelectronics_STM32_STLink_066EFF373146363143225155-if02",
+            default_value="/dev/serial/by-id/usb-STMicroelectronics_STM32_STLink_066FFF373146363143224542-if02",
         ),
         DeclareLaunchArgument("publish_runtime_joint_states", default_value="false"),
         DeclareLaunchArgument("runtime_joint_states_topic", default_value="runtime_joint_states"),
