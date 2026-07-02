@@ -28,9 +28,12 @@ public:
     }
 
     const double delta = input - value_;
-    // Magnitude-based: rise_rate when |input| > |value| (accelerating),
-    // fall_rate when |input| < |value| (decelerating). Symmetric for fwd/rev.
-    const bool accelerating = std::abs(input) > std::abs(value_);
+    // Magnitude-based: rise_rate when speeding up in the same direction,
+    // fall_rate when slowing down OR reversing direction.
+    // IMPORTANT: direction reversal must use fall_rate (fast decel) throughout
+    // the crossing-zero phase, not rise_rate — relay flip under load is dangerous.
+    const bool same_dir = (input >= 0.0) == (value_ >= 0.0);
+    const bool accelerating = same_dir && std::abs(input) > std::abs(value_);
     const double rate = accelerating ? rise_rate_ : fall_rate_;
     const double max_change = std::max(0.0, rate) * dt;
 
