@@ -44,13 +44,65 @@ MttOperatorInputNode::MttOperatorInputNode(const rclcpp::NodeOptions & options)
   enable_com_mode_switch_      = declare_parameter("enable_com_mode_switch",      true);
   com_toggle_button_index_     = declare_parameter("com_toggle_button_index",     7);
   invert_com_steer_            = declare_parameter("invert_com_steer",            false);
+  enable_com_direction_switch_ = declare_parameter("enable_com_direction_switch", false);
+  com_direction_toggle_button_index_ =
+    declare_parameter("com_direction_toggle_button_index", -1);
   com_short_press_max_s_       = declare_parameter("com_short_press_max_s",       1.5);
   com_long_press_min_s_        = declare_parameter("com_long_press_min_s",        4.0);
+
+  enable_ice_com_shift_experiment_ =
+    declare_parameter("enable_ice_com_shift_experiment", false);
+  ice_com_shift_slip_ratio_topic_ = declare_parameter(
+    "ice_com_shift_slip_ratio_topic", std::string("/ice_slip/slip_ratio"));
+  ice_com_shift_arm_topic_ = declare_parameter(
+    "ice_com_shift_arm_topic", std::string("mtt_control/ice_com_shift_experiment_active"));
+  ice_com_shift_arm_timeout_s_ = declare_parameter("ice_com_shift_arm_timeout_s", 0.5);
+  ice_com_shift_slip_timeout_s_ = declare_parameter("ice_com_shift_slip_timeout_s", 0.5);
+  ice_com_shift_speed_ms_ = declare_parameter("ice_com_shift_speed_ms", 5.56);
+  ice_com_shift_start_axis_threshold_ =
+    declare_parameter("ice_com_shift_start_axis_threshold", 0.70);
+  ice_com_shift_switch_abs_slip_below_ =
+    declare_parameter("ice_com_shift_switch_abs_slip_below", 0.08);
+  ice_com_shift_switch_hold_s_ = declare_parameter("ice_com_shift_switch_hold_s", 0.10);
+  ice_com_shift_min_phase_s_ = declare_parameter("ice_com_shift_min_phase_s", 0.50);
+  ice_com_shift_max_phase_s_ = declare_parameter("ice_com_shift_max_phase_s", 0.0);
+  ice_com_shift_park_home_on_start_ =
+    declare_parameter("ice_com_shift_park_home_on_start", false);
+  ice_com_shift_park_home_s_ = declare_parameter("ice_com_shift_park_home_s", 0.15);
+  ice_com_shift_park_home_on_stop_ =
+    declare_parameter("ice_com_shift_park_home_on_stop", false);
+  ice_com_shift_switch_on_brake_ =
+    declare_parameter("ice_com_shift_switch_on_brake", true);
+  ice_com_shift_brake_switch_threshold_ =
+    declare_parameter("ice_com_shift_brake_switch_threshold", 0.20);
+  ice_com_shift_invert_com_axis_ = declare_parameter("ice_com_shift_invert_com_axis", false);
+  ice_com_shift_jitter_enabled_ = declare_parameter("ice_com_shift_jitter_enabled", false);
+  ice_com_shift_jitter_amplitude_ = declare_parameter("ice_com_shift_jitter_amplitude", 0.0);
+  ice_com_shift_jitter_frequency_hz_ =
+    declare_parameter("ice_com_shift_jitter_frequency_hz", 0.0);
+
+  double max_pos_deg = declare_parameter("max_joystick_position_deg", 45.0);
+  double max_vel_deg_s = declare_parameter("max_joystick_velocity_deg_s", 29.0);
+  max_joystick_position_rad_ = max_pos_deg * M_PI / 180.0;
+  max_joystick_velocity_rad_s_ = max_vel_deg_s * M_PI / 180.0;
+  use_software_pid_ = declare_parameter("use_software_pid", false);
 
   joy_sub_ = create_subscription<sensor_msgs::msg::Joy>(
     "joy",
     rclcpp::SensorDataQoS(),
     std::bind(&MttOperatorInputNode::on_joy, this, std::placeholders::_1));
+  selected_mode_sub_ = create_subscription<std_msgs::msg::String>(
+    "mtt_control/selected_mode",
+    rclcpp::QoS(1).reliable().transient_local(),
+    std::bind(&MttOperatorInputNode::on_selected_mode, this, std::placeholders::_1));
+  if (enable_ice_com_shift_experiment_) {
+    ice_slip_ratio_sub_ = create_subscription<std_msgs::msg::Float64>(
+      ice_com_shift_slip_ratio_topic_, 20,
+      std::bind(&MttOperatorInputNode::on_ice_slip_ratio, this, std::placeholders::_1));
+    ice_com_shift_arm_sub_ = create_subscription<std_msgs::msg::Bool>(
+      ice_com_shift_arm_topic_, 20,
+      std::bind(&MttOperatorInputNode::on_ice_com_shift_arm, this, std::placeholders::_1));
+  }
 
   manual_raw_pub_ = create_publisher<geometry_msgs::msg::TwistStamped>("cmd_vel/manual_raw", 20);
   aux_pub_ = create_publisher<mtt_msgs::msg::MttAuxCommand>("mtt_aux_cmd", 20);
@@ -60,13 +112,26 @@ MttOperatorInputNode::MttOperatorInputNode(const rclcpp::NodeOptions & options)
   articulation_mode_pub_ =
     create_publisher<std_msgs::msg::String>("mtt_control/articulation_mode", 20);
   articulation_hold_active_pub_ =
-    create_publisher<std_msgs::msg::Bool>("mtt_control/articulation_hold_active", 20);
+    create_publisher<std_msgs::msg::Bool>("mtt_control/articulation_hold_active", rclcpp::QoS(1).transient_local());
 
   // COM motor publishers (always created so topics appear on the graph even when OFF)
   com_mode_pub_  = create_publisher<std_msgs::msg::Bool>  ("mtt_control/com_mode",  20);
   com_steer_pub_ = create_publisher<std_msgs::msg::Float64>("mtt_control/com_steer", 20);
+  com_direction_sign_pub_ =
+    create_publisher<std_msgs::msg::Float64>("mtt_control/com_direction_sign", 10);
   com_park_pub_  = create_publisher<std_msgs::msg::Empty> ("mtt_control/com_park",  10);
   com_set_home_pub_ = create_publisher<std_msgs::msg::Empty>("mtt_control/com_set_home", 10);
+  ice_com_shift_active_pub_ =
+    create_publisher<std_msgs::msg::Bool>("mtt_control/ice_com_shift_active", 10);
+  ice_com_shift_armed_pub_ =
+    create_publisher<std_msgs::msg::Bool>("mtt_control/ice_com_shift_armed", 10);
+  ice_com_shift_phase_pub_ =
+    create_publisher<std_msgs::msg::String>("mtt_control/ice_com_shift_phase", 10);
+
+  position_cmd_pub_ = create_publisher<std_msgs::msg::Float64>(
+    "/mtt_articulation_setpoint", 10);
+  velocity_cmd_pub_ = create_publisher<std_msgs::msg::Float64>(
+    "/mtt_articulation_velocity_cmd", 10);
 
   publish_timer_ = create_wall_timer(
     std::chrono::milliseconds(20),
@@ -80,29 +145,54 @@ MttOperatorInputNode::MttOperatorInputNode(const rclcpp::NodeOptions & options)
     "mtt/odometry/set_steer_control_mode");
 }
 
+void MttOperatorInputNode::on_selected_mode(const std_msgs::msg::String::SharedPtr msg)
+{
+  selected_mode_ = msg->data;
+}
+
+bool MttOperatorInputNode::manual_articulation_owned() const
+{
+  // The deadman remains a physical presence gate in AUTO, but it must not grant
+  // the joystick ownership of steering. WILN owns /mtt_articulation_setpoint in
+  // AUTO; the operator owns it in MANUAL/STOP only.
+  return selected_mode_ != "AUTO";
+}
+
 void MttOperatorInputNode::toggle_steering_mode()
 {
-  const std::string new_mode =
-    (current_steer_mode_ == "closed_loop") ? "open_loop" : "closed_loop";
+  if (use_software_pid_) {
+    // Software PID Mode toggle
+    if (current_steering_routing_ == SteeringRoutingMode::POSITION_RETURN) {
+      current_steering_routing_ = SteeringRoutingMode::VELOCITY_HOLD;
+      RCLCPP_INFO(get_logger(), "Software PID Mode: VELOCITY (Maintien de position)");
+    } else {
+      current_steering_routing_ = SteeringRoutingMode::POSITION_RETURN;
+      RCLCPP_INFO(get_logger(), "Software PID Mode: POSITION (Retour à zéro)");
+    }
+  } else {
+    // Hardware CAN Mode toggle (Base behavior)
+    const std::string new_mode =
+      (current_steer_mode_ == "closed_loop") ? "open_loop" : "closed_loop";
 
-  auto req = std::make_shared<mtt_interfaces::srv::SetSteerControlMode::Request>();
-  req->control_mode = new_mode;
-  req->max_rate  = 0.0;
-  req->max_angle = 0.0;
+    auto req = std::make_shared<mtt_interfaces::srv::SetSteerControlMode::Request>();
+    req->control_mode = new_mode;
+    req->max_rate  = 0.0;
+    req->max_angle = 0.0;
 
-  if (can_steer_mode_client_->service_is_ready()) {
-    can_steer_mode_client_->async_send_request(
-      req,
-      [this, new_mode](std::shared_future<std::shared_ptr<mtt_interfaces::srv::SetSteerControlMode::Response>> future) {
-        auto resp = future.get();
-        if (resp->success) {
-          current_steer_mode_ = new_mode;
-          RCLCPP_INFO(get_logger(), "Steer mode (CAN) → %s", current_steer_mode_.c_str());
-        }
-      });
-  }
-  if (odom_steer_mode_client_->service_is_ready()) {
-    odom_steer_mode_client_->async_send_request(req);
+    if (can_steer_mode_client_->service_is_ready()) {
+      can_steer_mode_client_->async_send_request(
+        req,
+        [this, new_mode](std::shared_future<std::shared_ptr<mtt_interfaces::srv::SetSteerControlMode::Response>> future) {
+          auto resp = future.get();
+          if (resp->success) {
+            current_steer_mode_ = new_mode;
+            RCLCPP_INFO(get_logger(), "Steer mode (CAN) → %s", current_steer_mode_.c_str());
+          }
+        });
+    }
+    if (odom_steer_mode_client_->service_is_ready()) {
+      odom_steer_mode_client_->async_send_request(req);
+    }
   }
 }
 
@@ -148,10 +238,13 @@ void MttOperatorInputNode::on_joy(const sensor_msgs::msg::Joy::SharedPtr msg)
     light_state_ = !light_state_;
   }
 
-  // Parking brake is independent from deadman and articulation.
+  // R3 — articulation axis inhibit toggle.
+  // Zeroes the right stick for all modes (articulation AND COM motor).
+  // Cleared automatically on deadman release to avoid latent surprises.
   if (articulation_hold_rising) {
-    parking_brake_mode_ = !parking_brake_mode_;
-    RCLCPP_INFO(get_logger(), "Parking Brake: %s", parking_brake_mode_ ? "ENGAGED" : "RELEASED");
+    articulation_axis_inhibit_ = !articulation_axis_inhibit_;
+    RCLCPP_INFO(get_logger(), "Articulation Inhibit (R3): %s",
+                articulation_axis_inhibit_ ? "ON (right stick paused)" : "OFF (right stick active)");
   }
 
   if (steer_mode_rising) {
@@ -193,6 +286,18 @@ void MttOperatorInputNode::on_joy(const sensor_msgs::msg::Joy::SharedPtr msg)
     com_btn_was_pressed_ = btn_down;
   }
 
+  if (
+    enable_com_direction_switch_ &&
+    com_direction_toggle_button_index_ >= 0 &&
+    joystick_state_.button_rising(static_cast<std::size_t>(com_direction_toggle_button_index_)))
+  {
+    com_direction_sign_ = com_direction_sign_ < 0.0 ? 1.0 : -1.0;
+    publish_com_direction_sign();
+    RCLCPP_WARN(
+      get_logger(),
+      "COM direction sign toggled from joystick: %.0f", com_direction_sign_);
+  }
+
   float linear_axis = joystick_state_.axis_value(static_cast<std::size_t>(linear_axis_index_));
   if (invert_linear_axis_) {
     linear_axis = -linear_axis;
@@ -204,7 +309,14 @@ void MttOperatorInputNode::on_joy(const sensor_msgs::msg::Joy::SharedPtr msg)
     angular_axis = -angular_axis;
   }
   angular_axis = static_cast<float>(JoystickState::shape_axis(angular_axis, angular_deadband_, angular_expo_));
-  const float selected_actuator_axis = angular_axis;
+
+  // R3 articulation inhibit: zero the right stick for ALL modes (articulation AND COM motor).
+  // selected_actuator_axis is captured AFTER this so COM steer is also zeroed when inhibited.
+  if (articulation_axis_inhibit_) {
+    angular_axis = 0.0F;
+  }
+
+  float selected_actuator_axis = angular_axis;
 
   // In COM mode the right stick no longer drives articulation. The COM
   // command itself is published after deadman/e-stop evaluation below.
@@ -229,6 +341,9 @@ void MttOperatorInputNode::on_joy(const sensor_msgs::msg::Joy::SharedPtr msg)
     : 0.0F;  // degenerate config → safe default (no brake)
 
   // --- RT Auto-Hold Logic (1s hold) ---
+  // Holding RT fully pressed for 1s auto-engages the parking brake.
+  // When RT is released, the parking brake is automatically released
+  // ONLY if it was auto-engaged by this mechanism (not a manual engage path).
   if (brake_value > 0.95f) {
     if (!rt_is_fully_pressed_) {
       rt_is_fully_pressed_ = true;
@@ -237,11 +352,18 @@ void MttOperatorInputNode::on_joy(const sensor_msgs::msg::Joy::SharedPtr msg)
       const auto duration = (now() - rt_press_start_time_).seconds();
       if (duration >= 1.0) {
         parking_brake_mode_ = true;
+        rt_auto_engaged_ = true;  // remember: auto-engaged, not manual
         RCLCPP_INFO(get_logger(), "RT Held 1s: Parking Brake AUTO-ENGAGED");
       }
     }
   } else {
     rt_is_fully_pressed_ = false;
+    // Auto-release parking brake when RT is released (only if auto-engaged by this mechanism).
+    if (parking_brake_mode_ && rt_auto_engaged_) {
+      parking_brake_mode_ = false;
+      rt_auto_engaged_ = false;
+      RCLCPP_INFO(get_logger(), "RT released: Parking Brake AUTO-RELEASED");
+    }
   }
 
   const bool estop_active =
@@ -259,6 +381,11 @@ void MttOperatorInputNode::on_joy(const sensor_msgs::msg::Joy::SharedPtr msg)
   }
   if (!deadman_pressed) {
     movement_inhibited_ = false;
+    // Clear articulation inhibit on deadman release to avoid latent surprises after re-press.
+    if (articulation_axis_inhibit_) {
+      articulation_axis_inhibit_ = false;
+      RCLCPP_INFO(get_logger(), "Articulation Inhibit (R3): auto-cleared on deadman release.");
+    }
   }
   if (movement_inhibited_) {
     if (std::abs(linear_axis) < 0.001f && std::abs(selected_actuator_axis) < 0.001f) {
@@ -267,8 +394,28 @@ void MttOperatorInputNode::on_joy(const sensor_msgs::msg::Joy::SharedPtr msg)
     }
   }
 
+  update_ice_com_shift_experiment(
+    linear_axis,
+    deadman_pressed && !estop_active && !movement_inhibited_,
+    brake_value);
+  if (ice_com_shift_active_) {
+    linear_axis = ice_com_shift_parking_home_
+      ? 0.0F
+      : static_cast<float>(ice_com_shift_phase_sign_);
+    selected_actuator_axis = static_cast<float>(
+      ice_com_shift_parking_home_ ? 0.0 : ice_com_shift_com_axis());
+    angular_axis = 0.0F;
+  }
+
   double linear_command = max_linear_speed_ * linear_axis;
   double angular_command = max_angular_command_ * angular_axis;
+  last_angular_axis_ = angular_axis;
+  if (ice_com_shift_active_ && !ice_com_shift_parking_home_) {
+    linear_command = static_cast<double>(ice_com_shift_phase_sign_) *
+      std::clamp(ice_com_shift_speed_ms_, 0.0, max_linear_speed_);
+  } else if (ice_com_shift_active_) {
+    linear_command = 0.0;
+  }
 
   // --- Brake Priority Logic (monotonic linear ramp) ---
   // Single curve: attenuates linearly to zero at brake_full_fraction.
@@ -298,7 +445,8 @@ void MttOperatorInputNode::on_joy(const sensor_msgs::msg::Joy::SharedPtr msg)
   if (enable_com_mode_switch_) {
     publish_com_state(
       selected_actuator_axis,
-      deadman_pressed && !estop_active && !movement_inhibited_);
+      deadman_pressed && !estop_active && !movement_inhibited_,
+      ice_com_shift_active_);
   }
 
   const bool manual_activity =
@@ -337,11 +485,37 @@ void MttOperatorInputNode::on_joy(const sensor_msgs::msg::Joy::SharedPtr msg)
   manual_msg.header.stamp = now();
   if (deadman_pressed && !estop_active) {
     manual_msg.twist.linear.x = linear_command;
-    manual_msg.twist.angular.z = angular_command;
+    if (use_software_pid_) {
+      manual_msg.twist.angular.z = 0.0; // Servo node handles steering
+    } else {
+      manual_msg.twist.angular.z = angular_command;
+    }
   }
 
   if (deadman_pressed || deadman_released || estop_active) {
     manual_raw_pub_->publish(manual_msg);
+
+    if (use_software_pid_ && manual_articulation_owned()) {
+      if (deadman_pressed && !estop_active && !movement_inhibited_) {
+        std_msgs::msg::Float64 cmd_msg;
+        if (current_steering_routing_ == SteeringRoutingMode::POSITION_RETURN) {
+          cmd_msg.data = angular_axis * max_joystick_position_rad_;
+          position_cmd_pub_->publish(cmd_msg);
+        } else if (current_steering_routing_ == SteeringRoutingMode::VELOCITY_HOLD) {
+          cmd_msg.data = angular_axis * max_joystick_velocity_rad_s_;
+          velocity_cmd_pub_->publish(cmd_msg);
+        }
+      } else {
+        // If deadman is released, force return to zero in position mode, or zero velocity in hold mode
+        std_msgs::msg::Float64 cmd_msg;
+        cmd_msg.data = 0.0;
+        if (current_steering_routing_ == SteeringRoutingMode::POSITION_RETURN) {
+          position_cmd_pub_->publish(cmd_msg);
+        } else if (current_steering_routing_ == SteeringRoutingMode::VELOCITY_HOLD) {
+          velocity_cmd_pub_->publish(cmd_msg);
+        }
+      }
+    }
   }
 
   previous_deadman_pressed_ = deadman_pressed;
@@ -356,7 +530,21 @@ void MttOperatorInputNode::on_watchdog()
 
   const double age_s = std::chrono::duration<double>(
     std::chrono::steady_clock::now() - last_joy_receive_time_).count();
+
   if (age_s <= joy_timeout_s_) {
+    // If the joystick is alive but not moving, joy_node might not publish.
+    // We MUST continuously publish the servo commands at 50Hz so the servo node doesn't timeout!
+    if (use_software_pid_ && manual_articulation_owned() &&
+        previous_deadman_pressed_ && !movement_inhibited_) {
+      std_msgs::msg::Float64 cmd_msg;
+      if (current_steering_routing_ == SteeringRoutingMode::POSITION_RETURN) {
+        cmd_msg.data = last_angular_axis_ * max_joystick_position_rad_;
+        position_cmd_pub_->publish(cmd_msg);
+      } else if (current_steering_routing_ == SteeringRoutingMode::VELOCITY_HOLD) {
+        cmd_msg.data = last_angular_axis_ * max_joystick_velocity_rad_s_;
+        velocity_cmd_pub_->publish(cmd_msg);
+      }
+    }
     return;
   }
 
@@ -375,6 +563,7 @@ void MttOperatorInputNode::publish_safe_stop()
   previous_deadman_pressed_ = false;
   movement_inhibited_ = false;
   rt_is_fully_pressed_ = false;
+  reset_ice_com_shift_experiment("safe_stop");
 
   geometry_msgs::msg::TwistStamped manual_msg;
   manual_msg.header.stamp = now();
@@ -390,24 +579,245 @@ void MttOperatorInputNode::publish_safe_stop()
   if (enable_com_mode_switch_) {
     publish_com_state(0.0F, false);
   }
+
+  if (use_software_pid_ && manual_articulation_owned()) {
+    std_msgs::msg::Float64 cmd_msg;
+    cmd_msg.data = 0.0;
+    if (current_steering_routing_ == SteeringRoutingMode::POSITION_RETURN) {
+      position_cmd_pub_->publish(cmd_msg);
+    } else if (current_steering_routing_ == SteeringRoutingMode::VELOCITY_HOLD) {
+      velocity_cmd_pub_->publish(cmd_msg);
+    }
+  }
 }
 
 void MttOperatorInputNode::publish_com_state(
   float shaped_angular_axis,
-  bool command_enabled)
+  bool command_enabled,
+  bool force_com_mode)
 {
+  const bool com_mode_for_output = com_mode_active_ || force_com_mode;
+
   // com_mode
   auto mode_msg = std_msgs::msg::Bool();
-  mode_msg.data = com_mode_active_;
+  mode_msg.data = com_mode_for_output;
   com_mode_pub_->publish(mode_msg);
 
   // com_steer: forward the already-shaped angular axis value.
 
   auto steer_msg = std_msgs::msg::Float64();
-  steer_msg.data = com_mode_active_ && command_enabled
+  steer_msg.data = com_mode_for_output && command_enabled
     ? static_cast<double>(invert_com_steer_ ? -shaped_angular_axis : shaped_angular_axis)
     : 0.0;
   com_steer_pub_->publish(steer_msg);
+}
+
+void MttOperatorInputNode::publish_com_direction_sign()
+{
+  auto sign_msg = std_msgs::msg::Float64();
+  sign_msg.data = com_direction_sign_;
+  com_direction_sign_pub_->publish(sign_msg);
+}
+
+void MttOperatorInputNode::on_ice_slip_ratio(const std_msgs::msg::Float64::SharedPtr msg)
+{
+  if (!std::isfinite(msg->data)) {
+    return;
+  }
+  ice_com_shift_last_slip_ratio_ = msg->data;
+  ice_com_shift_last_slip_time_ = now();
+  ice_com_shift_has_slip_ = true;
+}
+
+void MttOperatorInputNode::on_ice_com_shift_arm(const std_msgs::msg::Bool::SharedPtr msg)
+{
+  ice_com_shift_armed_ = msg->data;
+  ice_com_shift_last_arm_time_ = now();
+}
+
+bool MttOperatorInputNode::ice_com_shift_arm_fresh()
+{
+  return ice_com_shift_armed_ &&
+         ice_com_shift_last_arm_time_.nanoseconds() != 0 &&
+         (now() - ice_com_shift_last_arm_time_).seconds() <= ice_com_shift_arm_timeout_s_;
+}
+
+bool MttOperatorInputNode::ice_com_shift_slip_fresh()
+{
+  return ice_com_shift_has_slip_ &&
+         ice_com_shift_last_slip_time_.nanoseconds() != 0 &&
+         (now() - ice_com_shift_last_slip_time_).seconds() <= ice_com_shift_slip_timeout_s_;
+}
+
+double MttOperatorInputNode::ice_com_shift_com_axis()
+{
+  const double side = static_cast<double>(
+    ice_com_shift_invert_com_axis_ ? -ice_com_shift_phase_sign_ : ice_com_shift_phase_sign_);
+  if (!ice_com_shift_jitter_enabled_ || ice_com_shift_parking_home_) {
+    return side;
+  }
+
+  const double amplitude = std::clamp(ice_com_shift_jitter_amplitude_, 0.0, 1.0);
+  const double frequency_hz = std::max(0.0, ice_com_shift_jitter_frequency_hz_);
+  if (amplitude <= 1e-6 || frequency_hz <= 1e-6 ||
+      ice_com_shift_phase_start_time_.nanoseconds() == 0) {
+    return side;
+  }
+
+  const double phase_age_s = std::max(0.0, (now() - ice_com_shift_phase_start_time_).seconds());
+  const double inward_wave = 0.5 * (1.0 - std::cos(2.0 * M_PI * frequency_hz * phase_age_s));
+  const double magnitude = std::clamp(1.0 - amplitude * inward_wave, 0.0, 1.0);
+  return side * magnitude;
+}
+
+void MttOperatorInputNode::reset_ice_com_shift_experiment(const std::string & phase)
+{
+  if (ice_com_shift_active_) {
+    RCLCPP_WARN(get_logger(), "Ice COM-shift experiment stopped: %s", phase.c_str());
+    if (ice_com_shift_park_home_on_stop_) {
+      com_park_pub_->publish(std_msgs::msg::Empty());
+    }
+  }
+  ice_com_shift_active_ = false;
+  ice_com_shift_parking_home_ = false;
+  ice_com_shift_brake_latched_ = false;
+  ice_com_shift_phase_ = phase;
+  ice_com_shift_below_since_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
+  publish_ice_com_shift_state();
+}
+
+void MttOperatorInputNode::update_ice_com_shift_experiment(
+  float linear_axis,
+  bool command_enabled,
+  double brake_value)
+{
+  if (!enable_ice_com_shift_experiment_) {
+    return;
+  }
+
+  const bool armed = ice_com_shift_arm_fresh();
+  const bool slip_fresh = ice_com_shift_slip_fresh();
+  if (!armed || !command_enabled || !slip_fresh) {
+    reset_ice_com_shift_experiment(!armed ? "disarmed" : (!command_enabled ? "deadman_off" : "waiting_slip"));
+    return;
+  }
+
+  const rclcpp::Time now_stamp = now();
+  if (!ice_com_shift_active_) {
+    if (std::abs(linear_axis) < ice_com_shift_start_axis_threshold_) {
+      ice_com_shift_phase_ = "armed_push_stick_to_start";
+      publish_ice_com_shift_state();
+      return;
+    }
+    ice_com_shift_active_ = true;
+    ice_com_shift_phase_sign_ = linear_axis >= 0.0F ? 1 : -1;
+    ice_com_shift_phase_start_time_ = now_stamp;
+    ice_com_shift_below_since_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
+    ice_com_shift_phase_ = ice_com_shift_phase_sign_ > 0 ? "forward_limit_pos" : "reverse_limit_neg";
+    com_direction_sign_ = 1.0;
+    publish_com_direction_sign();
+    if (ice_com_shift_park_home_on_start_) {
+      request_ice_com_shift_park_home(
+        ice_com_shift_phase_sign_ > 0 ? "park_home_before_forward" : "park_home_before_reverse");
+    }
+    RCLCPP_WARN(
+      get_logger(),
+      "Ice COM-shift experiment started: speed=%.2f m/s sign=%d slip=%.3f",
+      ice_com_shift_speed_ms_, ice_com_shift_phase_sign_, ice_com_shift_last_slip_ratio_);
+    publish_ice_com_shift_state();
+    return;
+  }
+
+  if (ice_com_shift_parking_home_) {
+    if (now_stamp < ice_com_shift_park_until_) {
+      publish_ice_com_shift_state();
+      return;
+    }
+    ice_com_shift_parking_home_ = false;
+    ice_com_shift_phase_start_time_ = now_stamp;
+    ice_com_shift_below_since_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
+    ice_com_shift_phase_ = ice_com_shift_phase_sign_ > 0 ? "forward_limit_pos" : "reverse_limit_neg";
+    RCLCPP_WARN(
+      get_logger(),
+      "Ice COM-shift park-home window done: drive sign=%d", ice_com_shift_phase_sign_);
+  }
+
+  const double phase_age_s = (now_stamp - ice_com_shift_phase_start_time_).seconds();
+  const bool min_phase_elapsed = phase_age_s >= ice_com_shift_min_phase_s_;
+  const bool max_phase_elapsed =
+    ice_com_shift_max_phase_s_ > 0.0 && phase_age_s >= ice_com_shift_max_phase_s_;
+  const bool brake_switch_requested =
+    ice_com_shift_switch_on_brake_ &&
+    brake_value >= ice_com_shift_brake_switch_threshold_;
+
+  if (!brake_switch_requested) {
+    ice_com_shift_brake_latched_ = false;
+  }
+  if (min_phase_elapsed && brake_switch_requested && !ice_com_shift_brake_latched_) {
+    ice_com_shift_brake_latched_ = true;
+    switch_ice_com_shift_phase("brake_switch");
+    publish_ice_com_shift_state();
+    return;
+  }
+
+  const bool slip_below_threshold =
+    std::abs(ice_com_shift_last_slip_ratio_) <= ice_com_shift_switch_abs_slip_below_;
+
+  if (slip_below_threshold) {
+    if (ice_com_shift_below_since_.nanoseconds() == 0) {
+      ice_com_shift_below_since_ = now_stamp;
+    }
+  } else {
+    ice_com_shift_below_since_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
+  }
+
+  const bool below_hold_elapsed =
+    ice_com_shift_below_since_.nanoseconds() != 0 &&
+    (now_stamp - ice_com_shift_below_since_).seconds() >= ice_com_shift_switch_hold_s_;
+
+  if (min_phase_elapsed && (below_hold_elapsed || max_phase_elapsed)) {
+    switch_ice_com_shift_phase(below_hold_elapsed ? "slip_below_threshold" : "max_phase");
+  }
+
+  publish_ice_com_shift_state();
+}
+
+void MttOperatorInputNode::request_ice_com_shift_park_home(const std::string & phase)
+{
+  ice_com_shift_parking_home_ = true;
+  ice_com_shift_phase_ = phase;
+  ice_com_shift_park_until_ = now() +
+    rclcpp::Duration::from_seconds(std::max(0.0, ice_com_shift_park_home_s_));
+  com_park_pub_->publish(std_msgs::msg::Empty());
+  RCLCPP_WARN(get_logger(), "Ice COM-shift PARK home requested: %s", phase.c_str());
+}
+
+void MttOperatorInputNode::switch_ice_com_shift_phase(const std::string & reason)
+{
+  ice_com_shift_phase_sign_ *= -1;
+  ice_com_shift_phase_start_time_ = now();
+  ice_com_shift_below_since_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
+  ice_com_shift_phase_ = ice_com_shift_phase_sign_ > 0 ? "forward_limit_pos" : "reverse_limit_neg";
+  RCLCPP_WARN(
+    get_logger(),
+    "Ice COM-shift switch: speed sign=%d com limit=%d slip=%.3f reason=%s",
+    ice_com_shift_phase_sign_, ice_com_shift_phase_sign_, ice_com_shift_last_slip_ratio_,
+    reason.c_str());
+}
+
+void MttOperatorInputNode::publish_ice_com_shift_state()
+{
+  auto active_msg = std_msgs::msg::Bool();
+  active_msg.data = ice_com_shift_active_;
+  ice_com_shift_active_pub_->publish(active_msg);
+
+  auto armed_msg = std_msgs::msg::Bool();
+  armed_msg.data = enable_ice_com_shift_experiment_ && ice_com_shift_arm_fresh();
+  ice_com_shift_armed_pub_->publish(armed_msg);
+
+  auto phase_msg = std_msgs::msg::String();
+  phase_msg.data = ice_com_shift_phase_;
+  ice_com_shift_phase_pub_->publish(phase_msg);
 }
 
 }  // namespace mtt_control
