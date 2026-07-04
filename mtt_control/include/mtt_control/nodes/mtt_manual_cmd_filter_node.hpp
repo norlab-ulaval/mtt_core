@@ -60,6 +60,12 @@ private:
   double decel_brake_gain_{0.0};
   double decel_brake_threshold_{0.05};
 
+  // Direction-reversal guard: block sign-flip commands while the filtered
+  // output magnitude exceeds this threshold (m/s). Operator must reduce
+  // speed below the threshold before a reverse command is accepted.
+  // Set to 0.0 to disable. Protects against relay-direction-flip hardware bug.
+  double reversal_guard_threshold_{0.0};
+
   mutable std::mutex state_mutex_;
 
   VelocityState target_;
