@@ -30,10 +30,6 @@ MttModeManagerNode::MttModeManagerNode(const rclcpp::NodeOptions & options)
     "mtt_control/manual_activity",
     20,
     std::bind(&MttModeManagerNode::on_manual_activity, this, std::placeholders::_1));
-  deadman_sub_ = create_subscription<std_msgs::msg::Bool>(
-    "mtt_control/teleop_deadman",
-    20,
-    std::bind(&MttModeManagerNode::on_deadman, this, std::placeholders::_1));
   estop_sub_ = create_subscription<std_msgs::msg::Bool>(
     "mtt_control/teleop_estop",
     20,
@@ -132,27 +128,19 @@ void MttModeManagerNode::on_manual_activity(const std_msgs::msg::Bool::SharedPtr
   }
 }
 
-void MttModeManagerNode::on_deadman(const std_msgs::msg::Bool::SharedPtr msg)
-{
-  const bool deadman = msg->data;
-  const bool rising = deadman && !previous_deadman_;
-  previous_deadman_ = deadman;
-
-  // Deadman-press rising edge → return to Manual, even mid-replay.
-  // "Hand on the controller = I'm taking over."
-  if (rising && current_mode_ == ControlMode::Auto && !estop_active_) {
-    auto_locked_ = false;
-    set_mode(ControlMode::Manual, "deadman_override");
-  }
-}
-
 void MttModeManagerNode::on_estop(const std_msgs::msg::Bool::SharedPtr msg)
 {
+  const bool was_active = estop_active_;
   estop_active_ = msg->data;
   if (estop_active_) {
     // Emergency stop always overrides everything, including replay lock.
     auto_locked_ = false;
     set_mode(ControlMode::Stop, "estop");
+  } else if (was_active) {
+    // Estop cleared (both triggers released): auto-return to Manual.
+    // The operator still needs deadman pressed to issue any motion command.
+    RCLCPP_INFO(get_logger(), "Estop cleared: returning to Manual mode.");
+    set_mode(ControlMode::Manual, "estop_cleared");
   }
 }
 
