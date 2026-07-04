@@ -18,9 +18,10 @@ MttManualCmdFilterNode::MttManualCmdFilterNode(const rclcpp::NodeOptions & optio
   linear_fall_rate_ = declare_parameter("linear_fall_rate", 1.0);
   angular_rise_rate_ = declare_parameter("angular_rise_rate", 0.5);
   angular_fall_rate_ = declare_parameter("angular_fall_rate", 1.2);
-  decel_brake_gain_      = declare_parameter("decel_brake_gain",      0.0);
-  decel_brake_threshold_ = declare_parameter("decel_brake_threshold", 0.05);
-  enable_dynamic_filter_ = declare_parameter("enable_dynamic_filter", false);
+  decel_brake_gain_          = declare_parameter("decel_brake_gain",          0.0);
+  decel_brake_threshold_     = declare_parameter("decel_brake_threshold",     0.05);
+  reversal_guard_threshold_  = declare_parameter("reversal_guard_threshold",  0.0);
+  enable_dynamic_filter_     = declare_parameter("enable_dynamic_filter",     false);
   linear_omega_n_ = declare_parameter("linear_omega_n", 8.0);
   linear_zeta_ = declare_parameter("linear_zeta", 1.0);
   angular_omega_n_ = declare_parameter("angular_omega_n", 10.0);
@@ -146,6 +147,23 @@ void MttManualCmdFilterNode::on_timer()
     reset_filter_state();
   }
   prev_deadman_ = deadman_active_;
+
+  // Direction-reversal guard: block sign-flip commands while the filtered
+  // output is above the configured threshold. The relay-direction hardware bug
+  // means sending Reverse while still moving Forward causes the motor controller
+  // to accelerate forward instead of braking. Requiring speed to drop below the
+  // threshold before accepting a direction reversal prevents this.
+  if (reversal_guard_threshold_ > 0.0) {
+    const double cv = linear_limiter_.value();
+    const bool fwd_reversal = effective_target.linear_x < -zero_epsilon_ && cv >  reversal_guard_threshold_;
+    const bool rev_reversal = effective_target.linear_x >  zero_epsilon_ && cv < -reversal_guard_threshold_;
+    if (fwd_reversal || rev_reversal) {
+      effective_target.linear_x = 0.0;
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 500,
+        "Direction reversal blocked (output=%.2f m/s, guard=%.2f m/s). Reduce speed first.",
+        cv, reversal_guard_threshold_);
+    }
+  }
 
   // Feedforward deceleration boost: when operator releases stick (target→0)
   // but the output is still significant, push the effective target negative
