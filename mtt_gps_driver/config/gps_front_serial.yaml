@@ -1,0 +1,18 @@
+# GPS configuration — Front rover, USB Serial (For Emlid Reach M+ on ZED camera)
+#
+# Hardware:
+#   Front (Reach M+)  → /dev/reach_front  (stable udev symlink)
+#
+# ReachView3 setup on rover:
+#   1. Mode: Kinematic / Rover
+#   2. Correction input: NTRIP / Serial
+#   3. NMEA output: Serial USB → 115200 baud
+#      Enable sentences: GGA (5 Hz), RMC (1 Hz)
+
+/gps_front/reach_driver_front:
+  ros__parameters:
+    connection_type: "serial"
+    serial_port: "/dev/reach_front"
+    baud_rate: 115200
+    frame_id: "gps_link"
+    reconnect_interval_s: 3.0
