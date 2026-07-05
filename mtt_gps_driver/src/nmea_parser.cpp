@@ -67,6 +67,13 @@ std::vector<std::string> split_fields(const std::string& sentence) {
   while (std::getline(ss, field, ',')) {
     fields.push_back(field);
   }
+  // std::getline does not emit an empty token after a trailing delimiter.
+  // Standard GGA output commonly leaves the differential-reference station ID
+  // empty, so the payload ends in a comma ("...,M,,*XX"). Preserve that final
+  // field; parse_gga expects the complete 15-field NMEA layout.
+  if (!body.empty() && body.back() == ',') {
+    fields.emplace_back();
+  }
   return fields;
 }
 
