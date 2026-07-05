@@ -19,7 +19,8 @@ def generate_launch_description():
         default_value='single',
         description=(
             '"single" — one rover on robot + external base station (RTK corrections via LoRa/TCP). '
-            '"dual"   — two antennas on robot for dual-antenna heading (legacy setup).'
+            '"dual"   — two antennas on robot for dual-antenna heading (legacy setup). '
+            '"front"  — one Emlid M+ in front (over ZED) without mixing with right/left.'
         )
     )
     gps_mode      = LaunchConfiguration('gps_mode')
@@ -31,8 +32,8 @@ def generate_launch_description():
 
         if mode not in ('tcp', 'serial'):
             raise ValueError(f"gps_mode must be 'tcp' or 'serial', got: '{mode}'")
-        if antennas not in ('single', 'dual'):
-            raise ValueError(f"gps_antennas must be 'single' or 'dual', got: '{antennas}'")
+        if antennas not in ('single', 'dual', 'front'):
+            raise ValueError(f"gps_antennas must be 'single', 'dual', or 'front', got: '{antennas}'")
 
         if antennas == 'single':
             # ── Single rover + external base station (RTK via LoRa/TCP) ──
@@ -54,6 +55,24 @@ def generate_launch_description():
                 parameters=[config],
             )
             return [rover_node]
+
+        elif antennas == 'front':
+            # ── Single front rover ──
+            # Used for the newly added Emlid M+ placed on the ZED camera.
+            # Outputs to /gps_front/fix to avoid mixing with gps_left/gps_right.
+            config = os.path.join(pkg, 'config', f'gps_front_{mode}.yaml')
+
+            front_node = Node(
+                package='mtt_gps_driver',
+                executable='reach_driver_node',
+                name='reach_driver_front',
+                namespace='gps_front',
+                output='both',
+                respawn=True,
+                respawn_delay=3.0,
+                parameters=[config],
+            )
+            return [front_node]
 
         else:
             # ── Dual antenna — two rovers on robot, heading from baseline ──
