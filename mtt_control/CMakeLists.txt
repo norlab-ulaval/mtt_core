@@ -13,6 +13,7 @@ find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(nav_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
 find_package(mtt_msgs REQUIRED)
@@ -92,6 +93,47 @@ ament_target_dependencies(mtt_cmd_vel_bridge_node
   geometry_msgs
 )
 
+add_executable(
+  mtt_articulated_nav_adapter_node
+  src/nodes/mtt_articulated_nav_adapter_node.cpp
+)
+target_include_directories(mtt_articulated_nav_adapter_node PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+ament_target_dependencies(mtt_articulated_nav_adapter_node
+  rclcpp
+  geometry_msgs
+  std_msgs
+)
+
+add_executable(
+  mtt_articulated_command_dispatcher_node
+  src/nodes/mtt_articulated_command_dispatcher_node.cpp
+)
+target_include_directories(mtt_articulated_command_dispatcher_node PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+ament_target_dependencies(mtt_articulated_command_dispatcher_node
+  rclcpp
+  geometry_msgs
+  std_msgs
+)
+
+add_executable(mtt_ice_slip_detector_node src/nodes/mtt_ice_slip_detector_node.cpp)
+target_include_directories(mtt_ice_slip_detector_node PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+ament_target_dependencies(mtt_ice_slip_detector_node
+  rclcpp
+  geometry_msgs
+  mtt_msgs
+  nav_msgs
+  std_msgs
+)
+
 install(TARGETS
   mtt_control_core
   mtt_operator_input_node
@@ -99,6 +141,9 @@ install(TARGETS
   mtt_mode_manager_node
   mtt_cmd_arbiter_node
   mtt_cmd_vel_bridge_node
+  mtt_articulated_nav_adapter_node
+  mtt_articulated_command_dispatcher_node
+  mtt_ice_slip_detector_node
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION lib/${PROJECT_NAME}
@@ -108,8 +153,18 @@ install(DIRECTORY include/ DESTINATION include)
 install(DIRECTORY launch config DESTINATION share/${PROJECT_NAME})
 
 if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
   find_package(ament_lint_auto REQUIRED)
   ament_lint_auto_find_test_dependencies()
+  ament_add_gtest(
+    test_articulated_command_model
+    test/test_articulated_command_model.cpp
+  )
+  if(TARGET test_articulated_command_model)
+    target_include_directories(test_articulated_command_model PUBLIC
+      $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    )
+  endif()
 endif()
 
 ament_package()
