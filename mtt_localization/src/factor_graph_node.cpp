@@ -24,14 +24,30 @@
 //     likelihoods — no measurement appears twice.
 //
 // Publishes:
-//   localization/odom               — nav_msgs/Odometry  (map frame, with Σ from ISAM2)
+//   localization/odom               — nav_msgs/Odometry  (map frame, with Σ from smoother)
 //   localization/articulation_angle — std_msgs/Float64   (optimised φ for downstream)
 //   localization/articulation_pitch — std_msgs/Float64   (optimised α for downstream)
+//
+// Out-of-sequence measurements (OOSM):
+//   Backend is a gtsam::IncrementalFixedLagSmoother (not raw ISAM2) so a late-arriving,
+//   higher-accuracy measurement (LiDAR-ICP odom, ZED/visual odom, future Isaac VSLAM
+//   odom — all can lag real time by hundreds of ms) is attached to the EXISTING keyframe
+//   whose timestamp is closest to when the measurement was actually captured
+//   (keyForStamp()), instead of always binding to "now". The smoother then relinearizes
+//   the affected window and the correction propagates forward through the existing
+//   IMU/odom BetweenFactor chain to the present. Keys older than smoother_lag_seconds
+//   are marginalized automatically. The X/V/B (IMU) chain itself is unaffected by this —
+//   it remains a strictly sequential prev_key→curr_key chain every tick, since
+//   CombinedImuFactor requires adjacent keyframes with actual preintegrated IMU data
+//   between them; only single-key factors (GPS, heading, articulation priors,
+//   TrailerPoseFactorFull) and relative BetweenFactor sources (track/lidar/visual odom)
+//   get OOSM-routed to a historical key via keyForStamp().
 
 #include <chrono>
 #include <memory>
 #include <mutex>
 #include <deque>
+#include <map>
 #include <cmath>
 #include <string>
 
@@ -44,6 +60,8 @@
 #include "geometry_msgs/msg/transform_stamped.hpp"
 #include "std_msgs/msg/float64.hpp"
 #include "tf2_ros/transform_broadcaster.h"
+#include "tf2_ros/transform_listener.h"
+#include "tf2_ros/buffer.h"
 #include "tf2/LinearMath/Quaternion.h"
 
 #include "mtt_msgs/msg/mtt_articulation_state.hpp"
@@ -54,7 +72,10 @@
 #include <gtsam/navigation/GPSFactor.h>
 #include <gtsam/navigation/ImuBias.h>
 #include <gtsam/navigation/ImuFactor.h>
-#include <gtsam/nonlinear/ISAM2.h>
+// IncrementalFixedLagSmoother lives in gtsam_unstable in the packaged GTSAM 4.2.0
+// (ros-jazzy-gtsam apt) used here — later upstream versions moved it to
+// gtsam/nonlinear, but that path doesn't exist in this install.
+#include <gtsam_unstable/nonlinear/IncrementalFixedLagSmoother.h>
 #include <gtsam/nonlinear/NonlinearFactorGraph.h>
 #include <gtsam/nonlinear/Values.h>
 #include <gtsam/slam/BetweenFactor.h>
@@ -83,7 +104,7 @@ public:
   FactorGraphNode() : Node("factor_graph_node") {
     declare_parameters();
     load_parameters();
-    setup_isam2();
+    setup_smoother();
     setup_imu_preintegration();
     setup_publishers();
     setup_subscribers();
@@ -93,7 +114,9 @@ public:
         std::chrono::duration<double>(1.0 / rate),
         std::bind(&FactorGraphNode::optimize_and_publish, this));
 
-    RCLCPP_INFO(get_logger(), "Factor Graph node started (ISAM2, SE(3) + φ articulation)");
+    RCLCPP_INFO(get_logger(),
+        "Factor Graph node started (IncrementalFixedLagSmoother, lag=%.1fs, SE(3) + φ articulation)",
+        smoother_lag_seconds_);
   }
 
 private:
@@ -127,6 +150,13 @@ private:
 
     declare_parameter("isam2_relinearize_threshold", 0.1);
     declare_parameter("isam2_relinearize_skip", 10);
+    // Fixed-lag smoother: keys older than this are marginalized. Must exceed the
+    // largest expected sensor latency (ICP/ZED/VSLAM odom) with margin.
+    declare_parameter("smoother_lag_seconds", 3.0);
+    // Warn if a single update() call takes longer than this fraction of the tick
+    // period — a cheap signal for whether the optimizer needs to move off the
+    // subscription-callback mutex onto a dedicated thread (not done yet; see plan).
+    declare_parameter("update_duration_warn_ratio", 0.5);
 
     // IMU noise
     declare_parameter("imu_accel_noise", 0.01);
@@ -207,60 +237,127 @@ private:
     noise_.trailer_sigma_rot = get_parameter("trailer_sigma_rot").as_double();
     noise_.trailer_sigma_trans = get_parameter("trailer_sigma_trans").as_double();
     trailer_min_confidence_ = get_parameter("trailer_min_confidence").as_double();
+    smoother_lag_seconds_ = get_parameter("smoother_lag_seconds").as_double();
+    update_duration_warn_ratio_ = get_parameter("update_duration_warn_ratio").as_double();
   }
 
-  // ─── ISAM2 setup ──
-  void setup_isam2() {
+  // ─── Fixed-lag smoother setup ──
+  gtsam::ISAM2Params makeIsam2Params() const {
     gtsam::ISAM2Params params;
     params.relinearizeThreshold =
         get_parameter("isam2_relinearize_threshold").as_double();
     params.relinearizeSkip =
         static_cast<int>(get_parameter("isam2_relinearize_skip").as_int());
-    isam2_ = std::make_unique<gtsam::ISAM2>(params);
+    return params;
+  }
 
-    // ── Initial tractor state ──
-    gtsam::Pose3 prior_pose = gtsam::Pose3::Identity();
-    gtsam::Vector3 prior_vel = gtsam::Vector3::Zero();
-    gtsam::imuBias::ConstantBias prior_bias;
-
+  // Adds priors + initial values for key 0 (X/V/B, and H/P if articulation is
+  // enabled) into graph_/initial_values_, anchored at the given state. Used both
+  // at startup (identity/zero) and by resetSmootherAfterFailure() (last known
+  // good state, so recovery doesn't teleport the published pose back to origin).
+  void seedKeyZero(
+      const gtsam::Pose3 & pose, const gtsam::Vector3 & vel,
+      const gtsam::imuBias::ConstantBias & bias, double phi, double alpha) {
     auto pose_noise = gtsam::noiseModel::Diagonal::Sigmas(
         (gtsam::Vector6() << 0.1, 0.1, 0.1, 0.5, 0.5, 0.5).finished());
     auto vel_noise = gtsam::noiseModel::Isotropic::Sigma(3, 0.1);
     auto bias_noise = gtsam::noiseModel::Isotropic::Sigma(6, 1e-3);
 
-    graph_.addPrior(X(0), prior_pose, pose_noise);
-    graph_.addPrior(V(0), prior_vel, vel_noise);
-    graph_.addPrior(B(0), prior_bias, bias_noise);
+    graph_.addPrior(X(0), pose, pose_noise);
+    graph_.addPrior(V(0), vel, vel_noise);
+    graph_.addPrior(B(0), bias, bias_noise);
+    initial_values_.insert(X(0), pose);
+    initial_values_.insert(V(0), vel);
+    initial_values_.insert(B(0), bias);
 
-    initial_values_.insert(X(0), prior_pose);
-    initial_values_.insert(V(0), prior_vel);
-    initial_values_.insert(B(0), prior_bias);
-
-    // ── Initial articulation state ──
     if (use_articulation_) {
-      const double prior_phi = 0.0;  // straight ahead
       auto phi_prior_noise = gtsam::noiseModel::Isotropic::Sigma(
           1, noise_.phi_prior_sigma);
-      graph_.addPrior(H_key(0), prior_phi, phi_prior_noise);
-      initial_values_.insert(H_key(0), prior_phi);
-      current_state_.trailer_angle = prior_phi;
+      graph_.addPrior(H_key(0), phi, phi_prior_noise);
+      initial_values_.insert(H_key(0), phi);
+      current_state_.trailer_angle = phi;
 
       if (use_pitch_state_) {
-        const double prior_alpha = 0.0;  // flat terrain
         auto alpha_prior_noise = gtsam::noiseModel::Isotropic::Sigma(
             1, noise_.pitch_prior_sigma);
-        graph_.addPrior(P_key(0), prior_alpha, alpha_prior_noise);
-        initial_values_.insert(P_key(0), prior_alpha);
-        current_alpha_ = prior_alpha;
+        graph_.addPrior(P_key(0), alpha, alpha_prior_noise);
+        initial_values_.insert(P_key(0), alpha);
+        current_alpha_ = alpha;
       }
     }
 
-    current_state_.pose = prior_pose;
-    current_state_.velocity = prior_vel;
-    current_state_.imu_bias = prior_bias;
+    current_state_.pose = pose;
+    current_state_.velocity = vel;
+    current_state_.imu_bias = bias;
     current_state_.key_index = 0;
+  }
 
-    RCLCPP_INFO(get_logger(), "ISAM2 initialised (tractor SE(3) + articulation φ%s)",
+  // Recreates the smoother from scratch after an unrecoverable GTSAM exception
+  // (ISAM2/fixed-lag internal state is not transactional — once an update()
+  // call throws partway through, the Bayes tree is left inconsistent and every
+  // subsequent update() fails the same way forever, which is what "Smoother
+  // update failed" spamming every tick means). Re-seeds key 0 at the LAST
+  // published state (not identity) so map→odom does not jump on recovery —
+  // only the smoother's internal history is lost, not the live output pose.
+  // `stamp`: the current tick's own timestamp (caller already computed one) —
+  // reused as key 0's anchor so the new key 0 is immediately newer than nothing
+  // and never looks stale to the smoother.
+  void resetSmootherAfterFailure(double stamp) {
+    RCLCPP_ERROR(get_logger(),
+        "Resetting smoother from scratch, re-anchored at the last published "
+        "state (pose/vel/bias/φ/α). Smoother history within the lag window is "
+        "lost; the published pose itself does not jump.");
+    graph_.resize(0);
+    initial_values_.clear();
+    smoother_ = std::make_unique<gtsam::IncrementalFixedLagSmoother>(
+        smoother_lag_seconds_, makeIsam2Params());
+    stamp_to_key_.clear();
+    key0_timestamped_ = false;
+    has_covariance_ = false;
+    seedKeyZero(current_state_.pose, current_state_.velocity,
+        current_state_.imu_bias, current_state_.trailer_angle, current_alpha_);
+
+    // Flush key 0 into the smoother RIGHT NOW, inside this function — the
+    // caller (optimize_and_publish's catch block) is followed unconditionally
+    // by graph_.resize(0)/initial_values_.clear() at the end of every tick,
+    // which would otherwise wipe this seed before it ever reached the smoother
+    // (exactly what caused every reset to immediately fail again with
+    // "key b0 does not exist in the Values" — the CombinedImuFactor at the
+    // next tick referenced a key 0 that was queued but never actually inserted).
+    gtsam::FixedLagSmoother::KeyTimestampMap key0_timestamps;
+    key0_timestamps[X(0)] = stamp;
+    key0_timestamps[V(0)] = stamp;
+    key0_timestamps[B(0)] = stamp;
+    if (use_articulation_) {
+      key0_timestamps[H_key(0)] = stamp;
+      if (use_pitch_state_) key0_timestamps[P_key(0)] = stamp;
+    }
+    try {
+      smoother_->update(graph_, initial_values_, key0_timestamps);
+      stamp_to_key_[stamp] = 0;
+      key0_timestamped_ = true;
+    } catch (const std::exception & e) {
+      // A fresh smoother failing on a single prior-only key 0 would indicate a
+      // deeper problem (bad noise model, NaN in current_state_, ...) that a
+      // reset loop cannot fix. Log loudly; key0_timestamped_ stays false so the
+      // NEXT tick's catch block will try resetSmootherAfterFailure() again
+      // rather than silently running with an inconsistent key0_timestamped_/
+      // smoother state.
+      RCLCPP_ERROR(get_logger(),
+          "Smoother reset itself failed on key 0: %s — will retry next tick.",
+          e.what());
+    }
+    graph_.resize(0);
+    initial_values_.clear();
+  }
+
+  void setup_smoother() {
+    smoother_ = std::make_unique<gtsam::IncrementalFixedLagSmoother>(
+        smoother_lag_seconds_, makeIsam2Params());
+    seedKeyZero(gtsam::Pose3::Identity(), gtsam::Vector3::Zero(),
+        gtsam::imuBias::ConstantBias(), 0.0, 0.0);
+
+    RCLCPP_INFO(get_logger(), "Smoother initialised (tractor SE(3) + articulation φ%s)",
         (use_articulation_ && use_pitch_state_) ? "+α" : "");
   }
 
@@ -290,6 +387,18 @@ private:
           "localization/articulation_pitch", 10);
     }
     tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
+
+    // For rotating raw IMU accel/gyro from their sensor frame (msg header
+    // frame_id, e.g. imu_link) into base_frame_ before preintegration — see
+    // imu_callback(). The IMU is very often NOT mounted Z-up/axis-aligned with
+    // the body frame (this robot's imu_link is rolled 180° + yawed 90° per
+    // calib_v2.xacro); integrating raw sensor-frame accel/gyro as if they were
+    // already in the body frame silently inverts gravity for the preintegrator,
+    // which diverges within seconds and was the root cause of persistent
+    // IndeterminantLinearSystemException crashes on X/V/B regardless of
+    // GPS/ICP/track-odom configuration.
+    tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
+    tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
   }
 
   // ─── Subscribers ──
@@ -346,19 +455,51 @@ private:
   }
 
   // ─── Sensor callbacks ──
+  // Lazily looks up the static rotation from the IMU's own sensor frame
+  // (msg header frame_id) into base_frame_, caching it after the first success
+  // (mirrors norlab_icp_mapper_ros's tryLookupImuSensorExtrinsic pattern — the
+  // TF may not be published yet on the very first few callbacks at startup).
+  bool ensureImuExtrinsic(const std::string & imu_frame) {
+    if (imu_extrinsic_ready_) return true;
+    try {
+      const auto tf = tf_buffer_->lookupTransform(base_frame_, imu_frame, rclcpp::Time(0));
+      const auto & q = tf.transform.rotation;
+      R_base_imu_ = gtsam::Rot3::Quaternion(q.w, q.x, q.y, q.z);
+      imu_extrinsic_ready_ = true;
+      RCLCPP_INFO(get_logger(), "IMU extrinsic %s → %s acquired for preintegration.",
+          imu_frame.c_str(), base_frame_.c_str());
+      return true;
+    } catch (const tf2::TransformException & ex) {
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+          "IMU extrinsic %s → %s not yet available: %s — dropping IMU samples "
+          "until TF is up (robot_state_publisher/description).",
+          imu_frame.c_str(), base_frame_.c_str(), ex.what());
+      return false;
+    }
+  }
+
   void imu_callback(const sensor_msgs::msg::Imu::SharedPtr msg) {
     std::lock_guard<std::mutex> lock(mtx_);
+    if (!ensureImuExtrinsic(msg->header.frame_id)) return;
+
     double t = rclcpp::Time(msg->header.stamp).seconds();
     if (last_imu_t_ < 0) { last_imu_t_ = t; return; }
     double dt = t - last_imu_t_;
     if (dt <= 0 || dt > 1.0) { last_imu_t_ = t; return; }
 
-    gtsam::Vector3 acc(msg->linear_acceleration.x,
+    // Raw accel/gyro are in the IMU's own sensor frame, which is frequently NOT
+    // axis-aligned with the body frame (e.g. this robot's imu_link is rolled
+    // 180° + yawed 90° relative to base_footprint, per calib_v2.xacro) — rotate
+    // into base_frame_ before preintegration, or gravity/rotation axes are wrong
+    // and the estimate diverges within seconds.
+    const gtsam::Vector3 acc_raw(msg->linear_acceleration.x,
                        msg->linear_acceleration.y,
                        msg->linear_acceleration.z);
-    gtsam::Vector3 gyro(msg->angular_velocity.x,
+    const gtsam::Vector3 gyro_raw(msg->angular_velocity.x,
                         msg->angular_velocity.y,
                         msg->angular_velocity.z);
+    const gtsam::Vector3 acc = R_base_imu_.rotate(acc_raw);
+    const gtsam::Vector3 gyro = R_base_imu_.rotate(gyro_raw);
     imu_preint_->integrateMeasurement(acc, gyro, dt);
     last_imu_t_ = t;
     imu_data_count_++;
@@ -449,11 +590,39 @@ private:
             gtsam::Point3(p.x, p.y, p.z)};
   }
 
+  // Wraps a base noise model in a Huber M-estimator so ONE occasional bad
+  // relative-pose measurement (an ICP jump under the still-fragile force4DOF=0
+  // mapper config, a track-odom slip spike, a ZED VIO glitch) gets down-weighted
+  // instead of dominating/corrupting the linear system. Plain Gaussian
+  // BetweenFactors with a tight sigma (e.g. lidar_odom_noise's 1cm translation)
+  // treat every discrepancy as equally significant, so a single outlier can — and
+  // was observed to — throw IndeterminantLinearSystemException. k=1.345 is the
+  // standard Huber tuning for ~95% efficiency under nominal Gaussian noise.
+  static gtsam::SharedNoiseModel robustNoise(const gtsam::SharedNoiseModel & base) {
+    return gtsam::noiseModel::Robust::Create(
+        gtsam::noiseModel::mEstimator::Huber::Create(1.345), base);
+  }
+
   gtsam::Pose3 stamped_to_pose3(const geometry_msgs::msg::PoseStamped & msg) const {
     auto & p = msg.pose.position;
     auto & q = msg.pose.orientation;
     return {gtsam::Rot3::Quaternion(q.w, q.x, q.y, q.z),
             gtsam::Point3(p.x, p.y, p.z)};
+  }
+
+  // ─── OOSM: map a measurement timestamp to the nearest existing keyframe ──
+  // Used to attach late-arriving measurements (ICP/ZED/VSLAM odom, GPS, articulation,
+  // trailer pose) to the historical keyframe closest to when they were actually
+  // captured, instead of always binding to curr_key ("now"). Falls back to the latest
+  // known key if stamp_to_key_ is empty (startup) or stamp lies outside the recorded
+  // range on either side (clamped to nearest edge).
+  uint64_t keyForStamp(double stamp) const {
+    if (stamp_to_key_.empty()) return current_state_.key_index;
+    auto it = stamp_to_key_.lower_bound(stamp);
+    if (it == stamp_to_key_.begin()) return it->second;
+    if (it == stamp_to_key_.end()) return std::prev(it)->second;
+    const auto prev_it = std::prev(it);
+    return (stamp - prev_it->first <= it->first - stamp) ? prev_it->second : it->second;
   }
 
   // ─── Main optimisation loop ──
@@ -474,6 +643,50 @@ private:
     const uint64_t prev_key = current_state_.key_index;
     const uint64_t curr_key = prev_key + 1;
 
+    // Keyframe timestamp for the fixed-lag smoother's marginalization bookkeeping.
+    // MUST NOT be this->now(): opt_timer_ is a wall-clock timer (ticks at real-time
+    // 50 Hz regardless of use_sim_time), while this->now() returns SIM time under
+    // bag replay — the bag's /clock does not necessarily advance once per tick (it
+    // publishes at whatever rate the recorded reference topic had), so two
+    // consecutive ticks can read the exact same sim time, or even go briefly
+    // backwards. A duplicate/non-monotonic timestamp silently corrupts
+    // stamp_to_key_/the smoother's KeyTimestampMap and manifests later as an
+    // IndeterminantLinearSystemException once the lag window starts marginalizing
+    // (observed: crash at ~154 ticks ≈ 3.0s = smoother_lag_seconds_).
+    // Use the last actually-integrated IMU sample's own stamp instead — it's tied
+    // to the real sensor timeline (consistent under sim time) and only advances
+    // when imu_callback() actually processes a new message.
+    double tick_stamp = (use_imu_ && last_imu_t_ >= 0.0) ? last_imu_t_ : this->now().seconds();
+    if (!stamp_to_key_.empty()) {
+      const double prev_stamp = std::prev(stamp_to_key_.end())->first;
+      if (tick_stamp <= prev_stamp) {
+        // Defensive monotonic clamp — FixedLagSmoother assumes strictly
+        // increasing timestamps per new key.
+        tick_stamp = prev_stamp + 1e-3;
+      }
+    }
+
+    // ── KeyTimestampMap for the fixed-lag smoother ──
+    // Only NEW keys inserted into initial_values_ THIS call need an entry — the
+    // smoother remembers timestamps for keys from earlier calls internally.
+    gtsam::FixedLagSmoother::KeyTimestampMap new_timestamps;
+    if (!key0_timestamped_) {
+      // First tick: key 0's prior was added in setup_smoother() but never given a
+      // timestamp (initial_values_ for key 0 is still sitting unflushed until now).
+      new_timestamps[X(0)] = tick_stamp;
+      new_timestamps[V(0)] = tick_stamp;
+      new_timestamps[B(0)] = tick_stamp;
+      if (use_articulation_) {
+        new_timestamps[H_key(0)] = tick_stamp;
+        if (use_pitch_state_) new_timestamps[P_key(0)] = tick_stamp;
+      }
+      stamp_to_key_[tick_stamp] = 0;
+      key0_timestamped_ = true;
+    }
+    new_timestamps[X(curr_key)] = tick_stamp;
+    new_timestamps[V(curr_key)] = tick_stamp;
+    new_timestamps[B(curr_key)] = tick_stamp;
+
     // ── IMU preintegration factor ──
     if (use_imu_ && imu_data_count_ > 0) {
       graph_.add(gtsam::CombinedImuFactor(
@@ -492,7 +705,7 @@ private:
     initial_values_.insert(V(curr_key), predicted.velocity());
     initial_values_.insert(B(curr_key), current_state_.imu_bias);
 
-    // ── GPS position ──
+    // ── GPS position (OOSM: attach to keyframe nearest the fix's own stamp) ──
     if (has_pending_gps_ && gps_origin_set_) {
       auto local = gps_to_local(pending_gps_.latitude,
                                 pending_gps_.longitude,
@@ -503,54 +716,81 @@ private:
           sensor_msgs::msg::NavSatStatus::STATUS_GBAS_FIX) {
         noise_xy = 0.02; noise_z = 0.04;
       }
-      graph_.add(gtsam::GPSFactor(X(curr_key), local,
+      const uint64_t gps_key =
+          keyForStamp(rclcpp::Time(pending_gps_.header.stamp).seconds());
+      graph_.add(gtsam::GPSFactor(X(gps_key), local,
           gtsam::noiseModel::Diagonal::Sigmas(
               gtsam::Vector3(noise_xy, noise_xy, noise_z))));
       has_pending_gps_ = false;
     }
 
-    // ── GPS heading ──
+    // ── GPS heading (OOSM) ──
     if (has_pending_heading_) {
       auto & q = pending_heading_.quaternion;
       auto heading_noise = gtsam::noiseModel::Diagonal::Sigmas(
           (gtsam::Vector6() << 99.0, 99.0, noise_.gps_heading_noise,
                                99.0, 99.0, 99.0).finished());
-      graph_.addPrior(X(curr_key),
-          gtsam::Pose3(gtsam::Rot3::Quaternion(q.w, q.x, q.y, q.z),
-                       predicted.pose().translation()),
+      const uint64_t heading_key =
+          keyForStamp(rclcpp::Time(pending_heading_.header.stamp).seconds());
+      // Translation part of the prior is a don't-care (sigma=99): reuse the
+      // predicted pose's translation only when priming curr_key; for a historical
+      // key just anchor rotation and let the existing translation stand.
+      const gtsam::Point3 anchor_t = (heading_key == curr_key)
+          ? predicted.pose().translation()
+          : gtsam::Point3(0, 0, 0);
+      graph_.addPrior(X(heading_key),
+          gtsam::Pose3(gtsam::Rot3::Quaternion(q.w, q.x, q.y, q.z), anchor_t),
           heading_noise);
       has_pending_heading_ = false;
     }
 
-    // ── Track odometry ──
+    // ── Track odometry (OOSM) ──
     if (has_pending_odom_ && has_last_odom_) {
-      gtsam::Pose3 delta =
-          odom_to_pose3(last_odom_).between(odom_to_pose3(pending_odom_));
-      graph_.add(gtsam::BetweenFactor<gtsam::Pose3>(X(prev_key), X(curr_key), delta,
-          gtsam::noiseModel::Diagonal::Sigmas(
-              (gtsam::Vector6() << 99.0, 99.0, noise_.odom_angular_noise,
-                                   noise_.odom_linear_noise,
-                                   noise_.odom_linear_noise, 99.0).finished())));
+      const uint64_t from_key =
+          keyForStamp(rclcpp::Time(last_odom_.header.stamp).seconds());
+      const uint64_t to_key =
+          keyForStamp(rclcpp::Time(pending_odom_.header.stamp).seconds());
+      if (from_key != to_key) {
+        gtsam::Pose3 delta =
+            odom_to_pose3(last_odom_).between(odom_to_pose3(pending_odom_));
+        graph_.add(gtsam::BetweenFactor<gtsam::Pose3>(X(from_key), X(to_key), delta,
+            robustNoise(gtsam::noiseModel::Diagonal::Sigmas(
+                (gtsam::Vector6() << 99.0, 99.0, noise_.odom_angular_noise,
+                                    noise_.odom_linear_noise,
+                                    noise_.odom_linear_noise, 99.0).finished()))));
+      }
       last_odom_ = pending_odom_;
       has_pending_odom_ = false;
     }
 
-    // ── LiDAR odometry ──
+    // ── LiDAR odometry (OOSM — typically the primary late/high-accuracy source) ──
     if (has_pending_lidar_odom_ && has_last_lidar_odom_) {
-      gtsam::Pose3 delta =
-          odom_to_pose3(last_lidar_odom_).between(odom_to_pose3(pending_lidar_odom_));
-      graph_.add(gtsam::BetweenFactor<gtsam::Pose3>(X(prev_key), X(curr_key), delta,
-          gtsam::noiseModel::Diagonal::Sigmas(noise_.lidar_odom_noise)));
+      const uint64_t from_key =
+          keyForStamp(rclcpp::Time(last_lidar_odom_.header.stamp).seconds());
+      const uint64_t to_key =
+          keyForStamp(rclcpp::Time(pending_lidar_odom_.header.stamp).seconds());
+      if (from_key != to_key) {
+        gtsam::Pose3 delta =
+            odom_to_pose3(last_lidar_odom_).between(odom_to_pose3(pending_lidar_odom_));
+        graph_.add(gtsam::BetweenFactor<gtsam::Pose3>(X(from_key), X(to_key), delta,
+            robustNoise(gtsam::noiseModel::Diagonal::Sigmas(noise_.lidar_odom_noise))));
+      }
       last_lidar_odom_ = pending_lidar_odom_;
       has_pending_lidar_odom_ = false;
     }
 
-    // ── Visual odometry ──
+    // ── Visual odometry (OOSM — ZED today, future Isaac VSLAM the same way) ──
     if (has_pending_visual_odom_ && has_last_visual_odom_) {
-      gtsam::Pose3 delta =
-          odom_to_pose3(last_visual_odom_).between(odom_to_pose3(pending_visual_odom_));
-      graph_.add(gtsam::BetweenFactor<gtsam::Pose3>(X(prev_key), X(curr_key), delta,
-          gtsam::noiseModel::Diagonal::Sigmas(noise_.visual_odom_noise)));
+      const uint64_t from_key =
+          keyForStamp(rclcpp::Time(last_visual_odom_.header.stamp).seconds());
+      const uint64_t to_key =
+          keyForStamp(rclcpp::Time(pending_visual_odom_.header.stamp).seconds());
+      if (from_key != to_key) {
+        gtsam::Pose3 delta =
+            odom_to_pose3(last_visual_odom_).between(odom_to_pose3(pending_visual_odom_));
+        graph_.add(gtsam::BetweenFactor<gtsam::Pose3>(X(from_key), X(to_key), delta,
+            robustNoise(gtsam::noiseModel::Diagonal::Sigmas(noise_.visual_odom_noise))));
+      }
       last_visual_odom_ = pending_visual_odom_;
       has_pending_visual_odom_ = false;
     }
@@ -559,10 +799,12 @@ private:
     if (use_articulation_) {
       // Initial value for H(curr_key): propagate from previous optimised φ
       initial_values_.insert(H_key(curr_key), current_state_.trailer_angle);
+      new_timestamps[H_key(curr_key)] = tick_stamp;
 
       // Initial value for P(curr_key): propagate from previous optimised α
       if (use_pitch_state_) {
         initial_values_.insert(P_key(curr_key), current_alpha_);
+        new_timestamps[P_key(curr_key)] = tick_stamp;
       }
 
       // ── Yaw dynamics: BetweenFactor H(prev)→H(curr) ──
@@ -585,23 +827,26 @@ private:
 
       if (has_pending_articulation_) {
         const auto & art = pending_articulation_;
+        const uint64_t art_key =
+            keyForStamp(rclcpp::Time(art.header.stamp).seconds());
 
-        // ── Yaw encoder: PriorFactor on H(curr_key) ──
+        // ── Yaw encoder: PriorFactor on H(art_key) (OOSM) ──
         const double phi_meas =
             art.hardware_fresh ? art.hardware_rad : art.effective_rad;
         const double sigma_enc =
             art.hardware_fresh ? noise_.phi_sigma_hardware : noise_.phi_sigma_model;
-        graph_.addPrior(H_key(curr_key), phi_meas,
+        graph_.addPrior(H_key(art_key), phi_meas,
             gtsam::noiseModel::Isotropic::Sigma(1, sigma_enc));
 
-        // ── Pitch encoder: PriorFactor on P(curr_key) ──
+        // ── Pitch encoder: PriorFactor on P(art_key) (OOSM) ──
         // Only when potentiometer reading is fresh (ADC1, 8-bit).
         if (use_pitch_state_ && art.pitch_fresh) {
-          graph_.addPrior(P_key(curr_key), art.pitch_rad,
+          graph_.addPrior(P_key(art_key), art.pitch_rad,
               gtsam::noiseModel::Isotropic::Sigma(1, noise_.pitch_sigma_hardware));
         }
 
-        // ── Trailer LiDAR pose factor ──
+        // ── Trailer LiDAR pose factor (OOSM: keyed by its own stamp, may differ
+        // from art_key since it comes from a separate topic/node) ──
         // TrailerPoseFactorFull (joint φ+α) when pitch state enabled,
         // TrailerPoseFactor (φ only) when not.
         // Noise scaled by 1/√confidence — bad detections contribute little.
@@ -617,14 +862,16 @@ private:
                 (gtsam::Vector6() << sr, sr, sr, st, st, st).finished());
 
             const gtsam::Pose3 T_meas = stamped_to_pose3(pending_trailer_pose_);
+            const uint64_t trailer_key = keyForStamp(
+                rclcpp::Time(pending_trailer_pose_.header.stamp).seconds());
 
             if (use_pitch_state_) {
               // 6D residual constrains both φ and α simultaneously
               graph_.add(mtt_loc::TrailerPoseFactorFull(
-                  H_key(curr_key), P_key(curr_key), T_meas, trailer_noise));
+                  H_key(trailer_key), P_key(trailer_key), T_meas, trailer_noise));
             } else {
               graph_.add(mtt_loc::TrailerPoseFactor(
-                  H_key(curr_key), T_meas, trailer_noise));
+                  H_key(trailer_key), T_meas, trailer_noise));
             }
           }
           has_pending_trailer_pose_ = false;
@@ -634,16 +881,19 @@ private:
       }
     }
 
-    // ── ISAM2 update ──
+    // ── Fixed-lag smoother update ──
+    const auto update_start = std::chrono::steady_clock::now();
+    bool update_ok = false;
     try {
-      isam2_->update(graph_, initial_values_);
-      auto result = isam2_->calculateEstimate();
+      smoother_->update(graph_, initial_values_, new_timestamps);
+      auto result = smoother_->calculateEstimate();
 
       current_state_.pose     = result.at<gtsam::Pose3>(X(curr_key));
       current_state_.velocity = result.at<gtsam::Vector3>(V(curr_key));
       current_state_.imu_bias =
           result.at<gtsam::imuBias::ConstantBias>(B(curr_key));
       current_state_.key_index = curr_key;
+      stamp_to_key_[tick_stamp] = curr_key;
 
       if (use_articulation_) {
         current_state_.trailer_angle = result.at<double>(H_key(curr_key));
@@ -651,19 +901,20 @@ private:
           current_alpha_ = result.at<double>(P_key(curr_key));
         }
       }
+      update_ok = true;
 
       // ── Extract marginal covariances ──
-      // isam2_->marginalCovariance(key) runs back-substitution on the
-      // Bayes tree — O(n) but cheap for a single key at 50 Hz.
+      // smoother_->marginalCovariance(key) runs back-substitution on the
+      // internal Bayes tree — O(n) but cheap for a single key at 50 Hz.
       if (extract_covariance_) {
         try {
           // Tractor pose covariance (6×6)
-          cov_pose_ = isam2_->marginalCovariance(X(curr_key));
+          cov_pose_ = smoother_->marginalCovariance(X(curr_key));
           // Articulation variances (1×1 each)
           if (use_articulation_) {
-            cov_phi_ = isam2_->marginalCovariance(H_key(curr_key));
+            cov_phi_ = smoother_->marginalCovariance(H_key(curr_key));
             if (use_pitch_state_) {
-              cov_alpha_ = isam2_->marginalCovariance(P_key(curr_key));
+              cov_alpha_ = smoother_->marginalCovariance(P_key(curr_key));
             }
           }
           has_covariance_ = true;
@@ -675,8 +926,50 @@ private:
       }
 
     } catch (const std::exception & e) {
-      RCLCPP_ERROR(get_logger(), "ISAM2 update failed: %s", e.what());
-      current_state_.key_index = curr_key;
+      // GTSAM's ISAM2/fixed-lag internal state is not transactional: once
+      // update() throws partway through (e.g. IndeterminantLinearSystemException),
+      // the Bayes tree is left inconsistent and every subsequent update() call
+      // fails the same way forever (observed: "Smoother update failed" spamming
+      // every tick with no recovery). Reset from scratch instead of limping on.
+      RCLCPP_ERROR(get_logger(), "Smoother update failed: %s", e.what());
+      resetSmootherAfterFailure(tick_stamp);
+    }
+
+    // Warn if this update took long enough to risk blocking sensor callbacks
+    // (they share mtx_) for a meaningful fraction of the tick period — a signal
+    // that the dedicated optimization thread (planned, not yet implemented) is
+    // needed. Cheap to check every tick; not a functional change.
+    {
+      const double update_ms = std::chrono::duration<double, std::milli>(
+          std::chrono::steady_clock::now() - update_start).count();
+      const double rate = get_parameter("publish_rate").as_double();
+      const double tick_period_ms = 1000.0 / std::max(rate, 1.0);
+      if (update_ms > update_duration_warn_ratio_ * tick_period_ms) {
+        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+            "Smoother update took %.1f ms (> %.0f%% of the %.1f ms tick period) — "
+            "consider moving optimization off the sensor-callback mutex onto a "
+            "dedicated thread if this recurs.",
+            update_ms, update_duration_warn_ratio_ * 100.0, tick_period_ms);
+      }
+    }
+
+    // Prune our own timestamp bookkeeping using the smoother's OWN
+    // KeyTimestampMap as ground truth (not a locally recomputed cutoff) —
+    // guarantees keyForStamp() can never return a key the smoother has already
+    // marginalized, regardless of any off-by-one/boundary mismatch between our
+    // own cutoff arithmetic and the smoother's internal marginalization
+    // decision. Referencing an already-marginalized key is exactly the kind of
+    // bug that throws mid-update and requires the reset above — this closes
+    // that gap structurally instead of by careful arithmetic.
+    if (update_ok) {
+      const auto & live = smoother_->timestamps();
+      for (auto it = stamp_to_key_.begin(); it != stamp_to_key_.end(); ) {
+        it = (live.find(X(it->second)) == live.end())
+            ? stamp_to_key_.erase(it) : std::next(it);
+      }
+      if (stamp_to_key_.empty()) {
+        stamp_to_key_[tick_stamp] = curr_key;
+      }
     }
 
     // Clear pending data and reset IMU
@@ -772,14 +1065,21 @@ private:
   // ─── Members ──
   std::mutex mtx_;
 
-  // ISAM2
-  std::unique_ptr<gtsam::ISAM2> isam2_;
+  // Fixed-lag smoother
+  std::unique_ptr<gtsam::IncrementalFixedLagSmoother> smoother_;
   gtsam::NonlinearFactorGraph graph_;
   gtsam::Values initial_values_;
   gtsam::Matrix66 cov_pose_  = gtsam::Matrix66::Zero();
   gtsam::Matrix11 cov_phi_   = gtsam::Matrix11::Zero();
   gtsam::Matrix11 cov_alpha_ = gtsam::Matrix11::Zero();
   bool has_covariance_{false};
+  double smoother_lag_seconds_{3.0};
+  double update_duration_warn_ratio_{0.5};
+
+  // OOSM bookkeeping: ROS-time seconds → keyframe index, for keyForStamp().
+  // Pruned each tick to match the smoother's own marginalization window.
+  std::map<double, uint64_t> stamp_to_key_;
+  bool key0_timestamped_{false};
 
   // IMU
   std::unique_ptr<gtsam::PreintegratedCombinedMeasurements> imu_preint_;
@@ -833,6 +1133,10 @@ private:
   rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr articulation_pub_;
   rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr pitch_pub_;
   std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
+  std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
+  std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
+  gtsam::Rot3 R_base_imu_;
+  bool imu_extrinsic_ready_{false};
 
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
