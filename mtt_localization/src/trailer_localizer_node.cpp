@@ -3,16 +3,23 @@
 /// URDF kinematic chain (base_footprint → MTT_remorque):
 ///   base_footprint → base_link      : fixed, xyz=(0,0,-0.1)
 ///   base_link      → Frame_fix      : pitch joint, xyz=(-1.0512, 0.2125, 0.3578),
-///                                     rpy=(-π/2,0,0), q=-π/2+α  ← PITCH VARIABLE
+///                                     rpy=(-π/2,0,0), q=pitch_rest_rad_+α  ← PITCH VARIABLE
 ///   Frame_fix      → jt_simple      : yaw joint,   xyz=(0, 0.0571, -0.2635),
-///                                     rpy=(-π/2,0,0), q=π/2+φ   ← YAW VARIABLE
+///                                     rpy=(-π/2,0,0), q=yaw_rest_rad_+φ   ← YAW VARIABLE
 ///   jt_simple      → MTT_remorque   : roll joint,  xyz=(0,0,-0.0571),
-///                                     rpy=(-π/2,0,-π/2), q=-π/2
+///                                     rpy=(-π/2,0,-π/2), q=roll_rest_rad_
 ///
-/// Δ(φ, α) = A_prefix · Rz(-π/2+α) · A_suffix · Rz(π/2+φ) · B
-///   A_prefix = T_bf_bl · T_pitch_origin   (before pitch rotation)
-///   A_suffix = T_yaw_origin               (between pitch and yaw)
-///   B        = T_roll                     (after yaw, constant)
+/// Δ(φ, α) = A_prefix · Rz(pitch_rest_rad_+α) · A_suffix · Rz(yaw_rest_rad_+φ) · B
+///   A_prefix = T_bf_bl · T_pitch_origin   (before pitch rotation, fixed origin)
+///   A_suffix = T_yaw_origin               (between pitch and yaw, fixed origin)
+///   B        = T_roll(roll_rest_rad_)     (after yaw, constant per current rest value)
+///
+/// pitch_rest_rad_/yaw_rest_rad_/roll_rest_rad_ are ROS params (default 0.0, matching
+/// mtt_joint_state_builder_node's current demos/common/config/mtt_driver.yaml values) —
+/// NOT hardcoded ±π/2 as in an earlier version of this file, which silently diverged
+/// from robot_state_publisher after that config was changed (commit 349edcd, "fix trailer
+/// joint rest angles"). Keep these three in sync with mtt_driver.yaml by hand until a
+/// TF-lookup-based replacement removes the duplication entirely.
 
 #include "mtt_localization/trailer_localizer_node.hpp"
 
@@ -145,6 +152,19 @@ TrailerLocalizerNode::TrailerLocalizerNode(const rclcpp::NodeOptions & options)
   broadcast_tf_ =
     declare_parameter("broadcast_tf", true);
 
+  // MUST match mtt_joint_state_builder_node's pitch_rest_rad/yaw_rest_rad/roll_rest_rad
+  // (demos/common/config/mtt_driver.yaml — currently 0.0/0.0/0.0). Defaulting to 0.0 here
+  // too, NOT the URDF joint-axis ±π/2 convention that used to be hardcoded — see class
+  // doc comment and commit 349edcd ("fix trailer joint rest angles").
+  pitch_rest_rad_ =
+    declare_parameter("pitch_rest_rad", 0.0);
+
+  yaw_rest_rad_ =
+    declare_parameter("yaw_rest_rad", 0.0);
+
+  roll_rest_rad_ =
+    declare_parameter("roll_rest_rad", 0.0);
+
   // Parse fusion mode
   if (fusion_mode_str == "lidar") {
     fusion_mode_ = FusionMode::kLidar;
@@ -194,11 +214,11 @@ TrailerLocalizerNode::TrailerLocalizerNode(const rclcpp::NodeOptions & options)
     {0.0, 0.05714999999950, -0.26352500000200},
     {-M_PI_2, 0.0, 0.0});
 
-  // Roll (full joint at rest: q = -π/2, constant)
+  // Roll (full joint at rest: q = roll_rest_rad_, constant — see param declared above)
   const Eigen::Isometry3d T_roll = urdfJoint(
     {0.0, 0.0, -0.05714999999985},
     {-M_PI_2, 0.0, -M_PI_2},
-    -M_PI_2);
+    roll_rest_rad_);
 
   // Precompute constant parts
   A_prefix_ = T_bf_bl * T_pitch_origin;  // before pitch rotation
@@ -230,8 +250,14 @@ TrailerLocalizerNode::TrailerLocalizerNode(const rclcpp::NodeOptions & options)
     rclcpp::QoS(10),
     [this](nav_msgs::msg::Odometry::ConstSharedPtr msg) { onTractorOdom(msg); });
 
+  // Bag replay must override this to mtt/articulation_state/runtime (the
+  // recomputed, replay-consistent stream mtt_joint_state_builder_node also uses) —
+  // the bare /mtt/articulation_state default is whatever got recorded raw in the
+  // bag, which is stale/inconsistent under replay. See localization.launch.py.
+  const auto articulation_topic = declare_parameter(
+    "articulation_topic", std::string("/mtt/articulation_state"));
   articulation_sub_ = create_subscription<mtt_msgs::msg::MttArticulationState>(
-    "/mtt/articulation_state",
+    articulation_topic,
     rclcpp::SensorDataQoS(),
     [this](mtt_msgs::msg::MttArticulationState::ConstSharedPtr msg) {
       onArticulationState(msg);
@@ -440,9 +466,11 @@ void TrailerLocalizerNode::publishTrailerPose()
 // ── Kinematics ──
 Eigen::Isometry3d TrailerLocalizerNode::computeDelta(double phi, double alpha) const
 {
-  // Δ(φ, α) = A_prefix · Rz(-π/2+α) · A_suffix · Rz(π/2+φ) · B
-  const Eigen::Isometry3d R_pitch(Eigen::AngleAxisd(-M_PI_2 + alpha, Eigen::Vector3d::UnitZ()));
-  const Eigen::Isometry3d R_yaw(Eigen::AngleAxisd(M_PI_2 + phi, Eigen::Vector3d::UnitZ()));
+  // Δ(φ, α) = A_prefix · Rz(pitch_rest_rad_+α) · A_suffix · Rz(yaw_rest_rad_+φ) · B
+  const Eigen::Isometry3d R_pitch(
+    Eigen::AngleAxisd(pitch_rest_rad_ + alpha, Eigen::Vector3d::UnitZ()));
+  const Eigen::Isometry3d R_yaw(
+    Eigen::AngleAxisd(yaw_rest_rad_ + phi, Eigen::Vector3d::UnitZ()));
   return A_prefix_ * R_pitch * A_suffix_ * R_yaw * B_;
 }
 
