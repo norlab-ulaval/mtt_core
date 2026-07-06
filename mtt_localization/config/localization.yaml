@@ -1,5 +1,11 @@
 # ISAM2 Factor Graph localization configuration for MTT
-localization:
+# NOTE: top-level key must match the node name ("factor_graph_node", see
+# factor_graph_node.cpp's Node("factor_graph_node") and localization.launch.py's
+# name='factor_graph_node') for ROS 2 to actually apply this block. It was
+# previously "localization:", which never matched anything — this whole section
+# was silently ignored and the node ran entirely on its declare_parameter() C++
+# defaults (which happen to mirror most values below, masking the bug).
+factor_graph_node:
   ros__parameters:
     # Sensor enabling (modulaire — toggle each source on/off)
     use_imu_primary: true
@@ -12,6 +18,16 @@ localization:
     # ISAM2 tuning
     isam2_relinearize_threshold: 0.1
     isam2_relinearize_skip: 10
+
+    # Fixed-lag smoother (OOSM): keys older than this are marginalized. Must
+    # exceed the largest expected sensor latency (ICP/ZED/future VSLAM odom)
+    # with margin, or a late measurement arrives after its target keyframe has
+    # already been marginalized and is silently dropped (keyForStamp clamps to
+    # the oldest still-live key instead of crashing, but the correction is lost).
+    smoother_lag_seconds: 3.0
+    # Warn if a single update() call blocks the shared sensor-callback mutex for
+    # longer than this fraction of the publish_rate tick period.
+    update_duration_warn_ratio: 0.5
 
     # IMU noise (XSens MTi-100 specs)
     imu_accel_noise: 0.01      # m/s²/√Hz
@@ -121,3 +137,16 @@ mtt_trailer_localizer_node:
     # TF output
     trailer_tf_frame: "trailer_body"  # child frame (NOT MTT_remorque — avoids URDF conflict)
     broadcast_tf: true
+
+    # Revolute joint REST values (rad) for the internal URDF-chain replica used by
+    # computeDelta(). MUST match mtt_joint_state_builder_node's pitch_rest_rad/
+    # yaw_rest_rad/roll_rest_rad in demos/common/config/mtt_driver.yaml (currently
+    # 0.0/0.0/0.0 there — NOT the URDF's original joint-axis ±π/2 convention). If that
+    # config ever changes again, update these three to match, or the trailer pose here
+    # will silently diverge from robot_state_publisher's MTT_remorque frame by ~90°
+    # per axis that's out of sync (see commit 349edcd, "fix trailer joint rest angles",
+    # which changed the YAML but not this node — verify with computeDelta(0,0) vs the
+    # live base_footprint→MTT_remorque TF at zero articulation before trusting this).
+    pitch_rest_rad: 0.0
+    yaw_rest_rad: 0.0
+    roll_rest_rad: 0.0
