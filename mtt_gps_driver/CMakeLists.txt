@@ -42,4 +42,14 @@ install(TARGETS
 install(DIRECTORY config/ DESTINATION share/${PROJECT_NAME}/config)
 install(DIRECTORY launch/ DESTINATION share/${PROJECT_NAME}/launch)
 
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+
+  ament_add_gtest(test_nmea_parser
+    test/test_nmea_parser.cpp
+    src/nmea_parser.cpp
+  )
+  target_include_directories(test_nmea_parser PRIVATE include)
+endif()
+
 ament_package()
