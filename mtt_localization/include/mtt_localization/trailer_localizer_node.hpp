@@ -38,8 +38,15 @@ namespace mtt_loc
 ///
 /// Math:
 ///   T_map_trailer = T_map_base_footprint · Δ(φ, α)
-///   Δ(φ, α) = A_prefix · Rz(-π/2+α) · A_suffix · Rz(π/2+φ) · B
-///             (A_prefix, A_suffix, B precomputed from URDF constants)
+///   Δ(φ, α) = A_prefix · Rz(pitch_rest_rad_+α) · A_suffix · Rz(yaw_rest_rad_+φ) · B(roll_rest_rad_)
+///             (A_prefix, A_suffix precomputed from URDF joint *origins*, which are fixed;
+///             pitch_rest_rad_/yaw_rest_rad_/roll_rest_rad_ are the revolute joint REST
+///             values and MUST match mtt_joint_state_builder_node's pitch_rest_rad/
+///             yaw_rest_rad/roll_rest_rad — see demos/common/config/mtt_driver.yaml,
+///             the operator-facing source of truth for these three constants — otherwise
+///             this replica of the URDF chain silently diverges from what
+///             robot_state_publisher actually shows. Verify with computeDelta(0,0) vs the
+///             live base_footprint→MTT_remorque TF at zero articulation.)
 ///   Σ_trailer = Ad(Δ⁻¹)·Σ_tractor·Ad(Δ⁻¹)ᵀ + J_φ·σ²_φ·J_φᵀ + J_α·σ²_α·J_αᵀ
 class TrailerLocalizerNode final : public rclcpp::Node
 {
@@ -55,7 +62,7 @@ private:
   void publishTrailerPose();
 
   // ── Kinematics ──
-  /// Δ(φ, α) = A_prefix · Rz(-π/2+α) · A_suffix · Rz(π/2+φ) · B
+  /// Δ(φ, α) = A_prefix · Rz(pitch_rest_rad_+α) · A_suffix · Rz(yaw_rest_rad_+φ) · B
   Eigen::Isometry3d computeDelta(double phi, double alpha = 0.0) const;
 
   /// J_φ via central differences (6×1, [position; rotation] convention)
@@ -98,6 +105,17 @@ private:
   double articulation_timeout_{0.5};          ///< s
   std::string trailer_tf_frame_{"trailer_body"};
   bool broadcast_tf_{true};
+
+  // Revolute joint REST values (rad) for pitch/yaw/roll — MUST match
+  // mtt_joint_state_builder_node's pitch_rest_rad/yaw_rest_rad/roll_rest_rad
+  // (demos/common/config/mtt_driver.yaml is the single operator-facing source
+  // of truth for these three; they are currently all 0.0 there). Defaults here
+  // intentionally mirror that current value, NOT the URDF's original ±π/2
+  // joint-axis convention baked into A_prefix_/A_suffix_/B_'s *origins* — see
+  // class doc comment above.
+  double pitch_rest_rad_{0.0};
+  double yaw_rest_rad_{0.0};
+  double roll_rest_rad_{0.0};
 
   // ── Shared state (mutex-protected) ──
   mutable std::mutex state_mutex_;
