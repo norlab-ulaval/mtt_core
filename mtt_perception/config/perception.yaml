@@ -63,7 +63,7 @@ trailer_detector_node:
     # The model-estimated angle (/mtt_articulation_angle) feeds only the KF
     # prediction step. It never replaces the LiDAR measurement.
     command:
-      use_prediction: true              # anticipates steering during fast maneuvers
+      use_prediction: false             # avoid a feedback loop; sensors remain authoritative
       topic: "/mtt_articulation_angle"
       gain: 0.5            # k_cmd: command contribution to angular rate prediction
       timeout_sec: 0.2     # ignore commands older than this
@@ -73,7 +73,20 @@ trailer_detector_node:
     motor_feedback:
       enabled: true
       topic: "/hardware/articulation_angle"
-      variance: 0.000064    # σ=0.008 rad — true hardware encoder precision (0.008²)
+      variance: 0.01        # secondary measurement; LiDAR covariance always has priority
+      timeout_sec: 0.25
+      min_confidence: 0.20
+      lidar_variance_multiplier: 2.0
+      gate_hard_sigma: 4.0
+      confidence_initial: 0.50
+      confidence_recovery_gain: 0.08
+      confidence_disagreement_penalty: 0.30
+      confidence_stuck_penalty: 0.35
+      confidence_stale_decay: 0.75
+      good_residual_rad: 0.04
+      bad_residual_rad: 0.20
+      lidar_motion_threshold_rad: 0.025
+      sensor_motion_epsilon_rad: 0.003
 
     # ── Sliding ROI (future — disabled) ──
     # When enabled: shift the ROI centre based on the predicted angle.
@@ -141,12 +154,16 @@ trailer_pose_node:
     max_position_correction_l: 0.08
     max_position_correction_h: 0.06
 
-    # Pitch is optional and strongly gated. Roll is disabled by default.
+    # Pitch is optional and strongly gated.
     enable_pitch_estimation: true
     max_pitch: 0.12              # rad, ~7 deg
     max_pitch_rms: 0.08
 
-    enable_roll_estimation: false
+    # Roll reuses the same left/right line fit that yaw ALWAYS uses when
+    # possible (trailer_pose_node.cpp::estimateMeasurement's two-sided q30/q70
+    # split — replaces the whole-cloud PCA sign-ambiguous yaw whenever both
+    # sides have min_side_points, unconditionally). This flag only gates roll.
+    enable_roll_estimation: true
     max_roll: 0.08
     width_tolerance: 0.35
     min_side_points: 20
@@ -162,7 +179,12 @@ trailer_pose_node:
     position_decay_to_prior: 0.70
 
 # ── Unified Trailer Estimator — EKF V1.0 ──
-# Single node replacing trailer_pose_node + trailer_localizer_node.
+# REGRESSED, disabled by default (perception.launch.py: enable_new_trailer_estimator=false).
+# Does NOT replace trailer_pose_node or trailer_localizer_node — both are still present
+# and launchable; this node was a strictly-worse reimplementation (two competing yaw
+# models, ~40% dead ICP/RANSAC code never invoked, markers decoupled from filter state).
+# Kept only for A/B comparison until removed; see docs/../plan for the trailer_pose_node
+# + mtt_localization/factor_graph_node (TrailerPoseFactorFull) replacement architecture.
 # trailer_detector_node (V1.5) is kept unchanged and feeds /trailer/articulation_angle.
 #
 # Sensor topics:
