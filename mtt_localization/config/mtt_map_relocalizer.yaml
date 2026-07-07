@@ -1,0 +1,22 @@
+mtt_map_relocalizer:
+  ros__parameters:
+    # ICP tuning — coarse pass breaks symmetry, fine pass refines
+    icp_max_dist_coarse: 2.0     # [m] max correspondence distance (first pass)
+    icp_max_dist_fine:   0.5     # [m] max correspondence distance (refinement)
+    icp_max_iter:        50      # max ICP iterations per pass
+
+    # Overlap gate: if the fraction of old-map points that match the live map
+    # after registration is below this threshold, the registration is rejected
+    # and the trajectory is NOT corrected (falls back to recording-frame poses).
+    overlap_min_ratio:   0.25    # [0,1] — 25% overlap minimum
+
+    # Yaw-hypothesis sweep step.  Four hypotheses at 90° spacing are usually
+    # enough for indoor corridors (the teach map's global orientation is unknown
+    # relative to the current session's map origin).
+    yaw_sweep_step_deg:  90.0   # generates 0°, 90°, 180°, 270°
+
+    # Topics (defaults match the live-robot stack)
+    map_topic:           "/mapping/map"
+    odom_topic:          "/mapping/icp_odom"
+    trajectory_topic:    "/wiln/trajectory"
+    pose_prior_topic:    "/mapping/pose_in"
