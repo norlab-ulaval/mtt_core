@@ -20,6 +20,8 @@
 #include "std_msgs/msg/float64.hpp"
 #include "visualization_msgs/msg/marker.hpp"
 
+#include "mtt_perception/adaptive_sensor_confidence.hpp"
+
 #include <Eigen/Core>
 
 namespace mtt_perception {
@@ -44,7 +46,7 @@ private:
   // ── Processing ──
   void cloudCallback(sensor_msgs::msg::PointCloud2::ConstSharedPtr msg);
 
-  // Optional command + future motor feedback callbacks
+  // Optional command prediction + secondary STM feedback callbacks
   void commandCallback(std_msgs::msg::Float64::ConstSharedPtr msg);
   void motorFeedbackCallback(std_msgs::msg::Float64::ConstSharedPtr msg);
 
@@ -61,6 +63,7 @@ private:
   // ── Publishers ──
   rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr         angle_pub_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr            detected_pub_;
+  rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr         stm_confidence_pub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr  roi_cloud_pub_;
   rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr marker_pub_;
 
@@ -110,10 +113,14 @@ private:
   std::optional<double> last_command_;
   rclcpp::Time          last_command_time_;
 
-  // ── Motor feedback (future — disabled by default) ──
-  // When enabled: second KF measurement update after the LiDAR update.
+  // ── Adaptive STM feedback (secondary to LiDAR) ──
   bool   use_motor_feedback_;
   double motor_feedback_variance_;
+  double motor_feedback_timeout_s_;
+  double motor_min_confidence_;
+  double motor_lidar_variance_multiplier_;
+  double motor_gate_hard_sigma_;
+  AdaptiveSensorConfidence motor_confidence_;
   std::optional<double> last_motor_feedback_;
   rclcpp::Time          last_motor_feedback_time_;
 
