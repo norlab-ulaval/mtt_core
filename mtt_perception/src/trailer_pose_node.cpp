@@ -563,45 +563,77 @@ TrailerPoseNode::Measurement TrailerPoseNode::estimateMeasurement(
     }
   }
 
-  // Roll is deliberately optional. It requires two sides, good width, and enough points.
-  if (enable_roll_estimation_) {
-    const double q30 = quantile(l_values, 0.30);
-    const double q70 = quantile(l_values, 0.70);
-
-    std::vector<double> h_left;
-    std::vector<double> h_right;
-    std::vector<double> l_left;
-    std::vector<double> l_right;
-    h_left.reserve(points.size());
-    h_right.reserve(points.size());
-    l_left.reserve(points.size());
-    l_right.reserve(points.size());
-
-    for (const auto & p : points) {
-      if (p.l >= q70) {
-        h_left.push_back(p.h);
-        l_left.push_back(p.l);
-      } else if (p.l <= q30) {
-        h_right.push_back(p.h);
-        l_right.push_back(p.l);
-      }
+  // ── Two-sided lateral line fit (left/right edges of the trailer body) ──
+  // Preferred over the whole-cloud 2D PCA above for yaw AND used for roll.
+  // The PCA axis above is UNDIRECTED (an eigenvector has no sign of its own —
+  // atan2(v.y,v.x) after the "v.x()>=0" heuristic only stays correct for SMALL
+  // corrections; near a true correction close to +/-90 deg, noise can flip
+  // which of the two antipodal eigenvectors gets picked, producing a spurious
+  // ~180 deg jump in the published yaw). A per-side regression l = a*s + b has
+  // no such ambiguity: s is anchored to the known prior direction (not a raw
+  // PCA axis), so the fitted slope is a genuine SIGNED yaw correction. Splitting
+  // with a q30/q70 gap (not the median) leaves a buffer around the centerline so
+  // points near either edge don't get assigned to the wrong side by noise.
+  const double q30_l = quantile(l_values, 0.30);
+  const double q70_l = quantile(l_values, 0.70);
+  std::vector<double> s_left, l_left, h_left;
+  std::vector<double> s_right, l_right, h_right;
+  s_left.reserve(points.size());  l_left.reserve(points.size());  h_left.reserve(points.size());
+  s_right.reserve(points.size()); l_right.reserve(points.size()); h_right.reserve(points.size());
+  for (const auto & p : points) {
+    if (p.l >= q70_l) {
+      s_left.push_back(p.s); l_left.push_back(p.l); h_left.push_back(p.h);
+    } else if (p.l <= q30_l) {
+      s_right.push_back(p.s); l_right.push_back(p.l); h_right.push_back(p.h);
     }
+  }
 
-    if (static_cast<int>(h_left.size()) >= min_side_points_ &&
-        static_cast<int>(h_right.size()) >= min_side_points_) {
-      const double h_l = quantile(h_left, 0.50);
-      const double h_r = quantile(h_right, 0.50);
-      const double l_l = quantile(l_left, 0.50);
-      const double l_r = quantile(l_right, 0.50);
-      m.width_obs = std::abs(l_l - l_r);
-      if (m.width_obs > 1e-3) {
-        m.roll_raw = std::atan2(h_l - h_r, m.width_obs);
-        const bool width_ok = std::abs(m.width_obs - trailer_width_) <= width_tolerance_;
-        const bool roll_ok = std::abs(m.roll_raw) <= max_roll_;
-        m.roll_valid = width_ok && roll_ok;
-        if (m.roll_valid) {
-          m.roll_used = clamp(m.roll_raw, -max_roll_, max_roll_);
-        }
+  const bool enough_side_points =
+    static_cast<int>(s_left.size()) >= min_side_points_ &&
+    static_cast<int>(s_right.size()) >= min_side_points_;
+
+  LineFit side_fit_l, side_fit_r;
+  if (enough_side_points) {
+    side_fit_l = robustLineFit(s_left, l_left);
+    side_fit_r = robustLineFit(s_right, l_right);
+  }
+  m.side_lines_valid = enough_side_points && side_fit_l.valid && side_fit_r.valid;
+
+  if (m.side_lines_valid) {
+    // Inverse-RMS-weighted average slope — no pi-ambiguity, unlike PCA.
+    const double w_l = 1.0 / std::max(side_fit_l.rms, 1e-4);
+    const double w_r = 1.0 / std::max(side_fit_r.rms, 1e-4);
+    const double side_yaw_corr = std::atan((w_l * side_fit_l.a + w_r * side_fit_r.a) / (w_l + w_r));
+    // Width at the ROI centre (s=0): perpendicular distance between the two
+    // fitted lines' intercepts — a continuous, line-fit-based width estimate,
+    // more stable than a single left/right median.
+    m.width_obs = std::abs(side_fit_l.b - side_fit_r.b);
+
+    const bool enough_span = m.span_s >= min_span_s_;
+    const bool width_ok = std::abs(m.width_obs - trailer_width_) <= width_tolerance_;
+    const bool yaw_small = std::abs(side_yaw_corr) <= max_yaw_correction_;
+    if (enough_span && width_ok && yaw_small) {
+      // Overrides the PCA-based yaw_corr_raw/yaw_valid/yaw_corr_used above —
+      // this is the preferred, unambiguous estimate.
+      m.yaw_corr_raw = side_yaw_corr;
+      m.yaw_valid = true;
+      m.yaw_corr_used = clamp(side_yaw_corr, -max_yaw_correction_, max_yaw_correction_);
+    }
+  }
+
+  // Roll: reuses the same left/right split and per-side line fits above —
+  // height at the ROI centre (s=0) is each line's intercept in h, not a crude
+  // per-side median, so it stays consistent with whatever yaw was just used.
+  if (enable_roll_estimation_ && enough_side_points) {
+    const LineFit h_fit_l = robustLineFit(s_left, h_left);
+    const LineFit h_fit_r = robustLineFit(s_right, h_right);
+    if (h_fit_l.valid && h_fit_r.valid && m.width_obs > 1e-3) {
+      m.roll_raw = std::atan2(h_fit_l.b - h_fit_r.b, m.width_obs);
+      const bool width_ok = std::abs(m.width_obs - trailer_width_) <= width_tolerance_;
+      const bool roll_ok = std::abs(m.roll_raw) <= max_roll_;
+      m.roll_valid = width_ok && roll_ok;
+      if (m.roll_valid) {
+        m.roll_used = clamp(m.roll_raw, -max_roll_, max_roll_);
       }
     }
   }
@@ -1014,7 +1046,9 @@ void TrailerPoseNode::publishMarkers(
        << " conf=" << meas.confidence
        << " pca=" << meas.pca_ratio
        << " span=" << meas.span_s
-       << " yawCorr=" << yaw_corr_f_ * 180.0 / kPi << "deg"
+       << " yaw[" << (meas.side_lines_valid ? "L" : "P") << "]="
+       << yaw_corr_f_ * 180.0 / kPi << "deg"
+       << " width=" << meas.width_obs
        << " pitch=" << pitch_f_ * 180.0 / kPi << "deg";
     text.text = ss.str();
     ma.markers.push_back(text);
