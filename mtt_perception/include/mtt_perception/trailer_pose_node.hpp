@@ -101,6 +101,10 @@ private:
 
     double yaw_corr_raw{0.0};
     double yaw_corr_used{0.0};
+    // True when the two-sided line fit (left/right edges) succeeded and was
+    // used for yaw_corr_raw instead of the whole-cloud PCA fallback — the
+    // line-fit path has no sign ambiguity, unlike raw 2D PCA.
+    bool side_lines_valid{false};
 
     double pitch_raw{0.0};
     double pitch_used{0.0};
