@@ -83,12 +83,25 @@ TrailerDetectorNode::TrailerDetectorNode(const rclcpp::NodeOptions & options)
   declare_parameter<double>     ("command.gain",           0.5);
   declare_parameter<double>     ("command.timeout_sec",    0.2);
 
-  // ── Motor feedback (future measurement — disabled by default) ──
+  // ── STM feedback (adaptive secondary measurement) ──
   declare_parameter<bool>       ("motor_feedback.enabled",  false);
   // Default matches the hardware encoder published by mtt_articulation_sensor_node.
   // Enable with motor_feedback.enabled: true in the YAML config.
   declare_parameter<std::string>("motor_feedback.topic",    "/hardware/articulation_angle");
   declare_parameter<double>     ("motor_feedback.variance", 0.01);
+  declare_parameter<double>     ("motor_feedback.timeout_sec", 0.25);
+  declare_parameter<double>     ("motor_feedback.min_confidence", 0.20);
+  declare_parameter<double>     ("motor_feedback.lidar_variance_multiplier", 2.0);
+  declare_parameter<double>     ("motor_feedback.gate_hard_sigma", 4.0);
+  declare_parameter<double>     ("motor_feedback.confidence_initial", 0.5);
+  declare_parameter<double>     ("motor_feedback.confidence_recovery_gain", 0.08);
+  declare_parameter<double>     ("motor_feedback.confidence_disagreement_penalty", 0.30);
+  declare_parameter<double>     ("motor_feedback.confidence_stuck_penalty", 0.35);
+  declare_parameter<double>     ("motor_feedback.confidence_stale_decay", 0.75);
+  declare_parameter<double>     ("motor_feedback.good_residual_rad", 0.04);
+  declare_parameter<double>     ("motor_feedback.bad_residual_rad", 0.20);
+  declare_parameter<double>     ("motor_feedback.lidar_motion_threshold_rad", 0.025);
+  declare_parameter<double>     ("motor_feedback.sensor_motion_epsilon_rad", 0.003);
 
   // ── Sliding ROI (future — disabled by default) ──
   declare_parameter<bool>("sliding_roi.enabled", false);
@@ -126,6 +139,31 @@ TrailerDetectorNode::TrailerDetectorNode(const rclcpp::NodeOptions & options)
 
   use_motor_feedback_       = get_parameter("motor_feedback.enabled").as_bool();
   motor_feedback_variance_  = get_parameter("motor_feedback.variance").as_double();
+  motor_feedback_timeout_s_ = get_parameter("motor_feedback.timeout_sec").as_double();
+  motor_min_confidence_ = get_parameter("motor_feedback.min_confidence").as_double();
+  motor_lidar_variance_multiplier_ =
+    get_parameter("motor_feedback.lidar_variance_multiplier").as_double();
+  motor_gate_hard_sigma_ = get_parameter("motor_feedback.gate_hard_sigma").as_double();
+
+  AdaptiveSensorConfidenceParams confidence_params;
+  confidence_params.initial = get_parameter("motor_feedback.confidence_initial").as_double();
+  confidence_params.recovery_gain =
+    get_parameter("motor_feedback.confidence_recovery_gain").as_double();
+  confidence_params.disagreement_penalty =
+    get_parameter("motor_feedback.confidence_disagreement_penalty").as_double();
+  confidence_params.stuck_penalty =
+    get_parameter("motor_feedback.confidence_stuck_penalty").as_double();
+  confidence_params.stale_decay =
+    get_parameter("motor_feedback.confidence_stale_decay").as_double();
+  confidence_params.good_residual_rad =
+    get_parameter("motor_feedback.good_residual_rad").as_double();
+  confidence_params.bad_residual_rad =
+    get_parameter("motor_feedback.bad_residual_rad").as_double();
+  confidence_params.lidar_motion_threshold_rad =
+    get_parameter("motor_feedback.lidar_motion_threshold_rad").as_double();
+  confidence_params.sensor_motion_epsilon_rad =
+    get_parameter("motor_feedback.sensor_motion_epsilon_rad").as_double();
+  motor_confidence_.set_params(confidence_params);
 
   use_sliding_roi_ = get_parameter("sliding_roi.enabled").as_bool();
 
@@ -137,6 +175,8 @@ TrailerDetectorNode::TrailerDetectorNode(const rclcpp::NodeOptions & options)
                      "trailer/articulation_angle",    sq);
   detected_pub_  = create_publisher<std_msgs::msg::Bool>(
                      "trailer/articulation_detected", sq);
+  stm_confidence_pub_ = create_publisher<std_msgs::msg::Float64>(
+                         "trailer/articulation_stm_confidence", sq);
   roi_cloud_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>(
                      "trailer/articulation_roi_cloud", sq);
   marker_pub_    = create_publisher<visualization_msgs::msg::Marker>(
@@ -195,12 +235,14 @@ void TrailerDetectorNode::commandCallback(
   last_command_time_ = now();
 }
 
-// ── Motor feedback callback (future) ──
-// Stores the latest motor-side angle feedback for a second KF measurement update.
-// Not used until motor_feedback.enabled = true.
+// ── STM feedback callback ──
+// Stores the latest motor-side angle for the confidence-gated KF update.
 void TrailerDetectorNode::motorFeedbackCallback(
   std_msgs::msg::Float64::ConstSharedPtr msg)
 {
+  if (!std::isfinite(msg->data)) {
+    return;
+  }
   last_motor_feedback_      = msg->data;
   last_motor_feedback_time_ = now();
 }
@@ -426,25 +468,45 @@ void TrailerDetectorNode::cloudCallback(
       mahal, gate_hard_sigma_);
   }
 
-  // ── 11. Motor feedback measurement update (future, disabled by default) ──
-  // When motor_feedback.enabled=true: second KF update with motor angle.
-  // Less trusted than LiDAR initially; variance tuned via motor_feedback.variance.
+  // ── 11. Adaptive STM measurement update ──
+  // LiDAR remains authoritative. STM is accepted only while fresh, coherent with
+  // LiDAR, and moving when LiDAR moves. Its covariance is always at least a
+  // configurable multiple of the current LiDAR covariance, so it can stabilise
+  // the estimate without taking control of it.
+  bool motor_used = false;
   if (use_motor_feedback_ && last_motor_feedback_.has_value()) {
-    const double fb_age = (stamp_now - last_motor_feedback_time_).seconds();
-    if (fb_age < 0.2) {
+    const double fb_age = (now() - last_motor_feedback_time_).seconds();
+    if (fb_age < motor_feedback_timeout_s_) {
+      const double confidence = motor_confidence_.update(
+        last_motor_feedback_.value(), z_lidar);
       const double innov_m = normalizeAngle(last_motor_feedback_.value() - kf_x_(0));
-      const double S_m     = kf_P_(0, 0) + motor_feedback_variance_;
-      const Eigen::Vector2d K_m = kf_P_.col(0) / S_m;
+      const double R_m = std::max(
+        motor_feedback_variance_ / std::max(confidence, 0.05),
+        R_lidar * motor_lidar_variance_multiplier_);
+      const double S_m = kf_P_(0, 0) + R_m;
+      const double mahal_m = std::abs(innov_m) / std::sqrt(std::max(S_m, 1e-9));
 
-      kf_x_    += K_m * innov_m;
-      kf_x_(0)  = normalizeAngle(kf_x_(0));
+      if (confidence >= motor_min_confidence_ && mahal_m < motor_gate_hard_sigma_) {
+        const Eigen::Vector2d K_m = kf_P_.col(0) / S_m;
+        kf_x_    += K_m * innov_m;
+        kf_x_(0)  = normalizeAngle(kf_x_(0));
 
-      Eigen::Matrix2d I_KH_m = Eigen::Matrix2d::Identity();
-      I_KH_m(0, 0) -= K_m(0);
-      I_KH_m(1, 0) -= K_m(1);
-      kf_P_ = I_KH_m * kf_P_;
+        Eigen::Matrix2d I_KH_m = Eigen::Matrix2d::Identity();
+        I_KH_m(0, 0) -= K_m(0);
+        I_KH_m(1, 0) -= K_m(1);
+        kf_P_ = I_KH_m * kf_P_;
+        motor_used = true;
+      }
+    } else {
+      motor_confidence_.mark_stale();
     }
+  } else if (use_motor_feedback_) {
+    motor_confidence_.mark_stale();
   }
+
+  std_msgs::msg::Float64 confidence_msg;
+  confidence_msg.data = motor_confidence_.confidence();
+  stm_confidence_pub_->publish(confidence_msg);
 
   // ── 12. Publish angle + marker (LiDAR-confirmed) ──
   const double angle = kf_x_(0);
@@ -453,11 +515,12 @@ void TrailerDetectorNode::cloudCallback(
   // ── 13. Throttled debug log ──
   RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000,
     "articulation: %.4f rad (%.1f°)  ω=%.3f rad/s  "
-    "n=%zu  pca_ratio=%.1f  R=%.4f  innov=%.4f  mahal=%.1f",
+    "n=%zu  pca_ratio=%.1f  R=%.4f  innov=%.4f  mahal=%.1f  STM=%s conf=%.2f",
     angle, angle * 180.0 / M_PI,
     kf_x_(1),
     pca.n_points, pca.ratio,
-    R_lidar, innov, mahal);
+    R_lidar, innov, mahal,
+    motor_used ? "used" : "ignored", motor_confidence_.confidence());
 }
 
 // ── 2-D PCA ──
