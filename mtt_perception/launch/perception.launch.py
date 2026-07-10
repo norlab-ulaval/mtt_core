@@ -104,10 +104,17 @@ def generate_launch_description():
             'use_sim_time', default_value='false',
             description='Use simulation or bag replay clock'),
         DeclareLaunchArgument(
-            'enable_new_trailer_estimator', default_value='true',
+            'enable_new_trailer_estimator', default_value='false',
             description=(
-                'true  → launch mtt_trailer_estimator_node (EKF V1.0, unified).\n'
-                'false → launch legacy trailer_pose_node (V4.0) for A/B comparison.\n'
+                'true  → launch mtt_trailer_estimator_node (EKF V1.0). REGRESSED: two '
+                'competing yaw models (an ungated ~100Hz kinematic chain fights the '
+                'proven ~10Hz PCA/pi-theta measurement), decoupled markers, cold-start '
+                'depends on map TF. Kept only for A/B comparison until removed (see '
+                'mtt_localization factor_graph_node, which is the intended replacement: '
+                'it already consumes trailer_pose_node\'s /trailer/pose via '
+                'TrailerPoseFactorFull).\n'
+                'false → launch legacy trailer_pose_node (V4.0), the proven/stable '
+                'reference. Default.\n'
                 'trailer_detector_node is always launched regardless of this flag.'
             )),
         DeclareLaunchArgument(
