@@ -27,7 +27,7 @@ find_package(pcl_conversions REQUIRED)
 
 include_directories(include ${PCL_INCLUDE_DIRS})
 
-# ── Trailer Detector Node (V1.5 — UNCHANGED) ────────────────────────────────
+# ── Trailer Detector Node (V1.5 — adaptive LiDAR/STM articulation fusion) ───
 add_executable(trailer_detector_node
   src/trailer_detector_node.cpp
 )
@@ -117,6 +117,11 @@ if(BUILD_TESTING)
   )
   target_include_directories(mtt_trailer_estimator_test PUBLIC include)
   target_link_libraries(mtt_trailer_estimator_test Eigen3::Eigen)
+
+  ament_add_gtest(adaptive_sensor_confidence_test
+    test/adaptive_sensor_confidence_test.cpp
+  )
+  target_include_directories(adaptive_sensor_confidence_test PUBLIC include)
 endif()
 
 ament_package()
