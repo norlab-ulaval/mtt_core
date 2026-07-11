@@ -36,6 +36,7 @@ private:
     void on_com_park(const std_msgs::msg::Empty::SharedPtr msg);
     void on_com_spring(const std_msgs::msg::Bool::SharedPtr msg);
     void on_deadman(const std_msgs::msg::Bool::SharedPtr msg);
+    void on_direction_sign(const std_msgs::msg::Float64::SharedPtr msg);
     void on_joint_state(const sensor_msgs::msg::JointState::SharedPtr msg);
 
     // ── Control loop ──
@@ -58,6 +59,8 @@ private:
     double run_slew_     {20000.0};  // counts/s — max speed in RUN
     double rearm_slew_   { 4000.0};  // counts/s — slide-in / park speed
     double steer_deadband_ {0.05};   // normalized — zero zone around stick centre
+    double direction_sign_ {1.0};    // +1 normal, -1 inverted motor direction
+    bool   park_resume_on_steer_{false};
     // Pre-configured home (NaN = not set → use calibration file or manual SET_HOME).
     double home_position_counts_ {std::numeric_limits<double>::quiet_NaN()};
 
@@ -95,6 +98,7 @@ private:
     rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr     com_park_sub_;
     rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr      spring_sub_;
     rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr      deadman_sub_;
+    rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr   direction_sign_sub_;
     rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr js_sub_;
 
     rclcpp::TimerBase::SharedPtr loop_timer_;
