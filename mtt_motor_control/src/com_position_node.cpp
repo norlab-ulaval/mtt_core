@@ -25,6 +25,8 @@ ComPositionNode::ComPositionNode(const rclcpp::NodeOptions & options)
     dt_ = 1.0 / rate;
 
     steer_deadband_        = declare_parameter("steer_deadband", 0.05);
+    direction_sign_        = declare_parameter("direction_sign", 1.0) < 0.0 ? -1.0 : 1.0;
+    park_resume_on_steer_  = declare_parameter("park_resume_on_steer", false);
 
     home_position_counts_ = declare_parameter(
         "home_position_counts", std::numeric_limits<double>::quiet_NaN());
@@ -62,6 +64,10 @@ ComPositionNode::ComPositionNode(const rclcpp::NodeOptions & options)
         "mtt_control/teleop_deadman", 10,
         [this](const std_msgs::msg::Bool::SharedPtr m) { on_deadman(m); });
 
+    direction_sign_sub_ = create_subscription<std_msgs::msg::Float64>(
+        "mtt_control/com_direction_sign", 10,
+        [this](const std_msgs::msg::Float64::SharedPtr m) { on_direction_sign(m); });
+
     js_sub_ = create_subscription<sensor_msgs::msg::JointState>(
         "/motor/joint_state", 10,
         [this](const sensor_msgs::msg::JointState::SharedPtr m) { on_joint_state(m); });
@@ -74,8 +80,10 @@ ComPositionNode::ComPositionNode(const rclcpp::NodeOptions & options)
     RCLCPP_INFO(get_logger(),
                 "ComPositionNode ready — amplitude=%.0f counts, "
                 "setup_slew=%.0f, run_slew=%.0f, rearm_slew=%.0f counts/s, "
+                "direction_sign=%.0f, park_resume_on_steer=%s, "
                 "steer_deadband=%.2f",
                 amplitude_, setup_slew_, run_slew_, rearm_slew_,
+                direction_sign_, park_resume_on_steer_ ? "true" : "false",
                 steer_deadband_);
     if (!std::isnan(home_position_counts_)) {
         RCLCPP_INFO(get_logger(), "  home_position_counts=%.0f (from YAML)",
@@ -156,7 +164,7 @@ void ComPositionNode::on_com_mode(const std_msgs::msg::Bool::SharedPtr msg)
 
 void ComPositionNode::on_com_steer(const std_msgs::msg::Float64::SharedPtr msg)
 {
-    steer_ = std::clamp(msg->data, -1.0, 1.0);
+    steer_ = direction_sign_ * std::clamp(msg->data, -1.0, 1.0);
     if (std::abs(steer_) < steer_deadband_) {
         steer_ = 0.0;
     }
@@ -222,6 +230,17 @@ void ComPositionNode::on_deadman(const std_msgs::msg::Bool::SharedPtr msg)
     deadman_ = msg->data;
 }
 
+void ComPositionNode::on_direction_sign(const std_msgs::msg::Float64::SharedPtr msg)
+{
+    const double new_sign = msg->data < 0.0 ? -1.0 : 1.0;
+    if (new_sign == direction_sign_) {
+        return;
+    }
+    direction_sign_ = new_sign;
+    steer_ = 0.0;
+    RCLCPP_INFO(get_logger(), "COM direction_sign set to %.0f; steer reset to zero", direction_sign_);
+}
+
 void ComPositionNode::on_joint_state(const sensor_msgs::msg::JointState::SharedPtr msg)
 {
     if (msg->position.empty()) { return; }
@@ -266,6 +285,11 @@ void ComPositionNode::loop()
                         "COM PARK complete — motor at home (%.0f counts). "
                         "Calibration saved. Safe to power off.",
                         h);
+        }
+
+        if (park_resume_on_steer_ && park_arrived_ && com_mode_ && deadman_ &&
+            std::abs(steer_) >= steer_deadband_) {
+            enter_setup();
         }
 
         auto out = std_msgs::msg::Float64();
@@ -408,6 +432,8 @@ ComPositionNode::on_param_change(const std::vector<rclcpp::Parameter> & params)
         else if (p.get_name() == "run_slew")                 run_slew_               = p.as_double();
         else if (p.get_name() == "rearm_slew")               rearm_slew_             = p.as_double();
         else if (p.get_name() == "steer_deadband")             steer_deadband_          = p.as_double();
+        else if (p.get_name() == "direction_sign")             direction_sign_          = p.as_double() < 0.0 ? -1.0 : 1.0;
+        else if (p.get_name() == "park_resume_on_steer")       park_resume_on_steer_    = p.as_bool();
         else if (p.get_name() == "home_position_counts")       home_position_counts_    = p.as_double();
         else if (p.get_name() == "home_consistency_threshold") consistency_threshold_   = p.as_double();
     }
