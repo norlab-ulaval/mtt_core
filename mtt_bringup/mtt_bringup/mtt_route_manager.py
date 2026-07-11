@@ -5,12 +5,13 @@ import math
 import os
 import threading
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Tuple
 
 import rclpy
 from geometry_msgs.msg import Point, PoseStamped
-from mtt_interfaces.srv import RouteCommand, RouteList, RouteStatus
+from mtt_interfaces.srv import RouteCommand, RouteList, RouteStatus, RelocalizeRoute
 from mtt_msgs.msg import MttHealthState
 from nav_msgs.msg import Odometry, Path as NavPath
 from rclpy.callback_groups import ReentrantCallbackGroup
@@ -22,11 +23,21 @@ from std_srvs.srv import Trigger
 from visualization_msgs.msg import Marker
 
 try:
+    from wiln.msg import WilnState as WilnStateMsg
+except ImportError:  # pragma: no cover — absent on non-ROS test hosts
+    WilnStateMsg = None
+
+try:
     from sensor_msgs.msg import PointCloud2
     from sensor_msgs_py import point_cloud2
 except ImportError:  # pragma: no cover - only absent on non-ROS test hosts
     PointCloud2 = None
     point_cloud2 = None
+
+try:
+    from norlab_controllers_msgs.msg import PathSequence as PathSequenceMsg
+except ImportError:  # pragma: no cover - absent on non-ROS test hosts
+    PathSequenceMsg = None
 
 
 @dataclass
@@ -90,6 +101,8 @@ def read_ltr(path: Path) -> Tuple[str, List[RoutePose]]:
                 continue
             if line == "changing direction":
                 continue
+            if line.startswith("direction :") or line.startswith("direction:"):
+                continue
 
             fields = line.split(",")
             if len(fields) != 7:
@@ -136,7 +149,10 @@ def grade_route(stats: dict, max_step_warn_m: float, max_yaw_step_warn_rad: floa
 
     if not warnings:
         return "good", warnings
-    if warnings == ["large_xy_jump"] or warnings == ["large_yaw_jump"]:
+
+    # large_z_span is the only hard reject (terrain geometry unsafe to replay).
+    # too_few_poses, route_too_short, and single jump warnings are navigable.
+    if not any(w == "large_z_span" for w in warnings):
         return "usable_with_caution", warnings
     return "reject_for_replay", warnings
 
@@ -154,6 +170,7 @@ class MttRouteManager(Node):
         self.declare_parameter("deadman_topic", "mtt_control/teleop_deadman")
         self.declare_parameter("obstacle_cloud_topic", "/wiln/obstacles")
         self.declare_parameter("wiln_command_topic", "/wiln/command")
+        self.declare_parameter("route_state_topic", "/wiln/route/state")
         self.declare_parameter("mark_ready_service", "/mtt_repeat/mark_ready")
         self.declare_parameter("play_line_service", "/mtt_repeat/play_line")
         self.declare_parameter("cancel_service", "/mtt_repeat/cancel")
@@ -161,10 +178,11 @@ class MttRouteManager(Node):
         self.declare_parameter("route_file_name", "route.ltr")
         self.declare_parameter("icp_timeout_s", 0.75)
         self.declare_parameter("health_timeout_s", 1.0)
-        self.declare_parameter("max_start_distance_m", 2.0)
+        self.declare_parameter("max_start_distance_m", 3.0)
         self.declare_parameter("max_lateral_error_m", 1.25)
         self.declare_parameter("max_heading_error_rad", 1.2)
         self.declare_parameter("route_error_grace_s", 1.0)
+        self.declare_parameter("mode_check_grace_s", 3.0)  # grace after replay start for mode latency
         self.declare_parameter("max_step_warn_m", 0.75)
         self.declare_parameter("max_yaw_step_warn_rad", 0.50)
         self.declare_parameter("min_obstacle_clearance_m", 0.75)
@@ -177,6 +195,17 @@ class MttRouteManager(Node):
         self.declare_parameter("front_obstacle_status_topic", "/mtt_obstacle/hazard_status")
         self.declare_parameter("front_obstacle_timeout_s", 1.0)
         self.declare_parameter("monitor_rate_hz", 10.0)
+        self.declare_parameter("auto_save_on_teach_stop", True)
+        self.declare_parameter("teach_state_topic", "/wiln/teach/state")
+        self.declare_parameter("auto_relocalize_on_load", True)
+        self.declare_parameter("relocalize_service", "/mtt_map_relocalizer/relocalize")
+        self.declare_parameter("relocalize_timeout_s", 60.0)  # ICP can be slow
+        self.declare_parameter("wiln_trajectory_topic", "/wiln/trajectory")
+        self.declare_parameter("icp_convergence_grace_s", 8.0)  # after load: relax distance check while ICP converges
+        self.declare_parameter("icp_settle_timeout_s", 2.0)   # max wait for ICP to re-settle before play (Phase 1b)
+        self.declare_parameter("map_load_timeout_s", 12.0)
+        self.declare_parameter("play_service_timeout_s", 6.0)
+        self.declare_parameter("debug", False)                  # enable verbose [MONITOR] logs
 
         routes_dir = str(self.get_parameter("routes_dir").value)
         self._routes_dir = Path(routes_dir)
@@ -191,6 +220,7 @@ class MttRouteManager(Node):
         self._max_lateral_error_m = float(self.get_parameter("max_lateral_error_m").value)
         self._max_heading_error_rad = float(self.get_parameter("max_heading_error_rad").value)
         self._route_error_grace_s = float(self.get_parameter("route_error_grace_s").value)
+        self._mode_check_grace_s = float(self.get_parameter("mode_check_grace_s").value)
         self._max_step_warn_m = float(self.get_parameter("max_step_warn_m").value)
         self._max_yaw_step_warn_rad = float(self.get_parameter("max_yaw_step_warn_rad").value)
         self._min_obstacle_clearance_m = float(self.get_parameter("min_obstacle_clearance_m").value)
@@ -202,13 +232,33 @@ class MttRouteManager(Node):
         self._cancel_on_obstacle_clearance = bool(self.get_parameter("cancel_on_obstacle_clearance").value)
         self._front_obstacle_timeout_s = float(self.get_parameter("front_obstacle_timeout_s").value)
         monitor_rate_hz = float(self.get_parameter("monitor_rate_hz").value)
+        self._auto_save_on_teach_stop = bool(self.get_parameter("auto_save_on_teach_stop").value)
+        self._teach_state_topic = str(self.get_parameter("teach_state_topic").value)
+        self._auto_relocalize_on_load = bool(self.get_parameter("auto_relocalize_on_load").value)
+        self._relocalize_timeout_s = float(self.get_parameter("relocalize_timeout_s").value)
+        self._wiln_trajectory_topic = str(self.get_parameter("wiln_trajectory_topic").value)
+        self._icp_convergence_grace_s = float(self.get_parameter("icp_convergence_grace_s").value)
+        self._icp_settle_timeout_s = float(self.get_parameter("icp_settle_timeout_s").value)
+        self._map_load_timeout_s = float(self.get_parameter("map_load_timeout_s").value)
+        self._play_service_timeout_s = float(
+            self.get_parameter("play_service_timeout_s").value
+        )
+        self._debug = bool(self.get_parameter("debug").value)
 
         self._group = ReentrantCallbackGroup()
         self._lock = threading.Lock()
         self._active_route: Optional[RouteData] = None
         self._route_loaded = False
         self._replaying = False
+        self._teach_was_recording = False  # for auto-save trigger
         self._bad_route_error_since: Optional[float] = None
+        self._bad_mode_since: Optional[float] = None
+        self._replay_started_at: Optional[float] = None  # wall time when replay started
+        self._last_load_time: Optional[float] = None  # set on load; enables ICP convergence grace period
+        self._pending_trajectory: Optional[Tuple[List[RoutePose], str]] = None  # (poses, frame_id) from /wiln/trajectory
+        self._route_load_event = threading.Event()
+        self._route_load_in_progress = False
+        self._route_load_detail = ""
         self._icp: Optional[Odometry] = None
         self._icp_received_time: Optional[float] = None
         self._health: Optional[MttHealthState] = None
@@ -237,6 +287,11 @@ class MttRouteManager(Node):
         )
         self._mark_ready_client = self.create_client(
             Trigger, str(self.get_parameter("mark_ready_service").value), callback_group=self._group
+        )
+        self._relocalize_client = self.create_client(
+            RelocalizeRoute,
+            str(self.get_parameter("relocalize_service").value),
+            callback_group=self._group,
         )
         self._play_line_client = self.create_client(
             Trigger, str(self.get_parameter("play_line_service").value), callback_group=self._group
@@ -317,6 +372,57 @@ class MttRouteManager(Node):
         self.create_service(Trigger, "/mtt_route/stop", self._handle_stop, callback_group=self._group)
         self.create_service(RouteStatus, "/mtt_route/status", self._handle_status, callback_group=self._group)
 
+        # Auto-save: subscribe to teach state to detect teach completion.
+        # Uses transient_local so we get the current state even on late subscribe.
+        if self._auto_save_on_teach_stop and WilnStateMsg is not None:
+            teach_qos = QoSProfile(
+                history=HistoryPolicy.KEEP_LAST,
+                depth=1,
+                durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            )
+            self.create_subscription(
+                WilnStateMsg,
+                self._teach_state_topic,
+                self._on_teach_state,
+                teach_qos,
+            )
+            self.get_logger().info(
+                f"Auto-save enabled: listening on {self._teach_state_topic}"
+            )
+
+        if WilnStateMsg is not None:
+            route_state_qos = QoSProfile(
+                history=HistoryPolicy.KEEP_LAST,
+                depth=1,
+                durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            )
+            self.create_subscription(
+                WilnStateMsg,
+                str(self.get_parameter("route_state_topic").value),
+                self._on_route_state,
+                route_state_qos,
+            )
+
+        # Track /wiln/trajectory to keep _active_route.poses in sync with the
+        # trajectory actually used by WILN (which may be corrected by the relocalizer
+        # after a load, or loaded fresh from .ltr by wiln_route_node).
+        # Using transient_local so we get the last published trajectory on subscribe.
+        if PathSequenceMsg is not None:
+            traj_qos = QoSProfile(
+                history=HistoryPolicy.KEEP_LAST,
+                depth=1,
+                durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            )
+            self.create_subscription(
+                PathSequenceMsg,
+                self._wiln_trajectory_topic,
+                self._on_trajectory,
+                traj_qos,
+            )
+            self.get_logger().info(
+                f"Tracking trajectory from {self._wiln_trajectory_topic}"
+            )
+
         self.create_timer(1.0 / max(monitor_rate_hz, 1.0), self._monitor)
         self.get_logger().info(f"MTT route manager ready; routes_dir={self._routes_dir}")
 
@@ -379,6 +485,60 @@ class MttRouteManager(Node):
         with self._lock:
             self._front_obstacle_status = str(msg.data)
             self._front_obstacle_received_time = self._now_seconds()
+
+    def _on_route_state(self, msg) -> None:
+        """Release a pending route load only after the mapper load callback finished."""
+        if WilnStateMsg is None or msg.state != WilnStateMsg.IDLE:
+            return
+        detail = str(msg.detail).strip()
+        if detail != "loaded" and not detail.startswith("load failed"):
+            return
+        with self._lock:
+            if not self._route_load_in_progress:
+                return
+            self._route_load_detail = detail
+        self._route_load_event.set()
+
+    def _on_trajectory(self, msg) -> None:
+        """Sync _active_route.poses from /wiln/trajectory.
+
+        wiln_route_node publishes the loaded trajectory here; the mtt_map_relocalizer
+        republishes a corrected version after SE(3) alignment.  Keeping poses in sync
+        means the pre-replay distance check always compares against the same trajectory
+        WILN will actually follow — no frame mismatch between the two.
+
+        Sequencing: wiln_route_node now publishes the trajectory only after LoadMap
+        returns. This callback can still run before the route-manager service thread
+        marks the route active, so keep the pending hand-off.
+        """
+        poses: List[RoutePose] = []
+        for path in msg.paths:
+            for stamped_pose in path.poses:
+                p = stamped_pose.pose.position
+                o = stamped_pose.pose.orientation
+                yaw = yaw_from_quaternion(o.x, o.y, o.z, o.w)
+                poses.append(RoutePose(x=p.x, y=p.y, z=p.z, yaw=yaw))
+        if not poses:
+            return
+        frame = msg.header.frame_id or ""
+        updated = False
+        old_count = 0
+        with self._lock:
+            # Always store as pending so _handle_load can apply it after the route is armed.
+            self._pending_trajectory = (poses, frame)
+            if self._route_loaded and self._active_route is not None:
+                # Route already active: apply immediately (relocalizer correction case).
+                old_count = len(self._active_route.poses)
+                self._active_route.poses = poses
+                if frame:
+                    self._active_route.frame_id = frame
+                updated = True
+        if updated:
+            self.get_logger().info(
+                f"Trajectory synced from {self._wiln_trajectory_topic}: "
+                f"{len(poses)} poses (was {old_count}); "
+                f"start=({poses[0].x:.2f},{poses[0].y:.2f}) frame={frame}"
+            )
 
     def _route_path(self, route_name: str) -> Path:
         safe_name = route_name.strip().strip("/")
@@ -476,6 +636,7 @@ class MttRouteManager(Node):
             mode = self._selected_mode
             source = self._selected_source
             auto_enabled = self._auto_enabled
+            replaying = self._replaying
         control_hint = f"mode={mode} auto_enabled={auto_enabled} source={source}"
         if route is None:
             return False, f"no route loaded; run route_load or teach/save first; {control_hint}", float("nan"), float("nan"), float("nan"), None
@@ -500,12 +661,32 @@ class MttRouteManager(Node):
         robot = self._robot_pose(icp)
         closest, distance, heading = self._closest_pose(route, robot)
         clearance = self._obstacle_clearance(route, robot)
-        start = route.poses[0]
-        start_distance = math.hypot(robot.x - start.x, robot.y - start.y)
-        if start_distance > self._max_start_distance_m:
-            return False, f"too far from route start: {start_distance:.2f} m > {self._max_start_distance_m:.2f} m; drive closer to start; {control_hint}", distance, heading, clearance, closest
-        if distance > self._max_lateral_error_m:
-            return False, f"too far from route: {distance:.2f} m > {self._max_lateral_error_m:.2f} m; {control_hint}", distance, heading, clearance, closest
+
+        if replaying:
+            # During replay: enforce lateral tracking error (strict).
+            # The monitor calls _evaluate() at 10 Hz; route_error_grace_s provides
+            # a 1s buffer before cancel so transient tracking spikes don't abort.
+            if distance > self._max_lateral_error_m:
+                return False, (
+                    f"lateral drift: {distance:.2f} m > {self._max_lateral_error_m:.2f} m; {control_hint}"
+                ), distance, heading, clearance, closest
+        else:
+            # Pre-replay: robot must be on or near the route anywhere (start, middle, end).
+            # WILN replay auto-selects direction based on which endpoint is closer.
+            start = route.poses[0]
+            end = route.poses[-1]
+            start_d = math.hypot(robot.x - start.x, robot.y - start.y)
+            end_d = math.hypot(robot.x - end.x, robot.y - end.y)
+            if distance > self._max_start_distance_m:
+                return False, (
+                    f"not on route after map/ICP settle: nearest={distance:.2f} m "
+                    f"(to_start={start_d:.2f} m, to_end={end_d:.2f} m) "
+                    f"> {self._max_start_distance_m:.2f} m; "
+                    f"robot=({robot.x:.2f},{robot.y:.2f}) route_start=({start.x:.2f},{start.y:.2f}); "
+                    f"position robot on route or check ICP localization; "
+                    f"{control_hint}"
+                ), distance, heading, clearance, closest
+
         if heading > self._max_heading_error_rad:
             return False, f"heading error: {heading:.2f} rad > {self._max_heading_error_rad:.2f} rad; align robot with route; {control_hint}", distance, heading, clearance, closest
         if self._require_obstacle_clearance and not math.isfinite(clearance):
@@ -544,13 +725,104 @@ class MttRouteManager(Node):
         return True, f"published {command}"
 
     def _call_load(self, route: RouteData) -> Tuple[bool, str]:
+        self._route_load_event.clear()
+        with self._lock:
+            self._route_load_in_progress = True
+            self._route_load_detail = ""
+            # A latched trajectory from the previous route must never satisfy
+            # the hand-off for this load.
+            self._pending_trajectory = None
+
         ok, detail = self._publish_wiln_command(f"load:{route.path}")
         if not ok:
+            with self._lock:
+                self._route_load_in_progress = False
             return False, detail
+
+        if not self._route_load_event.wait(self._map_load_timeout_s):
+            with self._lock:
+                self._route_load_in_progress = False
+            return False, (
+                f"route/map load did not complete within {self._map_load_timeout_s:.1f}s; "
+                "replay was not armed"
+            )
+
+        with self._lock:
+            load_detail = self._route_load_detail
+            self._route_load_in_progress = False
+            self._last_load_time = self._now_seconds()
+        if load_detail != "loaded":
+            return False, load_detail or "route/map load failed"
+
         ok, detail = self._call_trigger(self._mark_ready_client)
         if not ok:
-            return False, f"load command published, but mark_ready failed: {detail}"
-        return True, "route loaded and armed"
+            return False, f"route/map loaded, but mark_ready failed: {detail}"
+        return True, "route and map loaded; trajectory armed"
+
+    def _call_relocalize(self, route: RouteData) -> None:
+        """
+        Call the mtt_map_relocalizer service to align the old teach map onto the
+        current live map and republish the trajectory in the live map frame.
+
+        This is called in a separate thread after a successful load so it does not
+        block the load response.  Failures are logged but do not fail the load —
+        the replay still works with the original (unaligned) trajectory.
+        """
+        if not self._auto_relocalize_on_load:
+            return
+
+        map_file = str(route.path) + ".vtk"
+        if not Path(map_file).exists():
+            self.get_logger().warn(
+                f"Relocalize: no map file {map_file} — skipping. "
+                "The route was taught without a saved map or the .vtk is missing."
+            )
+            return
+
+        if not self._relocalize_client.wait_for_service(timeout_sec=5.0):
+            self.get_logger().warn(
+                "Relocalize: mtt_map_relocalizer service not available — "
+                "is the relocalizer node running? Skipping relocalization."
+            )
+            return
+
+        # Give wiln_route_node time to process the load command and publish the
+        # trajectory on /wiln/trajectory before the relocalizer reads it.
+        import time
+        time.sleep(0.5)
+
+        req = RelocalizeRoute.Request()
+        req.map_file   = map_file
+        req.route_name = route.name
+
+        future = self._relocalize_client.call_async(req)
+        event = threading.Event()
+        future.add_done_callback(lambda _: event.set())
+        if not event.wait(self._relocalize_timeout_s):
+            self.get_logger().error(
+                f"Relocalize: service timed out after {self._relocalize_timeout_s:.0f}s"
+            )
+            return
+
+        try:
+            result = future.result()
+        except Exception as exc:
+            self.get_logger().error(f"Relocalize: service call failed: {exc}")
+            return
+
+        if result is None:
+            self.get_logger().error("Relocalize: empty response")
+            return
+
+        if result.success:
+            self.get_logger().info(
+                f"Relocalize OK: {result.message}"
+            )
+        else:
+            self.get_logger().warn(
+                f"Relocalize FAILED (overlap={result.overlap_ratio:.3f}): {result.message}. "
+                "Replay will use the original trajectory (pre-alignment)."
+            )
 
     def _pose_msg(self, route: RouteData, pose: RoutePose) -> PoseStamped:
         msg = PoseStamped()
@@ -713,13 +985,36 @@ class MttRouteManager(Node):
             response.success = False
             response.message = f"load refused: route grade={route.grade}, warnings={route.warnings}"
             return response
+        # Clear any pending trajectory from a previous load so we don't accidentally
+        # apply stale data if the new route's trajectory arrives before mark_ready.
+        with self._lock:
+            self._pending_trajectory = None
+
         ok, detail = self._call_load(route)
         if ok:
             with self._lock:
                 self._active_route = route
                 self._route_loaded = True
                 self._replaying = False
+                # Apply the trajectory that wiln_route_node published during load
+                # (it arrives before mark_ready, so _on_trajectory couldn't apply it yet).
+                pending = self._pending_trajectory
+                if pending is not None:
+                    pending_poses, pending_frame = pending
+                    if pending_poses:
+                        self._active_route.poses = pending_poses
+                        if pending_frame:
+                            self._active_route.frame_id = pending_frame
+                    self._pending_trajectory = None
             self._publish_route(route)
+            # Kick off map-to-map SE(3) relocalization in a background thread so
+            # the load response is returned immediately.  The corrected trajectory
+            # is republished by the relocalizer node on /wiln/trajectory when done.
+            if self._auto_relocalize_on_load:
+                reloc_thread = threading.Thread(
+                    target=self._call_relocalize, args=(route,), daemon=True
+                )
+                reloc_thread.start()
         response.success = ok
         response.message = detail
         return response
@@ -737,25 +1032,82 @@ class MttRouteManager(Node):
                 response.message = f"replay refused: {exc}"
                 return response
 
-        allowed, reason, distance, heading, clearance, closest = self._evaluate(route)
-        self._set_status(allowed, reason, distance, heading, clearance, closest)
-        if not allowed:
-            response.success = False
-            response.message = reason
-            return response
+        load_completed_at: Optional[float] = None
         if not loaded:
             ok, detail = self._call_load(route)
             if not ok:
                 response.success = False
                 response.message = detail
                 return response
-        ok, detail = self._call_trigger(self._play_line_client)
+
+            # Apply exactly the trajectory published after the mapper load.
+            with self._lock:
+                pending = self._pending_trajectory
+                if pending is not None:
+                    pending_poses, pending_frame = pending
+                    if pending_poses:
+                        route.poses = pending_poses
+                    if pending_frame:
+                        route.frame_id = pending_frame
+                    self._pending_trajectory = None
+                self._active_route = route
+                self._route_loaded = True
+                self._replaying = False
+                load_completed_at = self._last_load_time
+
+        # LoadMap changes the map frame. A merely "fresh" sample may still be
+        # the last measurement from before that change, so require an accepted
+        # ICP callback received after the map service completed.
+        import time as _time
+        settle_start = self._now_seconds()
+        self.get_logger().info(
+            f"[REPLAY] Waiting up to {self._icp_settle_timeout_s:.1f}s for post-load ICP settle..."
+        )
+        while True:
+            icp_ok, _ = self._icp_fresh()
+            with self._lock:
+                icp_received_time = self._icp_received_time
+            post_load = (
+                load_completed_at is None
+                or (icp_received_time is not None and icp_received_time > load_completed_at)
+            )
+            if icp_ok and post_load:
+                break
+            if self._now_seconds() - settle_start >= self._icp_settle_timeout_s:
+                response.success = False
+                response.message = (
+                    f"no fresh post-load ICP after {self._icp_settle_timeout_s:.1f}s; "
+                    "replay was not started"
+                )
+                return response
+            _time.sleep(0.1)
+
+        elapsed = self._now_seconds() - settle_start
+        self.get_logger().info(f"[REPLAY] Post-load ICP settled after {elapsed:.2f}s.")
+
+        # Evaluate only after map load + ICP settle. The old ordering evaluated
+        # in the previous map frame and then optimistically allowed a bad start.
+        allowed, reason, distance, heading, clearance, closest = self._evaluate(route)
+        self._set_status(allowed, reason, distance, heading, clearance, closest)
+        if not allowed:
+            response.success = False
+            response.message = reason
+            return response
+
+        # play_line now waits for both replay-node and follower acceptance. Its
+        # service timeout must exceed the supervisor's distributed ack timeout;
+        # the previous fixed 2 s timeout could report failure while arming later.
+        ok, detail = self._call_trigger(
+            self._play_line_client, timeout_s=self._play_service_timeout_s
+        )
         if ok:
             with self._lock:
                 self._active_route = route
                 self._route_loaded = True
                 self._replaying = True
                 self._bad_route_error_since = None
+                self._bad_mode_since = None
+                self._replay_started_at = self._now_seconds()
             response.success = True
             response.message = "replay started"
         else:
@@ -787,35 +1139,75 @@ class MttRouteManager(Node):
             response.message = self._last_status
         return response
 
+    def _on_teach_state(self, msg) -> None:
+        """Track teach state transitions to trigger auto-save."""
+        if WilnStateMsg is None:
+            return
+        with self._lock:
+            was_recording = self._teach_was_recording
+            if msg.state == WilnStateMsg.RECORDING:
+                self._teach_was_recording = True
+                return
+            if msg.state == WilnStateMsg.IDLE and was_recording:
+                self._teach_was_recording = False
+                # Defer save to avoid holding the lock during I/O
+                save_needed = True
+            else:
+                save_needed = False
+
+        if save_needed and msg.trajectory_poses > 0:
+            self._auto_save_route(msg.trajectory_poses, msg.trajectory_length_m)
+
+    def _auto_save_route(self, n_poses: int, length_m: float) -> None:
+        """Save the just-recorded trajectory under a timestamped route name."""
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H%M")
+        route_name = f"route_{timestamp}"
+        route_dir = self._routes_dir / route_name
+        ltr_path = route_dir / self._route_file_name
+
+        try:
+            route_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            self.get_logger().error(f"Auto-save: cannot create {route_dir}: {exc}")
+            return
+
+        # Publish save command to wiln_route_node (which writes .ltr + async .vtk)
+        save_cmd = f"save:{ltr_path}"
+        self._publish_wiln_command(save_cmd)
+        self.get_logger().info(
+            f"Auto-save triggered: {route_name} ({n_poses} poses, {length_m:.1f} m) → {ltr_path}"
+        )
+
+        # Update 'latest' symlink for convenience (list already ignores it)
+        latest_link = self._routes_dir / "latest"
+        try:
+            if latest_link.is_symlink() or latest_link.exists():
+                latest_link.unlink()
+            latest_link.symlink_to(route_dir)
+        except OSError as exc:
+            self.get_logger().warn(f"Auto-save: could not update 'latest' symlink: {exc}")
+
     def _monitor(self) -> None:
         with self._lock:
             route = self._active_route
             replaying = self._replaying
             selected_mode = self._selected_mode
+            replay_started_at = self._replay_started_at
         allowed, reason, distance, heading, clearance, closest = self._evaluate(route)
         self._set_status(allowed, reason, distance, heading, clearance, closest)
 
         if replaying:
-            now_s = self._now_seconds()
-            if selected_mode != "auto":
-                self._call_trigger(self._cancel_client)
-                with self._lock:
-                    self._replaying = False
-                reason = f"control mode changed to {selected_mode}"
-            elif not allowed:
-                with self._lock:
-                    if self._bad_route_error_since is None:
-                        self._bad_route_error_since = now_s
-                    bad_since = self._bad_route_error_since
-                if bad_since is not None and now_s - bad_since > self._route_error_grace_s:
-                    self._call_trigger(self._cancel_client)
-                    self._call_trigger(self._request_manual_client)
-                    with self._lock:
-                        self._replaying = False
-                    reason = f"replay cancelled: {reason}"
-            else:
-                with self._lock:
-                    self._bad_route_error_since = None
+            # Route manager is read-only during replay: it publishes status and
+            # logs diagnostics, but does NOT cancel the replay.
+            # mtt_repeat_supervisor is the single cancel authority during replay.
+            if self._debug:
+                now_s = self._now_seconds()
+                elapsed = (now_s - replay_started_at) if replay_started_at else 0.0
+                self.get_logger().info(
+                    f"[MONITOR] replaying=True mode='{selected_mode}' allowed={allowed} "
+                    f"reason='{reason}' dist={distance:.2f}m head={heading:.2f}rad "
+                    f"elapsed={elapsed:.1f}s"
+                )
         self._publish_status()
 
 
