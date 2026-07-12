@@ -14,13 +14,19 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import Bool, String
-from std_srvs.srv import Trigger
+from std_srvs.srv import Empty, Trigger
+
+try:
+    from wiln.msg import WilnState as WilnStateMsg
+except ImportError:  # pragma: no cover - absent on non-ROS test hosts
+    WilnStateMsg = None
 
 
 class RepeatState(str, Enum):
     IDLE = "idle"
     TEACHING = "teaching"
     READY = "ready_to_replay"
+    ARMED = "armed"          # play published, waiting for A press + deadman
     REPLAYING = "replaying"
     PAUSED = "paused_or_cancelled"
     FAULTED = "faulted"
@@ -47,15 +53,23 @@ class MttRepeatSupervisor(Node):
         self.declare_parameter("state_topic", "mtt_repeat/state")
         self.declare_parameter("ready_topic", "mtt_repeat/ready")
         self.declare_parameter("wiln_command_topic", "/wiln/command")
+        self.declare_parameter("replay_state_topic", "/wiln/replay/state")
+        self.declare_parameter("follower_state_topic", "/wiln/follower/state")
+        self.declare_parameter("replay_ack_timeout_s", 3.0)
         self.declare_parameter("request_auto_service", "mtt_control/request_auto")
         self.declare_parameter("request_manual_service", "mtt_control/request_manual")
+        self.declare_parameter("enable_mapping_service", "/mapping/enable_mapping")
+        self.declare_parameter("disable_mapping_service", "/mapping/disable_mapping")
+        self.declare_parameter("mapping_service_timeout_s", 5.0)
         self.declare_parameter("health_timeout_s", 1.0)
         self.declare_parameter("icp_timeout_s", 0.75)
         self.declare_parameter("teleop_override_linear_threshold", 0.05)
         self.declare_parameter("teleop_override_angular_threshold", 0.05)
         self.declare_parameter("replay_idle_timeout_s", 1.0)
         self.declare_parameter("replay_startup_timeout_s", 5.0)
+        self.declare_parameter("armed_timeout_s", 300.0)   # max wait in ARMED state (5 min)
         self.declare_parameter("monitor_rate_hz", 10.0)
+        self.declare_parameter("debug", False)  # enable verbose [SUP] logs
 
         self._health_topic = str(self.get_parameter("health_topic").value)
         self._icp_odom_topic = str(self.get_parameter("icp_odom_topic").value)
@@ -69,8 +83,12 @@ class MttRepeatSupervisor(Node):
         self._state_topic = str(self.get_parameter("state_topic").value)
         self._ready_topic = str(self.get_parameter("ready_topic").value)
         self._wiln_command_topic = str(self.get_parameter("wiln_command_topic").value)
+        self._replay_ack_timeout_s = float(self.get_parameter("replay_ack_timeout_s").value)
         self._request_auto_service = str(self.get_parameter("request_auto_service").value)
         self._request_manual_service = str(self.get_parameter("request_manual_service").value)
+        self._mapping_service_timeout_s = float(
+            self.get_parameter("mapping_service_timeout_s").value
+        )
         self._health_timeout_s = float(self.get_parameter("health_timeout_s").value)
         self._icp_timeout_s = float(self.get_parameter("icp_timeout_s").value)
         self._teleop_override_linear_threshold = float(
@@ -81,7 +99,9 @@ class MttRepeatSupervisor(Node):
         )
         self._replay_idle_timeout_s = float(self.get_parameter("replay_idle_timeout_s").value)
         self._replay_startup_timeout_s = float(self.get_parameter("replay_startup_timeout_s").value)
+        self._armed_timeout_s = float(self.get_parameter("armed_timeout_s").value)
         self._monitor_rate_hz = float(self.get_parameter("monitor_rate_hz").value)
+        self._debug = bool(self.get_parameter("debug").value)
         self._service_group = ReentrantCallbackGroup()
         self._client_group = ReentrantCallbackGroup()
 
@@ -107,9 +127,19 @@ class MttRepeatSupervisor(Node):
         self._state_reason = "waiting"
         self._trajectory_ready = False
         self._replaying = False
+        self._awaiting_start = False   # armed: play published, waiting for A + deadman
+        self._armed_since: Optional[float] = None
         self._recording = False
         self._replay_started_time: Optional[float] = None
         self._controller_motion_seen = False
+        self._replay_ack_event = threading.Event()
+        self._follower_ack_event = threading.Event()
+        self._awaiting_replay_ack = False
+        self._awaiting_follower_ack = False
+        self._replay_ack_state = 0
+        self._replay_ack_detail = ""
+        self._follower_ack_state = 0
+        self._follower_ack_detail = ""
 
         self._health_sub = self.create_subscription(
             MttHealthState, self._health_topic, self._on_health, 20
@@ -144,6 +174,24 @@ class MttRepeatSupervisor(Node):
         self._auto_enabled_sub = self.create_subscription(
             Bool, self._auto_enabled_topic, self._on_auto_enabled, 20
         )
+        if WilnStateMsg is not None:
+            replay_state_qos = QoSProfile(
+                history=HistoryPolicy.KEEP_LAST,
+                depth=1,
+                durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            )
+            self._replay_state_sub = self.create_subscription(
+                WilnStateMsg,
+                str(self.get_parameter("replay_state_topic").value),
+                self._on_replay_state,
+                replay_state_qos,
+            )
+            self._follower_state_sub = self.create_subscription(
+                WilnStateMsg,
+                str(self.get_parameter("follower_state_topic").value),
+                self._on_follower_state,
+                replay_state_qos,
+            )
 
         latched_qos = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
@@ -158,6 +206,16 @@ class MttRepeatSupervisor(Node):
         )
         self._request_manual_client = self.create_client(
             Trigger, self._request_manual_service, callback_group=self._client_group
+        )
+        self._enable_mapping_client = self.create_client(
+            Empty,
+            str(self.get_parameter("enable_mapping_service").value),
+            callback_group=self._client_group,
+        )
+        self._disable_mapping_client = self.create_client(
+            Empty,
+            str(self.get_parameter("disable_mapping_service").value),
+            callback_group=self._client_group,
         )
         self._teach_start_srv = self.create_service(
             Trigger,
@@ -275,6 +333,38 @@ class MttRepeatSupervisor(Node):
     def _on_auto_enabled(self, msg: Bool) -> None:
         with self._state_lock:
             self._auto_enabled = bool(msg.data)
+
+    def _on_replay_state(self, msg) -> None:
+        if WilnStateMsg is None:
+            return
+        detail = str(msg.detail).strip()
+        accepted = msg.state == WilnStateMsg.PLAYING
+        refused = msg.state == WilnStateMsg.IDLE and detail.startswith("replay refused")
+        if not accepted and not refused:
+            return
+        with self._state_lock:
+            if not self._awaiting_replay_ack:
+                return
+            self._replay_ack_state = int(msg.state)
+            self._replay_ack_detail = detail
+            self._awaiting_replay_ack = False
+        self._replay_ack_event.set()
+
+    def _on_follower_state(self, msg) -> None:
+        if WilnStateMsg is None:
+            return
+        detail = str(msg.detail).strip()
+        accepted = msg.state == WilnStateMsg.PLAYING
+        refused = msg.state == WilnStateMsg.IDLE and detail.startswith("play refused")
+        if not accepted and not refused:
+            return
+        with self._state_lock:
+            if not self._awaiting_follower_ack:
+                return
+            self._follower_ack_state = int(msg.state)
+            self._follower_ack_detail = detail
+            self._awaiting_follower_ack = False
+        self._follower_ack_event.set()
 
     def _joystick_override_active(self) -> bool:
         """True only when the operator is *intentionally* pushing the joystick.
@@ -398,6 +488,66 @@ class MttRepeatSupervisor(Node):
         self.get_logger().info(f"WILN command published: {command}")
         return True, f"published {command}"
 
+    def _publish_play_and_wait_for_ack(self) -> Tuple[bool, str]:
+        """Publish play and wait for the replay node's authoritative decision.
+
+        Publishing on /wiln/command only proves that DDS accepted a message.  It
+        does not prove that the replay node accepted the route, selected a valid
+        endpoint, or froze mapping.  The old implementation returned success at
+        that point, while wiln_replay_node could simultaneously publish
+        ``replay refused``; PathFollower then centered articulation and held zero.
+        """
+        if WilnStateMsg is None:
+            return False, "wiln/State message unavailable; cannot verify replay acceptance"
+
+        self._replay_ack_event.clear()
+        self._follower_ack_event.clear()
+        with self._state_lock:
+            self._awaiting_replay_ack = True
+            self._awaiting_follower_ack = True
+            self._replay_ack_state = -1
+            self._replay_ack_detail = ""
+            self._follower_ack_state = -1
+            self._follower_ack_detail = ""
+
+        ok, detail = self._publish_wiln_command("play")
+        if not ok:
+            with self._state_lock:
+                self._awaiting_replay_ack = False
+                self._awaiting_follower_ack = False
+            return False, detail
+
+        deadline = time.monotonic() + self._replay_ack_timeout_s
+        replay_ready = self._replay_ack_event.wait(max(0.0, deadline - time.monotonic()))
+        follower_ready = self._follower_ack_event.wait(max(0.0, deadline - time.monotonic()))
+        if not replay_ready or not follower_ready:
+            with self._state_lock:
+                self._awaiting_replay_ack = False
+                self._awaiting_follower_ack = False
+            # The distributed state is unknown. Cancel both replay and follower
+            # so a delayed acknowledgement cannot start motion after the service
+            # already reported failure.
+            self._publish_wiln_command("cancel")
+            return False, (
+                "replay acknowledgement timeout after "
+                f"{self._replay_ack_timeout_s:.1f}s; cancel published"
+            )
+
+        with self._state_lock:
+            ack_state = self._replay_ack_state
+            ack_detail = self._replay_ack_detail
+            follower_state = self._follower_ack_state
+            follower_detail = self._follower_ack_detail
+        if ack_state != WilnStateMsg.PLAYING:
+            return False, ack_detail or "replay refused by wiln_replay_node"
+        if follower_state != WilnStateMsg.PLAYING:
+            self._publish_wiln_command("cancel")
+            return False, follower_detail or "replay refused by wiln_path_follower"
+        return True, (
+            f"{ack_detail or 'replay accepted; mapping frozen'}; "
+            f"{follower_detail or 'follower accepted'}"
+        )
+
     def _call_trigger_client(self, client, timeout_s: float = 2.0) -> Tuple[bool, str]:
         if not client.wait_for_service(timeout_sec=0.0):
             return False, "service unavailable"
@@ -416,6 +566,20 @@ class MttRepeatSupervisor(Node):
             return False, result.message or "request rejected"
         return True, result.message or "ok"
 
+    def _call_empty_client(self, client, timeout_s: float) -> Tuple[bool, str]:
+        if not client.wait_for_service(timeout_sec=0.0):
+            return False, "service unavailable"
+        future = client.call_async(Empty.Request())
+        event = threading.Event()
+        future.add_done_callback(lambda _: event.set())
+        if not event.wait(timeout_s):
+            return False, "service timeout"
+        try:
+            result = future.result()
+        except Exception as exc:  # pragma: no cover - runtime safety
+            return False, str(exc)
+        return (result is not None), "ok" if result is not None else "empty response"
+
     def _start_replay_tracking(self, mode: str) -> None:
         now_s = self._now_seconds()
         with self._state_lock:
@@ -426,15 +590,31 @@ class MttRepeatSupervisor(Node):
             self._last_controller_motion_time = None
         self._set_state(RepeatState.REPLAYING, mode)
 
-    def _cancel_replay(self, reason: str) -> None:
+    def _cancel_replay(self, reason: str, request_manual: bool = True) -> None:
+        """Cancel the active replay.
+
+        Args:
+            reason: Human-readable cancel reason (logged and published to state).
+            request_manual: If True (default), explicitly switch mode to MANUAL after
+                cancel. Set to False for safety stops where the mode cascade would
+                cause a request_auto ↔ request_manual ping-pong (e.g., ICP stale).
+        """
         ok, detail = self._publish_wiln_command("cancel")
-        manual_ok, manual_detail = self._call_trigger_client(self._request_manual_client, timeout_s=2.0)
         with self._state_lock:
             self._replaying = False
         next_state = RepeatState.PAUSED if ok else RepeatState.FAULTED
         suffix = reason if ok else f"{reason}; cancel failed: {detail}"
-        if not manual_ok:
-            suffix = f"{suffix}; manual mode request failed: {manual_detail}"
+        if request_manual:
+            manual_ok, manual_detail = self._call_trigger_client(
+                self._request_manual_client, timeout_s=2.0
+            )
+            if not manual_ok:
+                suffix = f"{suffix}; manual mode request failed: {manual_detail}"
+        else:
+            if self._debug:
+                self.get_logger().info(
+                    f"[SUP] _cancel_replay({reason}): skipping request_manual to avoid mode cascade."
+                )
         self._set_state(next_state, suffix)
 
     def _handle_teach_start(self, _, response: Trigger.Response) -> Trigger.Response:
@@ -448,6 +628,14 @@ class MttRepeatSupervisor(Node):
             self._set_state(RepeatState.FAULTED, f"teach_start refused: {manual_detail}")
             response.success = False
             response.message = manual_detail
+            return response
+        mapping_ok, mapping_detail = self._call_empty_client(
+            self._enable_mapping_client, self._mapping_service_timeout_s
+        )
+        if not mapping_ok:
+            self._set_state(RepeatState.FAULTED, f"teach_start: enable mapping failed: {mapping_detail}")
+            response.success = False
+            response.message = f"enable mapping failed: {mapping_detail}"
             return response
         ok, detail = self._publish_wiln_command("start_recording")
         if ok:
@@ -467,13 +655,32 @@ class MttRepeatSupervisor(Node):
     def _handle_teach_stop(self, _, response: Trigger.Response) -> Trigger.Response:
         ok, detail = self._publish_wiln_command("stop_recording")
         if ok:
+            mapping_ok, mapping_detail = self._call_empty_client(
+                self._disable_mapping_client, self._mapping_service_timeout_s
+            )
             self._call_trigger_client(self._request_manual_client)
             with self._state_lock:
                 self._recording = False
                 self._trajectory_ready = True
-            self._set_state(RepeatState.READY, f"trajectory recorded; {self._debug_suffix()}")
-            response.success = True
-            response.message = f"teach stopped; trajectory armed; {self._debug_suffix()}"
+            if mapping_ok:
+                self._set_state(
+                    RepeatState.READY,
+                    f"trajectory recorded; map frozen for return to start; {self._debug_suffix()}",
+                )
+                response.success = True
+                response.message = (
+                    f"teach stopped; trajectory armed; map frozen; {self._debug_suffix()}"
+                )
+            else:
+                self._set_state(
+                    RepeatState.FAULTED,
+                    f"trajectory recorded but map freeze failed: {mapping_detail}",
+                )
+                response.success = False
+                response.message = (
+                    f"trajectory recorded, but disable mapping failed: {mapping_detail}; "
+                    "do not drive back until mapping is frozen"
+                )
         else:
             self._set_state(RepeatState.FAULTED, f"teach_stop failed: {detail}")
             response.success = False
@@ -507,20 +714,26 @@ class MttRepeatSupervisor(Node):
             if self._state != RepeatState.TEACHING:
                 self._set_state(RepeatState.FAULTED, f"replay refused: {reason}")
             return response
-        auto_ok, auto_detail = self._call_trigger_client(self._request_auto_client)
-        if not auto_ok:
-            self._set_state(RepeatState.FAULTED, f"replay refused: could not enter AUTO ({auto_detail}); press A or check mtt_mode_manager; {self._debug_suffix()}")
-            response.success = False
-            response.message = f"could not enter AUTO: {auto_detail}; {self._debug_suffix()}"
-            return response
-        ok, detail = self._publish_wiln_command("play")
+        # Do NOT request_auto here — the operator must press A and hold deadman.
+        # Publishing "play" arms the PathFollower in PLAYING state; cmd_vel is
+        # blocked by the arbiter until mode=AUTO (A button) and by PathFollower's
+        # deadman gate until deadman is held.
+        ok, detail = self._publish_play_and_wait_for_ack()
         if ok:
-            self._start_replay_tracking("line replay active")
+            now_s = self._now_seconds()
+            with self._state_lock:
+                self._replaying = False
+                self._awaiting_start = True
+                self._armed_since = now_s
+                self._recording = False
+                self._controller_motion_seen = False
+                self._last_controller_motion_time = None
+                self._replay_started_time = None
+            self._set_state(RepeatState.ARMED, "trajectory armed — press A then hold deadman to start")
             response.success = True
-            response.message = f"line replay started; {self._debug_suffix()}"
+            response.message = "armed; press A and hold deadman to start"
         else:
-            self._call_trigger_client(self._request_manual_client)
-            self._set_state(RepeatState.FAULTED, f"play_line failed: {detail}")
+            self._set_state(RepeatState.READY, f"play_line refused: {detail}")
             response.success = False
             response.message = detail
         return response
@@ -532,25 +745,32 @@ class MttRepeatSupervisor(Node):
             response.success = False
             response.message = reason
             return response
-        auto_ok, auto_detail = self._call_trigger_client(self._request_auto_client)
-        if not auto_ok:
-            self._set_state(RepeatState.FAULTED, f"loop replay refused: {auto_detail}")
-            response.success = False
-            response.message = auto_detail
-            return response
-        ok, detail = self._publish_wiln_command("play")
+        # Same arm-then-start flow as play_line
+        ok, detail = self._publish_play_and_wait_for_ack()
         if ok:
-            self._start_replay_tracking("single replay active (WILN topic API has no native loop command)")
+            now_s = self._now_seconds()
+            with self._state_lock:
+                self._replaying = False
+                self._awaiting_start = True
+                self._armed_since = now_s
+                self._recording = False
+                self._controller_motion_seen = False
+                self._last_controller_motion_time = None
+                self._replay_started_time = None
+            self._set_state(RepeatState.ARMED, "trajectory armed — press A then hold deadman to start")
             response.success = True
-            response.message = "single replay started"
+            response.message = "armed; press A and hold deadman to start"
         else:
             self._call_trigger_client(self._request_manual_client)
-            self._set_state(RepeatState.FAULTED, f"play_loop failed: {detail}")
+            self._set_state(RepeatState.READY, f"play_loop refused: {detail}")
             response.success = False
             response.message = detail
         return response
 
     def _handle_cancel(self, _, response: Trigger.Response) -> Trigger.Response:
+        with self._state_lock:
+            self._awaiting_start = False
+            self._armed_since = None
         self._cancel_replay("cancelled by operator")
         response.success = True
         response.message = "cancel requested"
@@ -569,19 +789,75 @@ class MttRepeatSupervisor(Node):
         with self._state_lock:
             state = self._state
             replaying = self._replaying
+            awaiting_start = self._awaiting_start
+            armed_since = self._armed_since
             replay_started_time = self._replay_started_time
             controller_motion_seen = self._controller_motion_seen
             last_controller_motion_time = self._last_controller_motion_time
             recording = self._recording
 
-        if replaying:
+        # ----------------------------------------------------------------
+        # ARMED state: trajectory published to PathFollower, waiting for
+        # operator to press A (mode=AUTO) and hold deadman before motion starts.
+        # ----------------------------------------------------------------
+        if awaiting_start and not replaying:
+            now_s = self._now_seconds()
+            # Safety abort in armed state (robot still on ground, be cautious)
+            health_ok, health = self._health_fresh()
+            icp_ok, _ = self._icp_fresh()
+            if not health_ok or health is None:
+                self.get_logger().error("[SUP] ARMED: health stale — cancelling arm.")
+                self._publish_wiln_command("cancel")
+                with self._state_lock:
+                    self._awaiting_start = False
+                    self._armed_since = None
+                self._set_state(RepeatState.READY, "arm cancelled: health stale")
+            elif health.emergency_stop_active:
+                self.get_logger().error("[SUP] ARMED: e-stop active — cancelling arm.")
+                self._publish_wiln_command("cancel")
+                with self._state_lock:
+                    self._awaiting_start = False
+                    self._armed_since = None
+                self._set_state(RepeatState.READY, "arm cancelled: emergency stop active")
+            elif armed_since is not None and now_s - armed_since > self._armed_timeout_s:
+                self.get_logger().warn(
+                    f"[SUP] ARMED timeout ({self._armed_timeout_s:.0f}s) — disarming."
+                )
+                self._publish_wiln_command("cancel")
+                with self._state_lock:
+                    self._awaiting_start = False
+                    self._armed_since = None
+                self._set_state(RepeatState.READY, "arm timeout — disarmed")
+            else:
+                # Check if operator has pressed A + is holding deadman → start
+                _, _, _, deadman_held = self._control_snapshot()
+                with self._state_lock:
+                    selected_mode = self._selected_mode
+                if selected_mode == "auto" and deadman_held:
+                    self.get_logger().info(
+                        "[SUP] A pressed + deadman held — starting motion."
+                    )
+                    now_s = self._now_seconds()
+                    with self._state_lock:
+                        self._awaiting_start = False
+                        self._replaying = True
+                        self._replay_started_time = now_s
+                        self._controller_motion_seen = False
+                        self._last_controller_motion_time = None
+                    self._set_state(RepeatState.REPLAYING, "motion started")
+                elif self._debug:
+                    self.get_logger().info(
+                        f"[SUP] ARMED: waiting for A+deadman "
+                        f"(mode='{selected_mode}', deadman={deadman_held}) "
+                        f"armed for {now_s - (armed_since or now_s):.0f}s"
+                    )
+
+        elif replaying:
             # ----------------------------------------------------------------
-            # Priority-1: intentional joystick override (raw stick, deadman
-            # confirmed active).  This is the SAFETY path that the operator
-            # uses to take back control.  We check the *raw* joystick topic
-            # (cmd_vel/manual_raw) rather than the filtered cmd_vel/manual so
-            # that rate-limiter ramp-down residuals cannot trigger a false
-            # cancel after the stick is released.
+            # REPLAYING state
+            # Priority-1: intentional joystick override → hard cancel
+            # Priority-2: deadman released → pause (back to ARMED)
+            # Priority-3: safety conditions
             # ----------------------------------------------------------------
             if self._joystick_override_active():
                 self.get_logger().warn(
@@ -589,79 +865,75 @@ class MttRepeatSupervisor(Node):
                 )
                 self._cancel_replay("joystick override by operator")
             else:
-                with self._state_lock:
-                    selected_mode = self._selected_mode
-                # --------------------------------------------------------
-                # Priority-2: mode changed away from AUTO.
-                # The mode_manager can flip to Manual because of
-                # manual_activity (even tiny stick drift while holding
-                # the deadman).  During an active replay WE requested
-                # AUTO via service, so if mode flipped to manual without
-                # a real joystick override we silently re-request AUTO
-                # instead of cancelling.  A real operator override is
-                # caught above (priority-1) before we ever reach here.
-                # --------------------------------------------------------
-                if selected_mode != "auto":
-                    self.get_logger().info(
-                        f"Mode drifted to '{selected_mode}' during replay — "
-                        "re-requesting AUTO (no joystick override confirmed)."
-                    )
-                    auto_ok, auto_detail = self._call_trigger_client(
-                        self._request_auto_client, timeout_s=1.0
-                    )
-                    if not auto_ok:
-                        # Could not recover auto — genuine problem, cancel.
-                        self._cancel_replay(
-                            f"could not recover AUTO after mode drift ({auto_detail})"
-                        )
-                        ready, ready_reason = self._repeat_ready()
-                        with self._state_lock:
-                            state = self._state
-                            replaying = self._replaying
-                            replay_started_time = self._replay_started_time
-                            controller_motion_seen = self._controller_motion_seen
-                            last_controller_motion_time = self._last_controller_motion_time
-                            recording = self._recording
-                    # else: auto recovered silently, continue replay
+                _, _, _, deadman_held = self._control_snapshot()
+                if not deadman_held:
+                    # Deadman released — pause without cancelling the trajectory.
+                    # PathFollower's deadman gate already outputs zero cmd_vel.
+                    # Go back to ARMED so user can resume by pressing A + deadman.
+                    now_s = self._now_seconds()
+                    with self._state_lock:
+                        self._replaying = False
+                        self._awaiting_start = True
+                        self._armed_since = now_s
+                    self.get_logger().info("[SUP] Deadman released — paused (re-press A + deadman to resume).")
+                    self._set_state(RepeatState.ARMED, "paused — press A and hold deadman to resume")
                 else:
-                    # ------------------------------------------------
-                    # Priority-3: safety conditions
-                    # ------------------------------------------------
-                    health_ok, health = self._health_fresh()
-                    icp_ok, _ = self._icp_fresh()
-                    if not health_ok or health is None:
-                        self._cancel_replay("mtt_health stale or absent")
-                    elif not icp_ok:
-                        self._cancel_replay("ICP odom stale or absent")
-                    elif not health.security_unlocked:
-                        self._cancel_replay("driver safety locked")
-                    elif health.emergency_stop_active:
-                        self._cancel_replay("emergency stop active")
-                    else:
-                        now_s = self._now_seconds()
-                        if (
-                            replay_started_time is not None
-                            and now_s - replay_started_time > self._replay_startup_timeout_s
-                            and not controller_motion_seen
-                        ):
+                    with self._state_lock:
+                        selected_mode = self._selected_mode
+                    # Priority-2: mode drifted away from AUTO (unexpected — deadman held)
+                    if selected_mode != "auto":
+                        self.get_logger().info(
+                            f"Mode drifted to '{selected_mode}' during replay — "
+                            "re-requesting AUTO (deadman held, not an operator override)."
+                        )
+                        auto_ok, auto_detail = self._call_trigger_client(
+                            self._request_auto_client, timeout_s=1.0
+                        )
+                        if not auto_ok:
                             self._cancel_replay(
-                                "replay started but controller produced no motion command"
+                                f"could not recover AUTO after mode drift ({auto_detail})"
                             )
-                        elif (
-                            controller_motion_seen
-                            and last_controller_motion_time is not None
-                            and now_s - last_controller_motion_time > self._replay_idle_timeout_s
-                        ):
-                            with self._state_lock:
-                                self._replaying = False
-                            self._set_state(RepeatState.READY, "replay completed or idle")
+                    else:
+                        # Priority-3: safety conditions
+                        health_ok, health = self._health_fresh()
+                        icp_ok, _ = self._icp_fresh()
+                        if not health_ok or health is None:
+                            self._cancel_replay("mtt_health stale or absent")
+                        elif not icp_ok:
+                            self._cancel_replay("ICP odom stale or absent", request_manual=False)
+                        elif not health.security_unlocked:
+                            self._cancel_replay("driver safety locked")
+                        elif health.emergency_stop_active:
+                            self._cancel_replay("emergency stop active")
+                        else:
+                            now_s = self._now_seconds()
+                            if (
+                                replay_started_time is not None
+                                and now_s - replay_started_time > self._replay_startup_timeout_s
+                                and not controller_motion_seen
+                            ):
+                                self._cancel_replay(
+                                    "replay started but controller produced no motion command"
+                                )
+                            elif (
+                                controller_motion_seen
+                                and last_controller_motion_time is not None
+                                and now_s - last_controller_motion_time > self._replay_idle_timeout_s
+                            ):
+                                with self._state_lock:
+                                    self._replaying = False
+                                self._set_state(RepeatState.READY, "replay completed")
 
         with self._state_lock:
             state = self._state
             reason = self._state_reason
+            awaiting_start = self._awaiting_start
         if recording and state != RepeatState.TEACHING:
             state = RepeatState.TEACHING
-        if not replaying and state == RepeatState.IDLE and self._trajectory_ready:
+        elif awaiting_start:
+            # Always show ARMED when trajectory is armed and waiting for operator
+            state = RepeatState.ARMED
+        elif not replaying and state == RepeatState.IDLE and self._trajectory_ready:
             state = RepeatState.READY
             reason = "trajectory armed"
         if state == RepeatState.READY and not ready and ready_reason != "trajectory not armed":
