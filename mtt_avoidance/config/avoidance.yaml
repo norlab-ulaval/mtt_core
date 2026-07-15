@@ -1,0 +1,149 @@
+mtt_avoidance_supervisor:
+  ros__parameters:
+    enabled: true
+    shadow_mode: true
+    execution_enabled: false
+    reverse_recovery_enabled: false
+    persistent_stop_s: 3.0
+    obstacle_timeout_s: 0.5
+    decision_rate_hz: 10.0
+
+mtt_rejoin_planner:
+  ros__parameters:
+    reference_path_topic: /wiln/global_plan
+    odom_topic: /mapping/icp_measurement
+    compute_path_action: /mtt_avoidance/compute_path_to_pose
+    validation_service: /mtt_avoidance/validate_path
+    planner_id: GridBased
+    rejoin_distances_m: [4.0, 6.0, 8.0, 10.0, 12.0]
+    state_timeout_s: 0.75
+    server_timeout_s: 2.0
+    min_required_clearance_m: 0.05
+    route_deviation_weight: 1.5
+    clearance_weight: 2.0
+
+mtt_composite_path_validator:
+  ros__parameters:
+    costmap_topic: /mtt_avoidance/global_costmap/costmap_raw
+    tractor_odom_topic: /mapping/icp_measurement
+    trailer_pose_topic: /trailer/pose_in_map
+    articulation_topic: /hardware/articulation_angle
+    validation_service: /mtt_avoidance/validate_path
+    costmap_timeout_s: 0.75
+    state_timeout_s: 0.5
+    lethal_threshold: 65
+    unknown_is_occupied: true
+    # The validator never estimates the trailer. It consumes the external pose
+    # when fresh, otherwise it uses measured articulation and a low-speed
+    # kinematic prediction. Set require_trailer_pose=true once the estimator is
+    # commissioned to make its absence a hard refusal.
+    include_trailer: true
+    require_trailer_pose: false
+    hitch_offset_x_m: -1.0
+    trailer_axle_distance_m: 2.5
+    base_margin_m: 0.20
+    covariance_margin_scale: 2.5
+    sample_stride: 2
+    clearance_search_m: 4.0
+    tractor_footprint: [1.80, 1.25, 1.80, -1.25, -1.00, -1.25, -1.00, 1.25]
+    trailer_footprint: [0.50, 1.25, 0.50, -1.25, -3.00, -1.25, -3.00, 1.25]
+
+mtt_avoidance_executor:
+  ros__parameters:
+    execution_enabled: false
+    allow_runtime_enable: false
+    follow_path_action: /mtt_avoidance/follow_path
+    validation_service: /mtt_avoidance/validate_path
+    controller_id: FollowPath
+    goal_checker_id: general_goal_checker
+    progress_checker_id: progress_checker
+    path_timeout_s: 1.0
+    server_timeout_s: 2.0
+    revalidation_period_s: 0.5
+
+mtt_recovery_manager:
+  ros__parameters:
+    reverse_enabled: false
+    allow_runtime_enable: false
+    backup_action: /mtt_avoidance/backup
+    rear_clearance_topic: /mtt_obstacle/rear_clearance_m
+    articulation_topic: /hardware/articulation_angle
+    odom_topic: /mapping/icp_measurement
+    backup_distance_m: 0.50
+    backup_speed_ms: 0.12
+    clearance_margin_m: 0.40
+    max_articulation_rad: 0.20
+    max_position_sigma_m: 0.25
+    input_timeout_s: 0.5
+    time_allowance_s: 10
+
+mtt_avoidance_command_mux:
+  ros__parameters:
+    wiln_cmd_topic: /mtt_avoidance/wiln_cmd
+    nav_cmd_topic: /mtt_avoidance/nav_articulated_cmd
+    override_topic: /mtt_avoidance/override_requested
+    # Atomic canonical output: signed speed + normalized articulation.
+    output_topic: /mtt_avoidance/selected_articulated_cmd
+    input_timeout_s: 0.25
+    switch_guard_s: 0.20
+    publish_rate_hz: 20.0
+
+mtt_avoidance_nav_adapter:
+  ros__parameters:
+    input_topic: /mtt_avoidance/nav_cmd_guarded
+    output_topic: /mtt_avoidance/nav_articulated_cmd
+    articulation_feedback_topic: /hardware/articulation_angle
+    equivalent_length_m: 2.40
+    max_articulation_rad: 0.733
+    min_turn_speed_ms: 0.05
+    max_articulation_rate_rad_s: 0.50
+    use_slip_heuristic: true
+    yaw_slip_base: 0.10
+    yaw_slip_speed_gain: 0.05
+    yaw_slip_articulation_gain: 0.15
+    yaw_slip_min_scale: 0.55
+    require_fresh_articulation: true
+    input_timeout_s: 0.25
+    feedback_timeout_s: 0.30
+    publish_rate_hz: 20.0
+
+mtt_avoidance_command_dispatcher:
+  ros__parameters:
+    enabled: false
+    shadow_mode: true
+    hardware_output_enabled: false
+    input_topic: /mtt_avoidance/selected_articulated_cmd
+    articulation_feedback_topic: /hardware/articulation_angle
+    # Preview-only defaults. Real actuator topics require all three explicit
+    # activation gates in the launch file.
+    speed_output_topic: /mtt_avoidance/speed_cmd_preview
+    articulation_output_topic: /mtt_avoidance/articulation_setpoint_preview
+    equivalent_length_m: 2.40
+    max_articulation_rad: 0.733
+    min_turn_speed_ms: 0.05
+    max_articulation_rate_rad_s: 0.50
+    input_timeout_s: 0.25
+    feedback_timeout_s: 0.30
+    publish_rate_hz: 20.0
+
+mtt_avoidance_obstacle_filter:
+  ros__parameters:
+    odom_topic: /mapping/icp_odom
+    obstacles_topic: /mtt_avoidance/obstacles_filtered
+    lidar_topics: [/hesai_lidar/points]
+    target_frame: map
+    publish_rate_hz: 10.0
+    obstacle_max_age_s: 0.5
+    crop_x_min: -6.0
+    crop_x_max: 10.0
+    crop_y_abs: 5.0
+    crop_z_min: -0.20
+    crop_z_max: 2.20
+    min_range: 0.45
+    max_range: 12.0
+    voxel_size: 0.12
+    enable_self_filter: true
+    self_filter_chassis_box: [-1.00, 1.80, -1.30, 1.30, -0.35, 1.20]
+    self_filter_lidar_cage_box: [-0.35, 0.90, -0.35, 0.35, 0.30, 1.30]
+    self_filter_rsairy_box: [-0.30, 0.25, 0.55, 1.05, 0.50, 1.20]
+    self_filter_trailer_box: [-4.20, -0.75, -1.35, 1.35, -0.40, 2.50]
