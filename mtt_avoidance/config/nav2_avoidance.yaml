@@ -1,0 +1,305 @@
+planner_server:
+  ros__parameters:
+    expected_planner_frequency: 2.0
+    costmap_update_timeout: 1.0
+    planner_plugins: [GridBased]
+    GridBased:
+      plugin: nav2_smac_planner::SmacPlannerHybrid
+      tolerance: 0.30
+      downsample_costmap: false
+      allow_unknown: false
+      max_iterations: 250000
+      max_on_approach_iterations: 1500
+      max_planning_time: 2.0
+      # Reeds-Shepp preserves the MTT's natural forward/reverse capability.
+      # This is distinct from the separately gated emergency BackUp behavior.
+      motion_model_for_search: REEDS_SHEPP
+      angle_quantization_bins: 72
+      analytic_expansion_ratio: 3.5
+      analytic_expansion_max_length: 12.0
+      analytic_expansion_max_cost: 180.0
+      minimum_turning_radius: 2.85
+      reverse_penalty: 2.0
+      change_penalty: 0.10
+      non_straight_penalty: 1.20
+      cost_penalty: 2.5
+      retrospective_penalty: 0.015
+      lookup_table_size: 20.0
+      cache_obstacle_heuristic: false
+      smooth_path: true
+      smoother:
+        max_iterations: 1000
+        w_smooth: 0.30
+        w_data: 0.20
+        tolerance: 1.0e-10
+        do_refinement: true
+        refinement_num: 2
+
+global_costmap:
+  global_costmap:
+    ros__parameters:
+      update_frequency: 8.0
+      publish_frequency: 4.0
+      global_frame: map
+      robot_base_frame: base_footprint
+      rolling_window: true
+      width: 30
+      height: 30
+      resolution: 0.10
+      track_unknown_space: false
+      # Nav2 models the steerable tractor. The trailer is checked separately by
+      # mtt_composite_path_validator using its swept, articulated footprint.
+      footprint: "[[1.80,1.25],[1.80,-1.25],[-1.00,-1.25],[-1.00,1.25]]"
+      footprint_padding: 0.15
+      plugins: [voxel_layer, inflation_layer]
+      voxel_layer:
+        plugin: nav2_costmap_2d::VoxelLayer
+        enabled: true
+        footprint_clearing_enabled: true
+        publish_voxel_map: false
+        origin_z: -0.30
+        z_resolution: 0.15
+        z_voxels: 16
+        max_obstacle_height: 2.20
+        mark_threshold: 1
+        unknown_threshold: 15
+        observation_sources: hesai
+        hesai:
+          topic: /hesai_lidar/points
+          data_type: PointCloud2
+          min_obstacle_height: -0.20
+          max_obstacle_height: 2.20
+          obstacle_min_range: 0.45
+          obstacle_max_range: 12.0
+          raytrace_min_range: 0.45
+          raytrace_max_range: 13.0
+          marking: true
+          clearing: true
+          observation_persistence: 0.30
+          expected_update_rate: 0.10
+      inflation_layer:
+        plugin: nav2_costmap_2d::InflationLayer
+        enabled: true
+        # Covers the tractor circumscribed radius so Smac/MPPI can use their
+        # optimized polygon collision check without weakening the true
+        # tractor+trailer swept-path validation.
+        inflation_radius: 2.50
+        cost_scaling_factor: 2.0
+      always_send_full_costmap: true
+
+controller_server:
+  ros__parameters:
+    controller_frequency: 20.0
+    costmap_update_timeout: 0.30
+    enable_stamped_cmd_vel: false
+    min_x_velocity_threshold: 0.01
+    min_y_velocity_threshold: 0.01
+    min_theta_velocity_threshold: 0.01
+    failure_tolerance: 0.20
+    progress_checker_plugins: [progress_checker]
+    goal_checker_plugins: [general_goal_checker]
+    controller_plugins: [FollowPath]
+    progress_checker:
+      plugin: nav2_controller::SimpleProgressChecker
+      required_movement_radius: 0.20
+      movement_time_allowance: 8.0
+    general_goal_checker:
+      plugin: nav2_controller::SimpleGoalChecker
+      stateful: true
+      xy_goal_tolerance: 0.35
+      yaw_goal_tolerance: 0.30
+    FollowPath:
+      plugin: nav2_mppi_controller::MPPIController
+      # Nav2 names this constraint family Ackermann. For MTT it is only the
+      # non-holonomic curvature constraint; the actuator conversion is performed
+      # by mtt_articulated_nav_adapter with the calibrated MTT model.
+      motion_model: Ackermann
+      time_steps: 50
+      model_dt: 0.05
+      batch_size: 1600
+      iteration_count: 1
+      vx_max: 0.70
+      vx_min: -0.35
+      vx_std: 0.20
+      wz_max: 0.30
+      wz_std: 0.12
+      ax_max: 0.45
+      ax_min: -0.70
+      az_max: 0.35
+      prune_distance: 2.0
+      transform_tolerance: 0.15
+      temperature: 0.25
+      gamma: 0.015
+      visualize: false
+      regenerate_noises: true
+      AckermannConstraints:
+        min_turning_r: 2.85
+      enforce_path_inversion: true
+      inversion_xy_tolerance: 0.20
+      critics: [ConstraintCritic, CostCritic, GoalCritic, GoalAngleCritic,
+        PathAlignCritic, PathFollowCritic, PathAngleCritic]
+      ConstraintCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 6.0
+      CostCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 5.0
+        near_collision_cost: 240
+        critical_cost: 300.0
+        consider_footprint: true
+        collision_cost: 1000000.0
+        near_goal_distance: 1.0
+        trajectory_point_step: 2
+      GoalCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 5.0
+        threshold_to_consider: 1.5
+      GoalAngleCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 4.0
+        threshold_to_consider: 0.8
+      PathAlignCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 10.0
+        max_path_occupancy_ratio: 0.08
+        trajectory_point_step: 4
+        threshold_to_consider: 0.5
+        offset_from_furthest: 20
+        use_path_orientations: true
+      PathFollowCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 6.0
+        offset_from_furthest: 5
+        threshold_to_consider: 1.5
+      PathAngleCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 4.0
+        offset_from_furthest: 4
+        threshold_to_consider: 0.8
+        max_angle_to_furthest: 0.9
+        # Follow Smac's feasible path orientations, including direction changes.
+        mode: 2
+
+local_costmap:
+  local_costmap:
+    ros__parameters:
+      update_frequency: 10.0
+      publish_frequency: 5.0
+      global_frame: map
+      robot_base_frame: base_footprint
+      rolling_window: true
+      width: 24
+      height: 24
+      resolution: 0.10
+      track_unknown_space: false
+      footprint: "[[1.80,1.25],[1.80,-1.25],[-1.00,-1.25],[-1.00,1.25]]"
+      footprint_padding: 0.15
+      plugins: [voxel_layer, inflation_layer]
+      voxel_layer:
+        plugin: nav2_costmap_2d::VoxelLayer
+        enabled: true
+        footprint_clearing_enabled: true
+        publish_voxel_map: false
+        origin_z: -0.30
+        z_resolution: 0.15
+        z_voxels: 16
+        max_obstacle_height: 2.20
+        mark_threshold: 1
+        unknown_threshold: 15
+        observation_sources: hesai
+        hesai:
+          topic: /hesai_lidar/points
+          data_type: PointCloud2
+          min_obstacle_height: -0.20
+          max_obstacle_height: 2.20
+          obstacle_min_range: 0.45
+          obstacle_max_range: 12.0
+          raytrace_min_range: 0.45
+          raytrace_max_range: 13.0
+          marking: true
+          clearing: true
+          observation_persistence: 0.30
+          expected_update_rate: 0.10
+      inflation_layer:
+        plugin: nav2_costmap_2d::InflationLayer
+        enabled: true
+        inflation_radius: 2.50
+        cost_scaling_factor: 2.0
+      always_send_full_costmap: true
+
+velocity_smoother:
+  ros__parameters:
+    smoothing_frequency: 20.0
+    enable_stamped_cmd_vel: false
+    scale_velocities: false
+    feedback: CLOSED_LOOP
+    max_velocity: [0.70, 0.0, 0.30]
+    min_velocity: [-0.35, 0.0, -0.30]
+    max_accel: [0.45, 0.0, 0.35]
+    max_decel: [-0.70, 0.0, -0.35]
+    odom_topic: /mapping/icp_measurement
+    odom_duration: 0.20
+    deadband_velocity: [0.02, 0.0, 0.01]
+    velocity_timeout: 0.5
+
+behavior_server:
+  ros__parameters:
+    local_costmap_topic: /mtt_avoidance/local_costmap/costmap_raw
+    global_costmap_topic: /mtt_avoidance/global_costmap/costmap_raw
+    local_footprint_topic: /mtt_avoidance/local_costmap/published_footprint
+    global_footprint_topic: /mtt_avoidance/global_costmap/published_footprint
+    cycle_frequency: 10.0
+    enable_stamped_cmd_vel: false
+    behavior_plugins: [backup, wait]
+    backup:
+      plugin: nav2_behaviors::BackUp
+    wait:
+      plugin: nav2_behaviors::Wait
+    local_frame: map
+    global_frame: map
+    robot_base_frame: base_footprint
+    transform_tolerance: 0.15
+    simulate_ahead_time: 2.0
+    max_rotational_vel: 0.30
+    min_rotational_vel: 0.05
+    rotational_acc_lim: 0.35
+
+collision_monitor:
+  ros__parameters:
+    base_frame_id: base_footprint
+    odom_frame_id: map
+    cmd_vel_in_topic: /mtt_avoidance/nav_cmd_smoothed
+    cmd_vel_out_topic: /mtt_avoidance/nav_cmd_guarded
+    state_topic: /mtt_avoidance/collision_monitor_state
+    enable_stamped_cmd_vel: false
+    transform_tolerance: 0.15
+    source_timeout: 0.5
+    base_shift_correction: true
+    stop_pub_timeout: 1.0
+    polygons: [CompositeApproach]
+    CompositeApproach:
+      type: polygon
+      action_type: approach
+      # Conservative fixed fallback until a live articulated polygon publisher
+      # is connected. The service validator remains the authoritative swept
+      # tractor+trailer collision gate for every selected path.
+      points: "[[1.80,1.25],[1.80,-1.25],[-4.00,-1.25],[-4.00,1.25]]"
+      time_before_collision: 2.0
+      simulation_time_step: 0.05
+      min_points: 4
+      visualize: true
+      enabled: true
+    observation_sources: [filtered_cloud]
+    filtered_cloud:
+      type: pointcloud
+      topic: /mtt_avoidance/obstacles_filtered
+      min_height: -0.20
+      max_height: 2.20
+      enabled: true
