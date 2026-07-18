@@ -27,14 +27,14 @@ def launch_setup(context, *args, **kwargs):
         '/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock',
         f'/model/{robot_name}/pose@geometry_msgs/msg/PoseStamped[gz.msgs.Pose',
         # LaserScan (2-D)
-        f'/world/default/model/{robot_name}/link/center_lidar_link/sensor/center_lidar/scan@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan',
+        f'/world/default/model/{robot_name}/link/hesai_lidar/sensor/center_lidar/scan@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan',
         f'/world/default/model/{robot_name}/link/front_lidar_link/sensor/front_lidar/scan@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan',
         f'/world/default/model/{robot_name}/link/rear_lidar_link/sensor/rear_lidar/scan@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan',
     ]
 
     remappings = [
         (f'/model/{robot_name}/pose', 'gz_pose'),
-        (f'/world/default/model/{robot_name}/link/center_lidar_link/sensor/center_lidar/scan', 'center_lidar/scan'),
+        (f'/world/default/model/{robot_name}/link/hesai_lidar/sensor/center_lidar/scan', 'center_lidar/scan'),
         (f'/world/default/model/{robot_name}/link/front_lidar_link/sensor/front_lidar/scan', 'front_lidar/scan'),
         (f'/world/default/model/{robot_name}/link/rear_lidar_link/sensor/rear_lidar/scan', 'rear_lidar/scan'),
     ]
@@ -55,12 +55,12 @@ def launch_setup(context, *args, **kwargs):
     # Separate bridge for PointCloud2 — isolated so a failure here
     # does not crash the clock/LaserScan/pose bridge above.
     pc2_bridge_args = [
-        f'/world/default/model/{robot_name}/link/center_lidar_link/sensor/center_lidar/scan/points@sensor_msgs/msg/PointCloud2[gz.msgs.PointCloudPacked',
+        f'/world/default/model/{robot_name}/link/hesai_lidar/sensor/center_lidar/scan/points@sensor_msgs/msg/PointCloud2[gz.msgs.PointCloudPacked',
         f'/world/default/model/{robot_name}/link/front_lidar_link/sensor/front_lidar/scan/points@sensor_msgs/msg/PointCloud2[gz.msgs.PointCloudPacked',
         f'/world/default/model/{robot_name}/link/rear_lidar_link/sensor/rear_lidar/scan/points@sensor_msgs/msg/PointCloud2[gz.msgs.PointCloudPacked',
     ]
     pc2_remappings = [
-        (f'/world/default/model/{robot_name}/link/center_lidar_link/sensor/center_lidar/scan/points', 'center_lidar/points'),
+        (f'/world/default/model/{robot_name}/link/hesai_lidar/sensor/center_lidar/scan/points', 'center_lidar/points'),
         (f'/world/default/model/{robot_name}/link/front_lidar_link/sensor/front_lidar/scan/points', 'front_lidar/points'),
         (f'/world/default/model/{robot_name}/link/rear_lidar_link/sensor/rear_lidar/scan/points', 'rear_lidar/points'),
     ]
