@@ -1,19 +1,21 @@
 #!/usr/bin/env python3
-# Copyright
-"""Pytest verifying teleop_cmd_smoother decays to zero after input timeout.
+# Copyright 2026 NorLab
+"""
+Verify that teleop_cmd_smoother decays to zero after its input timeout.
 
 This test starts the smoother as a subprocess (ros2 run ...) to avoid depending
 on launch_testing. It then publishes one Twist and checks the output decays to 0.
 """
 
+import math
 import os
 import signal
 import subprocess
 import time
-import math
+
 import rclpy
-from rclpy.node import Node
 from geometry_msgs.msg import TwistStamped
+from rclpy.node import Node
 
 
 class _Helper(Node):

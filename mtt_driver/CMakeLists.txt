@@ -307,6 +307,7 @@ install(PROGRAMS
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
   find_package(ament_cmake_gtest REQUIRED)
+  find_package(ament_cmake_pytest REQUIRED)
 
   ament_lint_auto_find_test_dependencies()
 
@@ -326,6 +327,10 @@ if(BUILD_TESTING)
   ament_add_gtest(test_articulation_source_selector
     test/test_articulation_source_selector.cpp)
   target_link_libraries(test_articulation_source_selector mtt_logic)
+
+  ament_add_pytest_test(test_cmd_smoother_timeout
+    test/test_cmd_smoother_timeout_launch.py
+    TIMEOUT 20)
 endif()
 
 ament_package()
