@@ -1,0 +1,36 @@
+mtt_gps_path_follower_node:
+  ros__parameters:
+    matched_info_topic: "/mtt/gps_path_server/matched_info"
+    articulation_output_topic: "/mtt_control/auto/gps/articulation_setpoint"
+    cmd_vel_output_topic: "/mtt_control/auto/gps/cmd_vel"
+    autonomy_request_topic: "/mtt_control/autonomy/request"
+    autonomy_release_topic: "/mtt_control/autonomy/release"
+    autonomy_selected_topic: "/mtt_control/autonomy/selected"
+    matched_info_timeout_s: 0.5
+    deadman_timeout_s: 0.5
+    obstacle_timeout_s: 0.5
+    goal_tolerance_m: 0.40
+    executed_path_min_distance_m: 0.05
+    odom_topic: "localization/odom"
+    map_frame_id: "map"
+    require_deadman: true
+    require_obstacle_gate: true
+    publish_rate_hz: 20.0
+
+    # Frenet feedback gains — aligned with the proven wiln_path_follower.
+    k_y: 0.20
+    k_theta: 0.90
+    kappa_max: 0.35
+    slowdown_alpha: 0.60
+    min_speed_ms: 0.35
+    max_speed_ms: 1.60
+
+    # Articulated command model — must match the robot's physical limits
+    # (mtt_articulation_servo_node.max_articulation_rad = 0.733 rad = 42 deg).
+    equivalent_length_m: 2.40
+    max_articulation_rad: 0.733
+    max_articulation_rate_rad_s: 0.50
+    use_slip_compensation: false
+    yaw_slip_base: 0.10
+    yaw_slip_speed_gain: 0.05
+    yaw_slip_min_scale: 0.55

@@ -7,6 +7,7 @@
 #include <string>
 
 #include <rclcpp/rclcpp.hpp>
+#include <geometry_msgs/msg/twist_stamped.hpp>
 #include <rcl_interfaces/msg/set_parameters_result.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
 #include <std_msgs/msg/bool.hpp>
@@ -38,6 +39,7 @@ private:
     void on_deadman(const std_msgs::msg::Bool::SharedPtr msg);
     void on_direction_sign(const std_msgs::msg::Float64::SharedPtr msg);
     void on_joint_state(const sensor_msgs::msg::JointState::SharedPtr msg);
+    void on_cmd_vel(const geometry_msgs::msg::TwistStamped::SharedPtr msg);
 
     // ── Control loop ──
     void loop();
@@ -64,6 +66,12 @@ private:
     // Pre-configured home (NaN = not set → use calibration file or manual SET_HOME).
     double home_position_counts_ {std::numeric_limits<double>::quiet_NaN()};
 
+    // COM Flick / Snap feature parameters (inertia snap on high gaz)
+    bool   enable_com_flick_        {true};
+    double com_flick_gaz_threshold_ {0.70};  // 70% throttle trigger
+    double com_flick_home_duration_s_{0.18}; // 180 ms snap to Home
+    double max_linear_speed_        {1.50};  // m/s max for normalizing throttle
+
     // Calibration persistence
     std::string calib_file_           {"/data/mtt/com_calibration.yaml"};
     double      consistency_threshold_{1000.0};  // counts — max drift to auto-restore home
@@ -83,6 +91,12 @@ private:
     bool                park_arrived_ {false};  // true once PARK reaches home
     bool                spring_enabled_{false}; // true = RUN, false = SETUP
 
+    // Runtime state for COM Flick / Snap
+    double              throttle_norm_{0.0};    // normalized throttle [0, 1]
+    bool                flick_triggered_{false};
+    int                 flick_stage_  {0};      // 0=idle, 1=home snap, 2=return to steer
+    double              flick_timer_  {0.0};
+
     // Position limits relative to home: [home - half_range, home + half_range].
     // When home changes (SET_HOME), limits recenter automatically.
     double pos_half_range_{45000.0};
@@ -100,6 +114,7 @@ private:
     rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr      deadman_sub_;
     rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr   direction_sign_sub_;
     rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr js_sub_;
+    rclcpp::Subscription<geometry_msgs::msg::TwistStamped>::SharedPtr cmd_vel_sub_;
 
     rclcpp::TimerBase::SharedPtr loop_timer_;
     rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr param_cb_handle_;

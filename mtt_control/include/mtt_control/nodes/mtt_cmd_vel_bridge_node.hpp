@@ -35,7 +35,7 @@ private:
   void on_timer();
 
   double wheelbase_m_{2.4};
-  double max_articulation_rad_{1.0471975512};
+  double max_articulation_rad_{0.733};
   double min_speed_deadband_ms_{0.05};
   double timeout_s_{0.5};
   double publish_rate_hz_{20.0};

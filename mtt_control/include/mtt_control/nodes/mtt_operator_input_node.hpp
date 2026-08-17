@@ -1,7 +1,9 @@
 #pragma once
 
 #include <chrono>
+#include <vector>
 
+#include <rcl_interfaces/msg/set_parameters_result.hpp>
 #include <rclcpp/rclcpp.hpp>
 
 #include <geometry_msgs/msg/twist_stamped.hpp>
@@ -25,6 +27,8 @@ public:
 
 private:
   void on_joy(const sensor_msgs::msg::Joy::SharedPtr msg);
+  rcl_interfaces::msg::SetParametersResult on_set_parameters(
+    const std::vector<rclcpp::Parameter> & params);
   void on_selected_mode(const std_msgs::msg::String::SharedPtr msg);
   void on_watchdog();
   void publish_safe_stop();
@@ -111,6 +115,7 @@ private:
   bool   enable_com_direction_switch_{false};
   int    com_direction_toggle_button_index_{-1};
   double com_direction_sign_{1.0};
+  int    com_quick_park_button_index_{-1};
   double com_short_press_max_s_{1.5};
   double com_long_press_min_s_{4.0};
   rclcpp::Time       com_btn_press_time_{0, 0, RCL_ROS_TIME};
@@ -192,6 +197,8 @@ private:
   // Service clients
   rclcpp::Client<mtt_interfaces::srv::SetSteerControlMode>::SharedPtr can_steer_mode_client_;
   rclcpp::Client<mtt_interfaces::srv::SetSteerControlMode>::SharedPtr odom_steer_mode_client_;
+
+  rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr param_cb_handle_;
 };
 
 }  // namespace mtt_control

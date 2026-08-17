@@ -1,0 +1,12 @@
+mtt_gps_path_server_node:
+  ros__parameters:
+    odom_topic: "localization/odom"
+    trajectory_file: ""
+    routes_directory: "data/gps_routes"
+    # [latitude_deg, longitude_deg, altitude_m] — must match gps_recorder.yaml
+    anchor: [46.778879, -71.277157, 0.0]
+    max_research_radius: 10.0
+    interpolation_window: 0.5
+    horizon_length: 15.0
+    map_frame_id: "map"
+    diagnostic_rate_hz: 10.0

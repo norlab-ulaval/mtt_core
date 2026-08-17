@@ -45,9 +45,13 @@ struct VehicleParams {
   static constexpr double wheel_radius()    { return r_sprocket_eff; }
 
   // ── Steering ──
-  // Physical articulation limit measured from URDF yaw joint (±1.047 rad = ±60°).
-  // Previously 50° — increased to match the actual mechanical joint range.
-  static constexpr double max_articulation_deg = 60.0;
+  // Physical articulation limit: confirmed 45° mechanical stop (2026-07-20).
+  // A prior 60° value here (matching a since-corrected URDF joint limit) was
+  // wrong — the real hard stop is 45°. The operational software limit used by
+  // the live control path is smaller still (0.733 rad / 42°, see
+  // demos/common/config/mtt_driver.yaml) as a deliberate safety margin below
+  // this physical constant.
+  static constexpr double max_articulation_deg = 45.0;
   static constexpr double max_articulation_rad = max_articulation_deg * M_PI / 180.0;
   static constexpr double steering_deadband_deg = 0.5;
   static constexpr double steering_deadband_rad = steering_deadband_deg * M_PI / 180.0;

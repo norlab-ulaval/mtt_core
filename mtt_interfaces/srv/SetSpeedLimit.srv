@@ -1,0 +1,5 @@
+float64 max_speed_ms
+---
+bool success
+string message
+float64 applied_max_speed_ms

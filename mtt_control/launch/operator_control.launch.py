@@ -101,6 +101,18 @@ def generate_launch_description():
         ),
         Node(
             package="mtt_control",
+            executable="mtt_autonomy_mux_node",
+            name="mtt_autonomy_mux_node",
+            parameters=[
+                control_params_file,
+                {"use_sim_time": use_sim_time},
+            ],
+            output="screen",
+            respawn=True,
+            respawn_delay=2.0,
+        ),
+        Node(
+            package="mtt_control",
             executable="mtt_cmd_arbiter_node",
             name="mtt_cmd_arbiter_node",
             parameters=[

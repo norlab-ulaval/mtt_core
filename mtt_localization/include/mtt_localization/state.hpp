@@ -37,11 +37,15 @@ struct SensorNoiseParams {
   double gps_position_noise_z{2.0};      // meters
   double gps_heading_noise{0.05};        // radians
 
-  // LiDAR odometry
+  // LiDAR odometry. Overridden at startup from the "lidar_odom_noise" ROS
+  // param (factor_graph_node.cpp loadNoise6()) -- these in-struct values
+  // are the fallback before that param is loaded, and must stay in sync
+  // with the declare_parameter default there.
   gtsam::Vector6 lidar_odom_noise =
       (gtsam::Vector6() << 0.05, 0.05, 0.05, 0.01, 0.01, 0.01).finished();
 
-  // Visual odometry
+  // Visual odometry. Overridden at startup from the "visual_odom_noise" ROS
+  // param, same mechanism as lidar_odom_noise above.
   gtsam::Vector6 visual_odom_noise =
       (gtsam::Vector6() << 0.1, 0.1, 0.1, 0.02, 0.02, 0.02).finished();
 

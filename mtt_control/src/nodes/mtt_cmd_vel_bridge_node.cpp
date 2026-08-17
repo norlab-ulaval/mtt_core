@@ -12,7 +12,7 @@ MttCmdVelBridgeNode::MttCmdVelBridgeNode(const rclcpp::NodeOptions & options)
   const auto input_topic  = declare_parameter("input_topic",  std::string("nav_cmd_vel"));
   const auto output_topic = declare_parameter("output_topic", std::string("controller/cmd_vel"));
   wheelbase_m_           = declare_parameter("wheelbase_m",           2.4);
-  max_articulation_rad_  = declare_parameter("max_articulation_rad",  1.0471975512);
+  max_articulation_rad_  = declare_parameter("max_articulation_rad",  0.733);
   min_speed_deadband_ms_ = declare_parameter("min_speed_deadband_ms", 0.05);
   timeout_s_             = declare_parameter("timeout_s",             0.5);
   publish_rate_hz_       = declare_parameter("publish_rate_hz",       20.0);

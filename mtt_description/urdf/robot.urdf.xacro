@@ -1179,7 +1179,7 @@
     <parent link="Frame_fixation_articule" />
     <child link="joint_remorque_simple" />
     <axis xyz="0 0 1"/>
-    <limit effort="1000000000.0" velocity="20" lower="-1.0471975511965976313" upper="1.0471975511965976313"/>
+    <limit effort="1000000000.0" velocity="20" lower="-0.78539816339744830962" upper="0.78539816339744830962"/>
     <physics>
     <simbody></simbody>
     <ode>

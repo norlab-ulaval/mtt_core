@@ -89,7 +89,7 @@ class MttPathFollower(Node):
         self.declare_parameter("k_y", 0.6)
         self.declare_parameter("k_theta", 1.2)
         self.declare_parameter("l_eq_m", 2.4)
-        self.declare_parameter("psi_max_rad", math.radians(60.0))
+        self.declare_parameter("psi_max_rad", 0.733)  # ±42° operational safety limit (physical stop is 45°)
         self.declare_parameter("psi_dot_max_rad_s", 0.5)
         self.declare_parameter("kappa_max", 0.7)
         self.declare_parameter("advance_distance_m", 0.35)

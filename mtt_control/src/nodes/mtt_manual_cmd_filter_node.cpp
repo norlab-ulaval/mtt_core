@@ -63,6 +63,55 @@ MttManualCmdFilterNode::MttManualCmdFilterNode(const rclcpp::NodeOptions & optio
   timer_ = create_wall_timer(
     std::chrono::duration<double>(1.0 / std::max(1.0, publish_rate_hz_)),
     std::bind(&MttManualCmdFilterNode::on_timer, this));
+  param_cb_handle_ = add_on_set_parameters_callback(
+    std::bind(&MttManualCmdFilterNode::on_set_parameters, this, std::placeholders::_1));
+}
+
+rcl_interfaces::msg::SetParametersResult MttManualCmdFilterNode::on_set_parameters(
+  const std::vector<rclcpp::Parameter> & params)
+{
+  rcl_interfaces::msg::SetParametersResult result;
+  result.successful = true;
+
+  // Live-tunable slew rates. A rate of 0 would freeze the limiter output at its
+  // current value, so the lower bound must stay strictly positive. 20 m/s²
+  // reaches the 5.56 m/s top speed in ~0.3 s — effectively "no ramp".
+  constexpr double kMinRate = 0.05;
+  constexpr double kMaxRate = 20.0;
+
+  for (const auto & param : params) {
+    const auto & name = param.get_name();
+    if (name == "linear_rise_rate" || name == "linear_fall_rate" ||
+        name == "angular_rise_rate" || name == "angular_fall_rate") {
+      const double value = param.as_double();
+      if (value < kMinRate || value > kMaxRate) {
+        result.successful = false;
+        result.reason = name + " must be in [" + std::to_string(kMinRate) + ", " +
+          std::to_string(kMaxRate) + "]";
+        return result;
+      }
+    }
+  }
+
+  std::lock_guard<std::mutex> lock(state_mutex_);
+  for (const auto & param : params) {
+    const auto & name = param.get_name();
+    if (name == "linear_rise_rate") {
+      linear_rise_rate_ = param.as_double();
+    } else if (name == "linear_fall_rate") {
+      linear_fall_rate_ = param.as_double();
+    } else if (name == "angular_rise_rate") {
+      angular_rise_rate_ = param.as_double();
+    } else if (name == "angular_fall_rate") {
+      angular_fall_rate_ = param.as_double();
+    } else {
+      continue;
+    }
+    RCLCPP_INFO(get_logger(), "Live update: %s = %.3f", name.c_str(), param.as_double());
+  }
+  linear_limiter_.set_limits(linear_rise_rate_, linear_fall_rate_);
+  angular_limiter_.set_limits(angular_rise_rate_, angular_fall_rate_);
+  return result;
 }
 
 void MttManualCmdFilterNode::on_input(const geometry_msgs::msg::TwistStamped::SharedPtr msg)

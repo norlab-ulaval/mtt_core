@@ -13,7 +13,7 @@ mtt_can_node:
     steer_deadband: 0.05
     min_steer_speed_ms: 0.1
     model_wheelbase_m: 2.4
-    model_max_articulation_deg: 60.0
+    model_max_articulation_deg: 45.0
     model_speed_response_gain: 3.0
     model_articulation_response_gain: 0.8
     model_brake_gain: 1.0
@@ -32,9 +32,9 @@ mtt_odometry_node:
     pivot_turn_enabled: false
     min_turn_speed_ms: 0.05
     yaw_slip_factor: 1.0
-    max_articulation_deg: 60.0
+    max_articulation_deg: 45.0
     model_wheelbase_m: 2.4
-    model_max_articulation_deg: 60.0
+    model_max_articulation_deg: 45.0
     model_speed_response_gain: 3.0
     model_articulation_response_gain: 0.8
     model_brake_gain: 1.0
@@ -54,7 +54,7 @@ mtt_joint_state_builder_node:
     yaw_rest_rad: 0.0
     roll_rest_rad: 0.0
     articulation_sign: 1.0
-    max_articulation_deg: 60.0
+    max_articulation_deg: 45.0
     trailer_left_link_rest_rad: 0.0
     trailer_right_link_rest_rad: 0.0
     drive_joint_radius_m: 0.0202

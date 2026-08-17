@@ -10,6 +10,7 @@ add_compile_options(-Wall -Wextra -Wpedantic)
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rcl_interfaces REQUIRED)
+find_package(geometry_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 
@@ -24,6 +25,7 @@ target_include_directories(com_position_node
 ament_target_dependencies(com_position_node
     rclcpp
     rcl_interfaces
+    geometry_msgs
     sensor_msgs
     std_msgs
 )

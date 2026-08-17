@@ -21,6 +21,7 @@ find_package(wiln REQUIRED)
 find_package(GTSAM REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(OpenMP REQUIRED)
+find_package(Threads REQUIRED)
 
 # IncrementalFixedLagSmoother (gtsam_unstable) — used by factor_graph_node for OOSM.
 find_library(GTSAM_UNSTABLE_LIB gtsam_unstable REQUIRED)
@@ -45,7 +46,10 @@ target_link_libraries(factor_graph_node gtsam ${GTSAM_UNSTABLE_LIB})
 add_executable(offline_reference_solver
   src/offline_reference_solver.cpp
 )
-target_link_libraries(offline_reference_solver gtsam)
+# Threads: the solve runs on a dedicated large-stack worker thread (see
+# rationale in offline_reference_solver.cpp's main()) to avoid a stack
+# overflow in GTSAM's recursive BayesTree operations on long pose chains.
+target_link_libraries(offline_reference_solver gtsam Threads::Threads)
 
 # ────────────────────────────────────────────────────────────────────
 # COMPONENT: mtt_trailer_localizer_node

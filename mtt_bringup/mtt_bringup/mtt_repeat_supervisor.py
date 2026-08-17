@@ -259,6 +259,12 @@ class MttRepeatSupervisor(Node):
             self._handle_mark_idle,
             callback_group=self._service_group,
         )
+        self._clear_trajectory_srv = self.create_service(
+            Trigger,
+            "mtt_repeat/clear_trajectory",
+            self._handle_clear_trajectory,
+            callback_group=self._service_group,
+        )
 
         self._timer = self.create_timer(1.0 / max(self._monitor_rate_hz, 1.0), self._monitor)
 
@@ -704,6 +710,28 @@ class MttRepeatSupervisor(Node):
         self._set_state(RepeatState.IDLE, "trajectory cleared")
         response.success = True
         response.message = "repeat state reset to idle"
+        return response
+
+    def _handle_clear_trajectory(self, _, response: Trigger.Response) -> Trigger.Response:
+        with self._state_lock:
+            if self._recording or self._replaying or self._awaiting_start:
+                response.success = False
+                response.message = "clear refused while Teach/Replay is active; cancel or stop first"
+                return response
+        ok, detail = self._publish_wiln_command("clear_trajectory")
+        if not ok:
+            response.success = False
+            response.message = detail
+            return response
+        with self._state_lock:
+            self._trajectory_ready = False
+            self._recording = False
+            self._replaying = False
+            self._awaiting_start = False
+            self._armed_since = None
+        self._set_state(RepeatState.IDLE, "trajectory cleared by operator")
+        response.success = True
+        response.message = "active WILN trajectory cleared; saved routes were preserved"
         return response
 
     def _handle_play_line(self, _, response: Trigger.Response) -> Trigger.Response:

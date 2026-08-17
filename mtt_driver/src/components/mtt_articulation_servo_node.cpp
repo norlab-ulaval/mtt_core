@@ -19,7 +19,7 @@ MttArticulationServoNode::MttArticulationServoNode(const rclcpp::NodeOptions & o
   p.ki                   = declare_parameter("ki",                   0.0);
   p.integrator_limit     = declare_parameter("integrator_limit",     0.30);
   p.max_steer            = declare_parameter("max_steer",            1.0);
-  p.max_articulation_rad = declare_parameter("max_articulation_rad", 1.047);
+  p.max_articulation_rad = declare_parameter("max_articulation_rad", 0.733);
   p.max_velocity_rad_s   = declare_parameter("max_velocity_rad_s",   0.50);
   servo_.set_params(p);
   servo_.reset(0.0);

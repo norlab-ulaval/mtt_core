@@ -31,6 +31,11 @@ ComPositionNode::ComPositionNode(const rclcpp::NodeOptions & options)
     home_position_counts_ = declare_parameter(
         "home_position_counts", std::numeric_limits<double>::quiet_NaN());
 
+    enable_com_flick_         = declare_parameter("enable_com_flick", true);
+    com_flick_gaz_threshold_  = declare_parameter("com_flick_gaz_threshold", 0.70);
+    com_flick_home_duration_s_= declare_parameter("com_flick_home_duration_s", 0.18);
+    max_linear_speed_         = declare_parameter("max_linear_speed", 1.50);
+
     calib_file_ = declare_parameter(
         "calibration_file", std::string("/data/mtt/com_calibration.yaml"));
     consistency_threshold_ = declare_parameter("home_consistency_threshold", 1000.0);
@@ -72,6 +77,10 @@ ComPositionNode::ComPositionNode(const rclcpp::NodeOptions & options)
         "/motor/joint_state", 10,
         [this](const sensor_msgs::msg::JointState::SharedPtr m) { on_joint_state(m); });
 
+    cmd_vel_sub_ = create_subscription<geometry_msgs::msg::TwistStamped>(
+        "cmd_vel/manual_raw", 10,
+        [this](const geometry_msgs::msg::TwistStamped::SharedPtr m) { on_cmd_vel(m); });
+
     loop_timer_ = create_wall_timer(
         std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::duration<double>(dt_)),
@@ -81,10 +90,11 @@ ComPositionNode::ComPositionNode(const rclcpp::NodeOptions & options)
                 "ComPositionNode ready — amplitude=%.0f counts, "
                 "setup_slew=%.0f, run_slew=%.0f, rearm_slew=%.0f counts/s, "
                 "direction_sign=%.0f, park_resume_on_steer=%s, "
-                "steer_deadband=%.2f",
+                "steer_deadband=%.2f, com_flick=%s (gaz_thresh=%.0f%%, home_snap=%.0fms)",
                 amplitude_, setup_slew_, run_slew_, rearm_slew_,
                 direction_sign_, park_resume_on_steer_ ? "true" : "false",
-                steer_deadband_);
+                steer_deadband_, enable_com_flick_ ? "enabled" : "disabled",
+                com_flick_gaz_threshold_ * 100.0, com_flick_home_duration_s_ * 1000.0);
     if (!std::isnan(home_position_counts_)) {
         RCLCPP_INFO(get_logger(), "  home_position_counts=%.0f (from YAML)",
                     home_position_counts_);
@@ -164,10 +174,17 @@ void ComPositionNode::on_com_mode(const std_msgs::msg::Bool::SharedPtr msg)
 
 void ComPositionNode::on_com_steer(const std_msgs::msg::Float64::SharedPtr msg)
 {
-    steer_ = direction_sign_ * std::clamp(msg->data, -1.0, 1.0);
+    // Absolute steering direction: Right on joystick = Always Right on COM motor
+    steer_ = std::clamp(msg->data, -1.0, 1.0);
     if (std::abs(steer_) < steer_deadband_) {
         steer_ = 0.0;
     }
+}
+
+void ComPositionNode::on_cmd_vel(const geometry_msgs::msg::TwistStamped::SharedPtr msg)
+{
+    const double vx = std::abs(msg->twist.linear.x);
+    throttle_norm_ = std::clamp(vx / std::max(max_linear_speed_, 1e-3), 0.0, 1.0);
 }
 
 void ComPositionNode::on_set_home(const std_msgs::msg::Empty::SharedPtr /*msg*/)
@@ -303,8 +320,36 @@ void ComPositionNode::loop()
 
     // ── RUN: spring-return mode ──
     if (state_ == State::RUN) {
-        const double h      = home_.value();
-        const double target = std::clamp(h + steer_ * amplitude_,
+        const double h = home_.value();
+        double target_steer = steer_;
+
+        if (enable_com_flick_) {
+            if (throttle_norm_ >= com_flick_gaz_threshold_ && std::abs(steer_) >= steer_deadband_) {
+                if (!flick_triggered_) {
+                    flick_triggered_ = true;
+                    flick_stage_     = 1;
+                    flick_timer_     = com_flick_home_duration_s_;
+                }
+            } else if (throttle_norm_ < 0.40) {
+                flick_triggered_ = false;
+                if (flick_stage_ != 0 && throttle_norm_ < 0.20) {
+                    flick_stage_ = 0;
+                }
+            }
+
+            if (flick_stage_ == 1) {
+                target_steer = 0.0; // Snap to Home
+                flick_timer_ -= dt_;
+                if (flick_timer_ <= 0.0) {
+                    flick_stage_ = 2; // Return to steer side
+                    flick_timer_ = 0.0;
+                }
+            } else if (flick_stage_ == 2) {
+                target_steer = steer_; // Return to full steer side
+            }
+        }
+
+        const double target = std::clamp(h + target_steer * amplitude_,
                                          h - amplitude_,
                                          h + amplitude_);
         if (deadman_) {

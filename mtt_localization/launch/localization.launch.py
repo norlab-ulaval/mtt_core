@@ -14,6 +14,8 @@ def generate_launch_description():
     articulation_topic = LaunchConfiguration('articulation_topic')
     use_gps = LaunchConfiguration('use_gps')
     use_gps_heading = LaunchConfiguration('use_gps_heading')
+    use_visual_odom = LaunchConfiguration('use_visual_odom')
+    visual_odom_topic = LaunchConfiguration('visual_odom_topic')
 
     # ── ISAM2 Factor Graph — tractor SE(3) pose + optimised φ ──
     # Subscribes: IMU, track odom, GPS, LiDAR odom, /mtt/articulation_state,
@@ -31,6 +33,8 @@ def generate_launch_description():
             'articulation_topic': articulation_topic,
             'use_gps': use_gps,
             'use_gps_heading': use_gps_heading,
+            'use_visual_odom': use_visual_odom,
+            'visual_odom_topic': visual_odom_topic,
         }],
     )
 
@@ -88,7 +92,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'use_gps_heading',
-            default_value='true',
+            default_value='false',
             description=(
                 'Fuse GPS dual-antenna heading as an absolute rotation prior. Requires '
                 'gps_antennas=dual — on a single-antenna session (see session_info.yaml) '
@@ -98,6 +102,53 @@ def generate_launch_description():
                 'absolute-orientation constraints across keyframes as the robot turns, '
                 'which manifests as IndeterminantLinearSystemException near the IMU bias '
                 '— set to false for single-antenna sessions.'
+            ),
+        ),
+        DeclareLaunchArgument(
+            'use_visual_odom',
+            default_value='true',
+            description=(
+                'Fuse a visual-odometry BetweenFactor. Enabled 2026-07-27 on the ZED '
+                'onboard-VIO path (visual_odom_topic default below), after the '
+                'extrinsic-conjugation fix in factor_graph_node.cpp (corrects for the '
+                '~0.605m lever arm between base_footprint and zed_camera_link, which the '
+                'raw delta ignored) landed with the vo_state gate + kinematic jump '
+                'rejection also in place. Empirical A/B validation on the ice-rink bag '
+                '(2026-07-27) was inconclusive on THIS bag specifically -- the correction\'s '
+                'per-step magnitude was swamped by ~10-25cm of ZED VIO/ICP noise because '
+                'that session\'s rotation rates were modest -- but the extrinsic math was '
+                'independently confirmed exact against the bag\'s own /tf_static (0.605m, '
+                '0deg rotation), and the failure modes are gated (see vo_state gate + '
+                'kinematic rejection in visual_odom_callback). Enabled deliberately despite '
+                'the inconclusive A/B result, not because it was proven decisively better. '
+                'Isaac ROS Visual SLAM (/isaac/vslam/odometry, GPU-accelerated) is a '
+                'higher-quality alternative gated behind the live_robot isaac_vslam '
+                'compose profile plus a still-missing status-republishing bridge (see '
+                'visual_status_topic in factor_graph_node.cpp) -- not switched to yet.\n'
+                'IMPORTANT: this launch argument\'s default, not localization.yaml\'s '
+                'use_visual_odom value, is authoritative here -- Node(parameters=[config, '
+                '{...}]) below lists the launch-arg dict AFTER the YAML, so it always wins '
+                '(same override-precedence class of bug root-caused and fixed for ZED\'s '
+                'publish_imu_tf on 2026-07-26; do not let the two drift out of sync).'
+            ),
+        ),
+        DeclareLaunchArgument(
+            'visual_odom_topic',
+            default_value='isaac/vslam/odometry',
+            description=(
+                'Topic for the visual-odometry BetweenFactor (only read when '
+                'use_visual_odom=true). Default is Isaac ROS Visual SLAM (2026-07-27, '
+                'isaac_vslam is now a default compose service, not just opt-in profile) -- '
+                'GPU-accelerated, ~60Hz, real loop-closure SLAM (vs the ZED SDK\'s own onboard '
+                'VIO at ~13Hz). If isaac_vslam is not running (e.g. bag replay without an '
+                'isaac-profile recording, or a machine without the GPU sidecar image), this '
+                'topic simply never publishes -- factor_graph_node degrades gracefully to no '
+                'visual factor, matching every other optional source in this graph. Override '
+                'to zed/zed_node/odom for the ZED\'s own onboard VIO instead (this is what was '
+                'empirically validated via bag replay 2026-07-27 -- Isaac itself has not been '
+                'validated end-to-end through this exact code path yet, only VIO tracking in '
+                'isolation and the extrinsic math via the ZED path, which shares the same '
+                'zed_camera_link child_frame_id and lever arm).'
             ),
         ),
         factor_graph,

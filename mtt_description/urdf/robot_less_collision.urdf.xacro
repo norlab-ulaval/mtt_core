@@ -1052,7 +1052,7 @@
     <parent link="Frame_fixation_articule" />
     <child link="joint_remorque_simple" />
     <axis xyz="0 0 1"/>
-    <limit effort="1000000000.0" velocity="20" lower="-1.0471975511965976313" upper="1.0471975511965976313"/>
+    <limit effort="1000000000.0" velocity="20" lower="-0.78539816339744830962" upper="0.78539816339744830962"/>
     <physics>
     <simbody></simbody>
     <ode>
@@ -1199,7 +1199,7 @@
 <joint name="imu_joint" type="fixed">
   <parent link="hesai_lidar"/>
   <child link="imu_link"/>
-  <origin xyz="0.0 0.0 0.061" rpy="3.141596 0 0"/>
+  <origin xyz="${imu_calib_xyz}" rpy="${imu_calib_rpy}"/>
 </joint>
 
 <link name="mti10_imu_link_right"/>
@@ -1207,7 +1207,7 @@
 <joint name="mti10_imu_joint_right" type="fixed">
   <parent link="hesai_lidar"/>
   <child link="mti10_imu_link_right"/>
-  <origin xyz="-0.295 -0.030 -0.785" rpy="0 1.570796 0"/>
+  <origin xyz="${mti10_right_calib_xyz}" rpy="${mti10_right_calib_rpy}"/>
 </joint>
 
 <link name="mti10_imu_link_left"/>
@@ -1215,7 +1215,7 @@
 <joint name="mti10_imu_joint_left" type="fixed">
   <parent link="hesai_lidar"/>
   <child link="mti10_imu_link_left"/>
-  <origin xyz="0.295 -0.030 -0.785" rpy="0 1.570796 3.141596"/>
+  <origin xyz="${mti10_left_calib_xyz}" rpy="${mti10_left_calib_rpy}"/>
 </joint>
 
 <link name="zed_camera_link"/>
@@ -1223,7 +1223,7 @@
 <joint name="zed2i_mount_joint" type="fixed">
   <parent link="hesai_lidar"/>
   <child link="zed_camera_link"/>
-  <origin xyz="0.0 -0.47 -0.1627" rpy="0.0 0.0 -1.57079"/>
+  <origin xyz="${zed2i_calib_xyz}" rpy="${zed2i_calib_rpy}"/>
 </joint>
 
 <!-- ZED 2i internal frames.
@@ -1323,7 +1323,7 @@
 <joint name="rsairy_mount_joint" type="fixed">
   <parent link="hesai_lidar"/>
   <child link="rsairy"/>
-  <origin xyz="0.060281 0.850474 -0.020308" rpy="3.115775 -1.215034 1.582805"/>
+  <origin xyz="${rsairy_calib_xyz}" rpy="${rsairy_calib_rpy}"/>
 </joint>
 
 <!-- OAK-D base mount mirrored from the live stack. -->

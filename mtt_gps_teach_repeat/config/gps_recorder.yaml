@@ -1,0 +1,24 @@
+mtt_gps_recorder_node:
+  ros__parameters:
+    odom_topic: "localization/odom"
+    fix_topic: "/gps_front/fix"
+    output_file: ""
+    routes_directory: "data/gps_routes"
+    route_prefix: "gps_route"
+    map_frame_id: "map"
+    autosave_on_shutdown: false
+    fix_timeout_s: 1.0
+    min_dist_between_points: 0.1
+    min_speed: 0.1
+    # Reject a sample if it implies a speed above this — catches
+    # localization/GPS jumps (reacquisition, multipath, ISAM2 relocalization)
+    # before they bend the taught curve.
+    max_plausible_speed_ms: 5.0
+    # Centered moving-average half-window (points) applied once, on stop,
+    # before saving. 0 disables smoothing.
+    smoothing_window_size: 2
+    # Minimum fix quality required to record a waypoint: rtk_fix, rtk_float,
+    # dgps, spp, or none. Samples below this are skipped, not recorded.
+    min_fix_quality: "rtk_float"
+    # [latitude_deg, longitude_deg, altitude_m] — must match gps_path_server.yaml
+    anchor: [46.778879, -71.277157, 0.0]

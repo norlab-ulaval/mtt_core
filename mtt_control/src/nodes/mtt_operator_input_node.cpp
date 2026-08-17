@@ -47,6 +47,7 @@ MttOperatorInputNode::MttOperatorInputNode(const rclcpp::NodeOptions & options)
   enable_com_direction_switch_ = declare_parameter("enable_com_direction_switch", false);
   com_direction_toggle_button_index_ =
     declare_parameter("com_direction_toggle_button_index", -1);
+  com_quick_park_button_index_ = declare_parameter("com_quick_park_button_index", -1);
   com_short_press_max_s_       = declare_parameter("com_short_press_max_s",       1.5);
   com_long_press_min_s_        = declare_parameter("com_long_press_min_s",        4.0);
 
@@ -143,6 +144,56 @@ MttOperatorInputNode::MttOperatorInputNode(const rclcpp::NodeOptions & options)
     "mtt/set_steer_control_mode");
   odom_steer_mode_client_ = create_client<mtt_interfaces::srv::SetSteerControlMode>(
     "mtt/odometry/set_steer_control_mode");
+
+  param_cb_handle_ = add_on_set_parameters_callback(
+    std::bind(&MttOperatorInputNode::on_set_parameters, this, std::placeholders::_1));
+}
+
+rcl_interfaces::msg::SetParametersResult MttOperatorInputNode::on_set_parameters(
+  const std::vector<rclcpp::Parameter> & params)
+{
+  rcl_interfaces::msg::SetParametersResult result;
+  result.successful = true;
+
+  // Live-tunable software ceilings. 5.56 m/s (20 km/h) matches the physical
+  // top speed encoded in mtt_can_node.max_linear_speed_ms — the CAN scaling
+  // saturates there anyway, so a higher value cannot be honored.
+  constexpr double kMaxLinearCeiling = 5.56;
+  constexpr double kMaxAngularCeiling = 1.0;
+
+  for (const auto & param : params) {
+    const auto & name = param.get_name();
+    if (name == "max_linear_speed") {
+      const double value = param.as_double();
+      if (value <= 0.0 || value > kMaxLinearCeiling) {
+        result.successful = false;
+        result.reason = "max_linear_speed must be in (0, " +
+          std::to_string(kMaxLinearCeiling) + "]";
+        return result;
+      }
+    } else if (name == "max_angular_command") {
+      const double value = param.as_double();
+      if (value <= 0.0 || value > kMaxAngularCeiling) {
+        result.successful = false;
+        result.reason = "max_angular_command must be in (0, " +
+          std::to_string(kMaxAngularCeiling) + "]";
+        return result;
+      }
+    }
+  }
+
+  for (const auto & param : params) {
+    const auto & name = param.get_name();
+    if (name == "max_linear_speed") {
+      max_linear_speed_ = param.as_double();
+    } else if (name == "max_angular_command") {
+      max_angular_command_ = param.as_double();
+    } else {
+      continue;
+    }
+    RCLCPP_INFO(get_logger(), "Live update: %s = %.3f", name.c_str(), param.as_double());
+  }
+  return result;
 }
 
 void MttOperatorInputNode::on_selected_mode(const std_msgs::msg::String::SharedPtr msg)
@@ -296,6 +347,14 @@ void MttOperatorInputNode::on_joy(const sensor_msgs::msg::Joy::SharedPtr msg)
     RCLCPP_WARN(
       get_logger(),
       "COM direction sign toggled from joystick: %.0f", com_direction_sign_);
+  }
+
+  if (
+    com_quick_park_button_index_ >= 0 &&
+    joystick_state_.button_rising(static_cast<std::size_t>(com_quick_park_button_index_)))
+  {
+    RCLCPP_INFO(get_logger(), "Quick PARK button pressed → return to home");
+    com_park_pub_->publish(std_msgs::msg::Empty());
   }
 
   float linear_axis = joystick_state_.axis_value(static_cast<std::size_t>(linear_axis_index_));

@@ -36,7 +36,8 @@
  * 4. Coarse+fine ICP with yaw-hypothesis sweep (0°, ±90°, 180°)
  * 5. Score overlap ratio; if < threshold → fallback identity + warn
  * 6. Transport trajectory: for each pose p, p_live = T_live_old · p_old
- *    Republish corrected PathSequence on /wiln/trajectory (transient_local)
+ *    Publish corrected PathSequence on /wiln/trajectory/corrected. The WILN
+ *    Teach node is the single canonical /wiln/trajectory publisher.
  * 7. Seed /mapping/pose_in with corrected route-start pose (loose prior)
  */
 
@@ -195,6 +196,8 @@ public:
         declare_parameter("map_topic",            std::string("/mapping/map"));
         declare_parameter("odom_topic",           std::string("/mapping/icp_odom"));
         declare_parameter("trajectory_topic",     std::string("/wiln/trajectory"));
+        declare_parameter("corrected_trajectory_topic",
+                          std::string("/wiln/trajectory/corrected"));
         declare_parameter("pose_prior_topic",     std::string("/mapping/pose_in"));
 
         icp_max_dist_coarse_ = get_parameter("icp_max_dist_coarse").as_double();
@@ -206,6 +209,8 @@ public:
         const std::string map_topic   = get_parameter("map_topic").as_string();
         const std::string odom_topic  = get_parameter("odom_topic").as_string();
         const std::string traj_topic  = get_parameter("trajectory_topic").as_string();
+        const std::string corrected_traj_topic =
+            get_parameter("corrected_trajectory_topic").as_string();
         const std::string prior_topic = get_parameter("pose_prior_topic").as_string();
 
         // Latched (transient-local) QoS for map and trajectory
@@ -235,7 +240,7 @@ public:
             });
 
         // ── Publishers ────────────────────────────────────────────────────────
-        traj_pub_  = create_publisher<PathSeq>(traj_topic, latched);
+        traj_pub_  = create_publisher<PathSeq>(corrected_traj_topic, latched);
         prior_pub_ = create_publisher<geometry_msgs::msg::PoseWithCovarianceStamped>(
             prior_topic, rclcpp::QoS(10));
 
@@ -248,9 +253,9 @@ public:
             });
 
         RCLCPP_INFO(get_logger(),
-            "mtt_map_relocalizer ready — map=%s odom=%s traj=%s prior=%s",
+            "mtt_map_relocalizer ready — map=%s odom=%s traj=%s corrected=%s prior=%s",
             map_topic.c_str(), odom_topic.c_str(),
-            traj_topic.c_str(), prior_topic.c_str());
+            traj_topic.c_str(), corrected_traj_topic.c_str(), prior_topic.c_str());
     }
 
 private:

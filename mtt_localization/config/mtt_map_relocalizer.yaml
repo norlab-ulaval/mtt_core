@@ -19,4 +19,5 @@ mtt_map_relocalizer:
     map_topic:           "/mapping/map"
     odom_topic:          "/mapping/icp_odom"
     trajectory_topic:    "/wiln/trajectory"
+    corrected_trajectory_topic: "/wiln/trajectory/corrected"
     pose_prior_topic:    "/mapping/pose_in"

@@ -11,7 +11,9 @@ mtt_avoidance_supervisor:
 mtt_rejoin_planner:
   ros__parameters:
     reference_path_topic: /wiln/global_plan
-    odom_topic: /mapping/icp_measurement
+    # upstream ros2 has no odom-bridge, no /mapping/icp_measurement (see
+    # dependencies/robot.repos, 2026-07-28) — read /mapping/icp_odom directly.
+    odom_topic: /mapping/icp_odom
     compute_path_action: /mtt_avoidance/compute_path_to_pose
     validation_service: /mtt_avoidance/validate_path
     planner_id: GridBased
@@ -25,7 +27,9 @@ mtt_rejoin_planner:
 mtt_composite_path_validator:
   ros__parameters:
     costmap_topic: /mtt_avoidance/global_costmap/costmap_raw
-    tractor_odom_topic: /mapping/icp_measurement
+    # upstream ros2 has no odom-bridge, no /mapping/icp_measurement (see
+    # dependencies/robot.repos, 2026-07-28) — read /mapping/icp_odom directly.
+    tractor_odom_topic: /mapping/icp_odom
     trailer_pose_topic: /trailer/pose_in_map
     articulation_topic: /hardware/articulation_angle
     validation_service: /mtt_avoidance/validate_path
@@ -68,7 +72,9 @@ mtt_recovery_manager:
     backup_action: /mtt_avoidance/backup
     rear_clearance_topic: /mtt_obstacle/rear_clearance_m
     articulation_topic: /hardware/articulation_angle
-    odom_topic: /mapping/icp_measurement
+    # upstream ros2 has no odom-bridge, no /mapping/icp_measurement (see
+    # dependencies/robot.repos, 2026-07-28) — read /mapping/icp_odom directly.
+    odom_topic: /mapping/icp_odom
     backup_distance_m: 0.50
     backup_speed_ms: 0.12
     clearance_margin_m: 0.40

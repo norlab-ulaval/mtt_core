@@ -34,7 +34,7 @@ struct ArticulationServoParams
   double ki{0.0};                    ///< integral gain (disabled by default)
   double integrator_limit{0.30};     ///< anti-windup clamp (normalized_steer·s)
   double max_steer{1.0};             ///< output saturation [0..1]
-  double max_articulation_rad{1.047};///< ±60° physical limit
+  double max_articulation_rad{0.733};///< ±42° operational safety limit (physical stop is 45°)
   double max_velocity_rad_s{0.50};   ///< velocity mode rate limit
 };
 

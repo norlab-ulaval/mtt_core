@@ -244,7 +244,9 @@ velocity_smoother:
     min_velocity: [-0.35, 0.0, -0.30]
     max_accel: [0.45, 0.0, 0.35]
     max_decel: [-0.70, 0.0, -0.35]
-    odom_topic: /mapping/icp_measurement
+    # upstream ros2 has no odom-bridge, no /mapping/icp_measurement (see
+    # dependencies/robot.repos, 2026-07-28) — read /mapping/icp_odom directly.
+    odom_topic: /mapping/icp_odom
     odom_duration: 0.20
     deadband_velocity: [0.02, 0.0, 0.01]
     velocity_timeout: 0.5

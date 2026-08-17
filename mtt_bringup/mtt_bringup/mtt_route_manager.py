@@ -251,6 +251,8 @@ class MttRouteManager(Node):
         self._route_loaded = False
         self._replaying = False
         self._teach_was_recording = False  # for auto-save trigger
+        self._latest_trajectory_pose_count = 0
+        self._pending_auto_save: Optional[Tuple[int, float]] = None
         self._bad_route_error_since: Optional[float] = None
         self._bad_mode_since: Optional[float] = None
         self._replay_started_at: Optional[float] = None  # wall time when replay started
@@ -502,14 +504,15 @@ class MttRouteManager(Node):
     def _on_trajectory(self, msg) -> None:
         """Sync _active_route.poses from /wiln/trajectory.
 
-        wiln_route_node publishes the loaded trajectory here; the mtt_map_relocalizer
-        republishes a corrected version after SE(3) alignment.  Keeping poses in sync
-        means the pre-replay distance check always compares against the same trajectory
-        WILN will actually follow — no frame mismatch between the two.
+        WilnTeachNode is the single publisher here. Route loading and map
+        relocalization feed it on dedicated source topics, and it republishes
+        each result as a complete replacement. Keeping poses in sync means the
+        pre-replay distance check always compares against the same trajectory
+        WILN will actually follow -- no frame mismatch between the two.
 
-        Sequencing: wiln_route_node now publishes the trajectory only after LoadMap
-        returns. This callback can still run before the route-manager service thread
-        marks the route active, so keep the pending hand-off.
+        Sequencing: wiln_route_node emits its source trajectory only after
+        LoadMap returns. This callback can still run before the route-manager
+        service thread marks the route active, so keep the pending hand-off.
         """
         poses: List[RoutePose] = []
         for path in msg.paths:
@@ -518,12 +521,27 @@ class MttRouteManager(Node):
                 o = stamped_pose.pose.orientation
                 yaw = yaw_from_quaternion(o.x, o.y, o.z, o.w)
                 poses.append(RoutePose(x=p.x, y=p.y, z=p.z, yaw=yaw))
-        if not poses:
-            return
         frame = msg.header.frame_id or ""
         updated = False
         old_count = 0
+        auto_save_request: Optional[Tuple[int, float]] = None
         with self._lock:
+            self._latest_trajectory_pose_count = len(poses)
+            if (
+                poses
+                and self._pending_auto_save is not None
+                and self._pending_auto_save[0] == len(poses)
+            ):
+                auto_save_request = self._pending_auto_save
+                self._pending_auto_save = None
+            if not poses:
+                # A new Teach session explicitly clears the canonical latched
+                # trajectory. Never leave the previous route eligible for save.
+                self._pending_trajectory = None
+                self._active_route = None
+                self._route_loaded = False
+                self._replaying = False
+                return
             # Always store as pending so _handle_load can apply it after the route is armed.
             self._pending_trajectory = (poses, frame)
             if self._route_loaded and self._active_route is not None:
@@ -539,6 +557,8 @@ class MttRouteManager(Node):
                 f"{len(poses)} poses (was {old_count}); "
                 f"start=({poses[0].x:.2f},{poses[0].y:.2f}) frame={frame}"
             )
+        if auto_save_request is not None:
+            self._auto_save_route(*auto_save_request)
 
     def _route_path(self, route_name: str) -> Path:
         safe_name = route_name.strip().strip("/")
@@ -786,8 +806,9 @@ class MttRouteManager(Node):
             )
             return
 
-        # Give wiln_route_node time to process the load command and publish the
-        # trajectory on /wiln/trajectory before the relocalizer reads it.
+        # Give wiln_route_node time to process the load command and WilnTeachNode
+        # time to republish the replacement on /wiln/trajectory before the
+        # relocalizer reads it.
         import time
         time.sleep(0.5)
 
@@ -996,8 +1017,8 @@ class MttRouteManager(Node):
                 self._active_route = route
                 self._route_loaded = True
                 self._replaying = False
-                # Apply the trajectory that wiln_route_node published during load
-                # (it arrives before mark_ready, so _on_trajectory couldn't apply it yet).
+                # Apply the canonical replacement produced during load. It can
+                # arrive before mark_ready, so _on_trajectory cannot apply it yet.
                 pending = self._pending_trajectory
                 if pending is not None:
                     pending_poses, pending_frame = pending
@@ -1008,8 +1029,9 @@ class MttRouteManager(Node):
                     self._pending_trajectory = None
             self._publish_route(route)
             # Kick off map-to-map SE(3) relocalization in a background thread so
-            # the load response is returned immediately.  The corrected trajectory
-            # is republished by the relocalizer node on /wiln/trajectory when done.
+            # the load response is returned immediately. The relocalizer emits
+            # a corrected source trajectory and WilnTeachNode republishes it on
+            # the canonical /wiln/trajectory topic when done.
             if self._auto_relocalize_on_load:
                 reloc_thread = threading.Thread(
                     target=self._call_relocalize, args=(route,), daemon=True
@@ -1143,24 +1165,38 @@ class MttRouteManager(Node):
         """Track teach state transitions to trigger auto-save."""
         if WilnStateMsg is None:
             return
+        save_now: Optional[Tuple[int, float]] = None
         with self._lock:
             was_recording = self._teach_was_recording
             if msg.state == WilnStateMsg.RECORDING:
                 self._teach_was_recording = True
+                self._latest_trajectory_pose_count = 0
+                self._active_route = None
+                self._route_loaded = False
+                self._replaying = False
+                self._pending_trajectory = None
+                self._pending_auto_save = None
                 return
             if msg.state == WilnStateMsg.IDLE and was_recording:
                 self._teach_was_recording = False
-                # Defer save to avoid holding the lock during I/O
-                save_needed = True
-            else:
-                save_needed = False
+                if msg.trajectory_poses > 0:
+                    request = (int(msg.trajectory_poses), float(msg.trajectory_length_m))
+                    if self._latest_trajectory_pose_count == msg.trajectory_poses:
+                        save_now = request
+                    else:
+                        # DDS callbacks from different publishers are not
+                        # ordered. Wait for the canonical trajectory carrying
+                        # exactly the pose count announced by Teach state.
+                        self._pending_auto_save = request
 
-        if save_needed and msg.trajectory_poses > 0:
-            self._auto_save_route(msg.trajectory_poses, msg.trajectory_length_m)
+        if save_now is not None:
+            self._auto_save_route(*save_now)
 
     def _auto_save_route(self, n_poses: int, length_m: float) -> None:
         """Save the just-recorded trajectory under a timestamped route name."""
-        timestamp = datetime.now().strftime("%Y-%m-%d_%H%M")
+        # Include seconds and milliseconds: consecutive Teach sessions must
+        # never overwrite the same route directory within one minute.
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S_%f")[:-3]
         route_name = f"route_{timestamp}"
         route_dir = self._routes_dir / route_name
         ltr_path = route_dir / self._route_file_name
@@ -1172,7 +1208,10 @@ class MttRouteManager(Node):
             return
 
         # Publish save command to wiln_route_node (which writes .ltr + async .vtk)
-        save_cmd = f"save:{ltr_path}"
+        # Carry the expected canonical pose count across the independent
+        # command and trajectory DDS streams. wiln_route_node defers the save
+        # until its own cache matches, so it cannot persist the previous Teach.
+        save_cmd = f"save:{ltr_path};poses={n_poses}"
         self._publish_wiln_command(save_cmd)
         self.get_logger().info(
             f"Auto-save triggered: {route_name} ({n_poses} poses, {length_m:.1f} m) → {ltr_path}"

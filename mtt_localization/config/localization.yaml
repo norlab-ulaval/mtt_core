@@ -11,9 +11,20 @@ factor_graph_node:
     use_imu_primary: true
     use_track_odom: true
     use_gps: true
-    use_gps_heading: true
+    use_gps_heading: false
     use_lidar_odom: true
-    use_visual_odom: false     # Enable when ZED VIO is available
+    # true (2026-07-27): fuses ZED onboard-VIO as a BetweenFactor, after the
+    # extrinsic-conjugation fix + vo_state gate + kinematic jump rejection.
+    # CAUTION: this value is NOT authoritative on the live robot --
+    # localization.launch.py's Node(parameters=[config, {'use_visual_odom':
+    # ...}]) lists the launch argument AFTER this file, so the launch
+    # argument's own default (also 'true', see that file's declaration for
+    # the full rationale) is what actually wins. Keep both in sync by hand;
+    # this is the same override-precedence trap already hit once for ZED's
+    # publish_imu_tf. Set visual_odom_topic below to "isaac/vslam/odometry"
+    # for cuVSLAM instead of the ZED SDK's own onboard VIO (Stage 5, not yet
+    # done -- needs a status-republishing bridge, see factor_graph_node.cpp).
+    use_visual_odom: true
 
     # ISAM2 tuning
     isam2_relinearize_threshold: 0.1
@@ -35,27 +46,60 @@ factor_graph_node:
     imu_accel_walk: 0.0001     # m/s³/√Hz
     imu_gyro_walk: 0.000001    # rad/s²/√Hz
 
-    # Track odometry noise (single chenille, high slip)
-    odom_linear_noise: 0.15    # m/s — loose because tracked vehicle slips
-    odom_angular_noise: 0.10   # rad/s — yaw slip is significant
+    # Track odometry noise (single chenille, high slip). These are sigmas on
+    # the RELATIVE-POSE BetweenFactor between two keyframes (~100ms apart at
+    # the effective ~10Hz tick rate), in metres/radians -- NOT m/s or rad/s
+    # despite the misleading unit suffix these carried before. At 10Hz,
+    # 0.15m per keyframe is ~1.5 m/s of admitted slip -- plausibly
+    # intentional given track slip, but was undocumented; a scale-by-Δt or
+    # scale-by-distance formulation would be more principled (tuning item,
+    # not addressed here).
+    odom_linear_noise: 0.15    # m/keyframe — loose because tracked vehicle slips
+    odom_angular_noise: 0.10   # rad/keyframe — yaw slip is significant
+    # Not yet consumed by the track-odom factor (odom_linear_noise still
+    # covers both x and y there) -- see the declare_parameter comment in
+    # factor_graph_node.cpp. Kept equal to odom_linear_noise until
+    # mtt_odometry carries a real lateral-slip term.
+    odom_lateral_noise: 0.15   # m/keyframe
+
+    # LiDAR/visual odometry relative-pose noise, GTSAM Pose3 ordering
+    # (rx,ry,rz,tx,ty,tz) -- rad,rad,rad,m,m,m. Previously hardcoded
+    # gtsam::Vector6 members in state.hpp (state.hpp still carries these
+    # exact values as the pre-parameter-load fallback).
+    lidar_odom_noise:  [0.05, 0.05, 0.05, 0.01, 0.01, 0.01]
+    visual_odom_noise: [0.10, 0.10, 0.10, 0.02, 0.02, 0.02]
 
     # GPS noise (adapts at runtime for RTK Fix/Float)
     gps_position_noise_xy: 1.0   # meters (SPP mode baseline)
     gps_position_noise_z: 2.0    # meters
     gps_heading_noise: 0.05      # radians (~3° for 1.1m baseline)
+    # Stable horizontal map origin shared with GPS Teach & Repeat. Altitude 0
+    # means "take Z origin from the first valid fix" until surveyed.
+    gps_origin_lat: 46.778879
+    gps_origin_lon: -71.277157
+    gps_origin_alt: 0.0
 
     # Frame IDs
     map_frame: "map"
     odom_frame: "odom"
     base_frame: "base_footprint"
+    # false: mapper_node (norlab_icp_mapper_ros) is the sole owner of the
+    # map->odom TF broadcast. It owns the point cloud that defines "map";
+    # this node's "map" is a different frame (GPS/ENU-anchored, see
+    # gps_origin_lat/lon above, vs the mapper's identity-anchored map) that
+    # happened to share the name. Both were default services broadcasting
+    # the same edge simultaneously -- confirmed 2026-07-26. See the
+    # broadcast_tf declare_parameter comment in factor_graph_node.cpp for
+    # the full reasoning and the planned re-anchor follow-up.
+    broadcast_tf: false
 
     # Topic contract
     imu_topic: "mti100/data"
     track_odom_topic: "mtt_odometry"
-    gps_fix_topic: "gps_left/fix"
+    gps_fix_topic: "/gps_front/fix"
     gps_heading_topic: "gps/heading"
     lidar_odom_topic: "mapping/icp_odom"
-    visual_odom_topic: "zed/zed_node/odom"
+    visual_odom_topic: "zed/zed_node/odom"  # or "isaac/vslam/odometry" (cuVSLAM)
 
     # Output rate (Hz)
     publish_rate: 50.0

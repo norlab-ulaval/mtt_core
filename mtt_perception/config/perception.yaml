@@ -16,7 +16,17 @@ trailer_detector_node:
   ros__parameters:
     lidar_topic: "/rsairy_ns/points"
 
-    # ROI verified in CloudCompare (rsairy frame) + margin
+    # ROI verified in CloudCompare (rsairy frame) + margin.
+    # 2026-07-20: A CloudCompare re-segmentation on a fresh post-displacement
+    # bag looked plausible by eye but was A/B tested against a real
+    # +-40deg articulation sweep (data/hitch_angle_sweep, encoder ground
+    # truth) using scripts/replay_trailer_detector_offline.py and performed
+    # far worse than this box (140 deg RMS error vs 12 deg) — it grabbed a
+    # larger/bulkier cluster (4973 vs 3005 pts) with no clean dominant PCA
+    # axis. Reverted to this box, unchanged since 2026-05-04 and empirically
+    # confirmed still correct after the v1->v2 cage displacement. Do not
+    # replace this box from a single-snapshot segmentation without an
+    # encoder-sweep A/B test first.
     roi_x_min: -0.40
     roi_x_max: -0.15
     roi_y_min: -0.40
@@ -37,8 +47,18 @@ trailer_detector_node:
 
     # Subtract from PCA yaw to get angle relative to MTT.
     # Set to the raw PCA angle observed at zero articulation.
-    # Observed value at straight (0 articulation) ≈ -π/2 in rsairy frame.
-    reference_yaw: -1.5708
+    # Recalibrated 2026-07-21 for the post-cage-move (calib_v2) geometry:
+    # linear regression of unwrapped yaw_pca against the signed hardware
+    # encoder angle over a full +-40deg sweep (data/hitch_angle_sweep) gave
+    # slope=-1.0000 (r=-0.97) -> pure additive offset, no scale/foreshortening
+    # error from the oblique rsairy frame -> reference_yaw is just stale for
+    # the new mount, not a deeper frame problem. Old value -1.5708 (-90deg,
+    # set 2026-05-04 pre-move) gave +8.7deg mean bias / 11.96deg RMS on this
+    # bag; this value gives -0.7deg mean bias / 8.21deg RMS (verified via
+    # scripts/replay_trailer_detector_offline.py --reference-yaw). Re-derive
+    # if the cage moves again: fit intercept of
+    # np.polyfit(hw_angle_signed, np.unwrap(yaw_pca), 1) on a fresh sweep bag.
+    reference_yaw: -1.7356
 
     # Hitch pivot (yaw joint) in base_link — marker only.
     # Computed from URDF: pitch_origin + Rx(-π/2) * yaw_origin

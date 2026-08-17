@@ -1,7 +1,9 @@
 #pragma once
 
 #include <mutex>
+#include <vector>
 
+#include <rcl_interfaces/msg/set_parameters_result.hpp>
 #include <rclcpp/rclcpp.hpp>
 
 #include <geometry_msgs/msg/twist_stamped.hpp>
@@ -31,6 +33,8 @@ private:
   void on_mode(const std_msgs::msg::String::SharedPtr msg);
   void on_estop(const std_msgs::msg::Bool::SharedPtr msg);
   void on_timer();
+  rcl_interfaces::msg::SetParametersResult on_set_parameters(
+    const std::vector<rclcpp::Parameter> & params);
   void reset_filters();
   void reset_filter_state();
   void publish_zero_once(const rclcpp::Time & stamp);
@@ -90,6 +94,7 @@ private:
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr deadman_sub_;
   rclcpp::Publisher<geometry_msgs::msg::TwistStamped>::SharedPtr output_pub_;
   rclcpp::TimerBase::SharedPtr timer_;
+  rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr param_cb_handle_;
 };
 
 }  // namespace mtt_control

@@ -31,8 +31,8 @@ mtt_articulation_servo_node:
     integrator_limit: 0.30   # anti-windup clamp
 
     # ── Limits ──
-    max_steer: 1.0              # output saturation (full scale = ±60°)
-    max_articulation_rad: 1.047 # ±60° physical joint limit
+    max_steer: 1.0              # output saturation (full scale = ±42°)
+    max_articulation_rad: 0.733 # ±42° operational safety limit (physical stop is 45°)
     max_velocity_rad_s: 0.50    # velocity mode rate limit (~29°/s)
 
     # ── Safety ──

@@ -1,14 +1,20 @@
 #pragma once
 
+#include <memory>
 #include <mutex>
+#include <string>
+#include <vector>
 
 #include <rclcpp/rclcpp.hpp>
 
 #include <geometry_msgs/msg/twist_stamped.hpp>
+#include <rcl_interfaces/msg/set_parameters_result.hpp>
 #include <std_msgs/msg/bool.hpp>
+#include <std_msgs/msg/float64.hpp>
 #include <std_msgs/msg/string.hpp>
 
 #include "mtt_control/common/control_mode.hpp"
+#include "mtt_interfaces/srv/set_speed_limit.hpp"
 
 namespace mtt_control
 {
@@ -25,6 +31,11 @@ private:
   void on_auto_enabled(const std_msgs::msg::Bool::SharedPtr msg);
   void on_deadman(const std_msgs::msg::Bool::SharedPtr msg);
   void on_estop(const std_msgs::msg::Bool::SharedPtr msg);
+  rcl_interfaces::msg::SetParametersResult on_set_parameters(
+    const std::vector<rclcpp::Parameter> & parameters);
+  void handle_set_auto_speed_limit(
+    const std::shared_ptr<mtt_interfaces::srv::SetSpeedLimit::Request> request,
+    std::shared_ptr<mtt_interfaces::srv::SetSpeedLimit::Response> response);
   void on_timer();
   bool cmd_is_fresh(const rclcpp::Time & stamp, double timeout_s) const;
   void publish_source(const std::string & source);
@@ -41,6 +52,7 @@ private:
   double auto_timeout_s_{0.5};
   double mode_switch_hold_s_{0.15};
   bool manual_requires_deadman_{true};
+  double max_auto_speed_ms_{4.2};
 
   ControlMode current_mode_{ControlMode::Stop};
   bool auto_enabled_{false};
@@ -61,6 +73,9 @@ private:
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr estop_sub_;
   rclcpp::Publisher<geometry_msgs::msg::TwistStamped>::SharedPtr output_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr source_pub_;
+  rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr auto_speed_limit_pub_;
+  rclcpp::Service<mtt_interfaces::srv::SetSpeedLimit>::SharedPtr auto_speed_limit_srv_;
+  rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr parameter_callback_;
   rclcpp::TimerBase::SharedPtr timer_;
 };
 

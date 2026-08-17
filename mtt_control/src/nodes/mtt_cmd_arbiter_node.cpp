@@ -1,6 +1,7 @@
 #include "mtt_control/nodes/mtt_cmd_arbiter_node.hpp"
 
 #include <algorithm>
+#include <cmath>
 
 namespace mtt_control
 {
@@ -17,6 +18,7 @@ MttCmdArbiterNode::MttCmdArbiterNode(const rclcpp::NodeOptions & options)
   auto_timeout_s_ = declare_parameter("auto_timeout_s", 0.5);
   mode_switch_hold_s_ = declare_parameter("mode_switch_hold_s", 0.15);
   manual_requires_deadman_ = declare_parameter("manual_requires_deadman", true);
+  max_auto_speed_ms_ = declare_parameter("max_auto_speed_ms", 4.2);
 
   last_mode_change_time_ = now();
 
@@ -35,9 +37,68 @@ MttCmdArbiterNode::MttCmdArbiterNode(const rclcpp::NodeOptions & options)
 
   output_pub_ = create_publisher<geometry_msgs::msg::TwistStamped>(output_cmd_topic_, 20);
   source_pub_ = create_publisher<std_msgs::msg::String>(source_topic_, rclcpp::QoS(1).transient_local());
+  auto_speed_limit_pub_ = create_publisher<std_msgs::msg::Float64>(
+    "/mtt_control/auto_speed_limit", rclcpp::QoS(1).transient_local());
+  auto_speed_limit_srv_ = create_service<mtt_interfaces::srv::SetSpeedLimit>(
+    "/mtt_control/set_auto_speed_limit",
+    std::bind(
+      &MttCmdArbiterNode::handle_set_auto_speed_limit, this,
+      std::placeholders::_1, std::placeholders::_2));
+  parameter_callback_ = add_on_set_parameters_callback(
+    std::bind(&MttCmdArbiterNode::on_set_parameters, this, std::placeholders::_1));
   timer_ = create_wall_timer(
     std::chrono::duration<double>(1.0 / std::max(1.0, publish_rate_hz_)),
     std::bind(&MttCmdArbiterNode::on_timer, this));
+
+  std_msgs::msg::Float64 limit;
+  limit.data = max_auto_speed_ms_;
+  auto_speed_limit_pub_->publish(limit);
+}
+
+rcl_interfaces::msg::SetParametersResult MttCmdArbiterNode::on_set_parameters(
+  const std::vector<rclcpp::Parameter> & parameters)
+{
+  rcl_interfaces::msg::SetParametersResult result;
+  result.successful = true;
+  for (const auto & parameter : parameters) {
+    if (parameter.get_name() != "max_auto_speed_ms") {
+      continue;
+    }
+    const double requested = parameter.as_double();
+    if (!std::isfinite(requested) || requested <= 0.0 || requested > 5.56) {
+      result.successful = false;
+      result.reason = "max_auto_speed_ms must be finite and in (0, 5.56] m/s";
+      return result;
+    }
+  }
+
+  for (const auto & parameter : parameters) {
+    if (parameter.get_name() == "max_auto_speed_ms") {
+      {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        max_auto_speed_ms_ = parameter.as_double();
+      }
+      std_msgs::msg::Float64 limit;
+      limit.data = parameter.as_double();
+      auto_speed_limit_pub_->publish(limit);
+      RCLCPP_WARN(get_logger(), "Live AUTO speed limit set to %.2f m/s", limit.data);
+    }
+  }
+  return result;
+}
+
+void MttCmdArbiterNode::handle_set_auto_speed_limit(
+  const std::shared_ptr<mtt_interfaces::srv::SetSpeedLimit::Request> request,
+  std::shared_ptr<mtt_interfaces::srv::SetSpeedLimit::Response> response)
+{
+  const auto result = set_parameter(rclcpp::Parameter("max_auto_speed_ms", request->max_speed_ms));
+  response->success = result.successful;
+  response->message = result.successful ?
+    "AUTO speed limit applied immediately" : result.reason;
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    response->applied_max_speed_ms = max_auto_speed_ms_;
+  }
 }
 
 void MttCmdArbiterNode::on_manual_cmd(const geometry_msgs::msg::TwistStamped::SharedPtr msg)
@@ -147,6 +208,8 @@ void MttCmdArbiterNode::on_timer()
           has_auto_cmd_ && cmd_is_fresh(last_auto_cmd_.header.stamp, auto_timeout_s_)) {
         output = last_auto_cmd_;
         output.header.stamp = now();
+        output.twist.linear.x = std::clamp(
+          output.twist.linear.x, -max_auto_speed_ms_, max_auto_speed_ms_);
         source = "AUTO";
       } else {
         source = "AUTO_WAIT";

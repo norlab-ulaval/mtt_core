@@ -276,13 +276,13 @@ class MttFrontObstacleMonitor(Node):
             cloud = self._latest_cloud
             cloud_time = self._latest_cloud_time
         if cloud is None or cloud_time is None:
-            self._set_stop_state(False)
-            self._publish(False, 1.0, math.inf, "cloud missing: /hesai_lidar/points not received", [])
+            self._stop_active = True
+            self._publish(True, 0.0, math.nan, "cloud missing: /hesai_lidar/points not received", [])
             return
         age = self._now_seconds() - cloud_time
         if age > self._cloud_timeout_s:
-            self._set_stop_state(False)
-            self._publish(False, 1.0, math.inf, f"cloud stale: age={age:.2f}s", [])
+            self._stop_active = True
+            self._publish(True, 0.0, math.nan, f"cloud stale: age={age:.2f}s", [])
             return
 
         try:
@@ -290,8 +290,8 @@ class MttFrontObstacleMonitor(Node):
             self._last_tf_error = ""
         except Exception as exc:
             self._last_tf_error = str(exc)
-            self._set_stop_state(False)
-            self._publish(False, 1.0, math.inf, f"tf/filter unavailable: {self._last_tf_error}", [])
+            self._stop_active = True
+            self._publish(True, 0.0, math.nan, f"tf/filter unavailable: {self._last_tf_error}", [])
             return
 
         stop_detected = result.stop_points >= self._min_stop_points
