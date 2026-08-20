@@ -145,7 +145,18 @@ private:
   bool ice_com_shift_active_{false};
   bool ice_com_shift_parking_home_{false};
   bool ice_com_shift_brake_latched_{false};
-  int ice_com_shift_phase_sign_{1};
+  int ice_com_shift_phase_sign_{1};    // COM axis target side (right/left)
+  // Driving direction (forward/reverse), independent of ice_com_shift_phase_sign_.
+  // Set from the operator's actual throttle-stick push direction at activation
+  // so pushing forward always drives forward, regardless of which side the COM
+  // motor happens to be on. Flips together with ice_com_shift_phase_sign_ on
+  // every automatic phase switch, preserving the alternating forward/reverse
+  // shuttle pattern.
+  int ice_com_shift_drive_sign_{1};
+  // Last side (1=right, -1=left) the operator actually drove the COM motor to
+  // with the stick, kept live in on_joy(). Used as the ice_com_shift experiment's
+  // starting side so it matches wherever the motor physically is.
+  int last_com_side_{1};
   double ice_com_shift_last_slip_ratio_{0.0};
   bool ice_com_shift_has_slip_{false};
   rclcpp::Time ice_com_shift_last_arm_time_{0, 0, RCL_ROS_TIME};

@@ -29,6 +29,14 @@ public:
     switch_cooldown_s_ = declare_parameter("switch_cooldown_s", 1.0);
     enabled_ = declare_parameter("enabled", true);
 
+    // com_forward_sign: which direction_sign value corresponds to the COM position
+    // that helps at HIGH speed (typically: mass shifted toward rear for acceleration).
+    // +1.0 (default) or -1.0 depending on physical motor mounting side.
+    // crossing ABOVE threshold → set com_direction_sign = +com_forward_sign
+    // crossing BELOW threshold → set com_direction_sign = -com_forward_sign
+    com_forward_sign_ = declare_parameter("com_forward_sign", 1.0);
+    com_forward_sign_ = (com_forward_sign_ >= 0.0) ? 1.0 : -1.0;  // snap to ±1
+
     speed_sub_ = create_subscription<std_msgs::msg::Float32>(
       speed_topic_, 20,
       [this](const std_msgs::msg::Float32::SharedPtr msg) { on_speed(msg); });
@@ -78,13 +86,15 @@ private:
     }
 
     if (new_above != above_threshold_) {
-      try_switch(speed_ms);
+      try_switch(speed_ms, new_above);
     }
     above_threshold_ = new_above;
     publish_diagnostics(speed_ms);
   }
 
-  void try_switch(double speed_ms)
+  // going_above: true  = speed just crossed ABOVE threshold (accelerating)
+  //              false = speed just crossed BELOW threshold (decelerating)
+  void try_switch(double speed_ms, bool going_above)
   {
     if (!enabled_) {
       return;
@@ -98,7 +108,17 @@ private:
       }
     }
 
-    com_direction_sign_ = com_direction_sign_ < 0.0 ? 1.0 : -1.0;
+    // Direction-aware deterministic switch — replaces the old blind toggle.
+    // High speed (going_above=true)  → COM in "forward/acceleration" position.
+    // Low speed  (going_above=false) → COM in the opposite position.
+    const double desired_sign = going_above ? com_forward_sign_ : -com_forward_sign_;
+
+    if (std::abs(desired_sign - com_direction_sign_) < 0.5) {
+      // Already at the desired sign for this speed regime. Nothing to do.
+      return;
+    }
+
+    com_direction_sign_ = desired_sign;
     auto sign_msg = std_msgs::msg::Float64();
     sign_msg.data = com_direction_sign_;
     com_direction_pub_->publish(sign_msg);
@@ -106,8 +126,8 @@ private:
     has_last_switch_time_ = true;
     RCLCPP_WARN(
       get_logger(),
-      "COM direction switch on speed threshold crossing: speed=%.2f m/s sign=%.0f",
-      speed_ms, com_direction_sign_);
+      "COM direction switch on speed threshold crossing: speed=%.2f m/s %s threshold → sign=%.0f [com_forward_sign=%.0f]",
+      speed_ms, going_above ? "above" : "below", com_direction_sign_, com_forward_sign_);
   }
 
   void on_com_direction(const std_msgs::msg::Float64::SharedPtr msg)
@@ -143,6 +163,9 @@ private:
   double speed_hysteresis_ms_{0.2};
   double switch_cooldown_s_{1.0};
   bool enabled_{true};
+  // +1.0 or -1.0: which direction_sign value corresponds to high-speed / forward regime.
+  // Set via 'com_forward_sign' parameter (runtime.env: COM_FORWARD_SIGN).
+  double com_forward_sign_{1.0};
 
   bool has_state_{false};
   bool above_threshold_{false};

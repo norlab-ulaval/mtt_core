@@ -123,6 +123,16 @@ public:
     auto_com_switch_enabled_ = declare_parameter("auto_com_switch_enabled", false);
     auto_com_switch_cooldown_s_ = declare_parameter("auto_com_switch_cooldown_s", 2.0);
 
+    // com_forward_sign encodes which direction_sign value pushes the COM to the
+    // position that HELPS forward traction (typically: mass shifted backward).
+    // Set to +1.0 (default) or -1.0 depending on which side the motor is mounted.
+    // The auto-switch then becomes deterministic:
+    //   forward motion (cmd >= 0) → com_direction_sign = +com_forward_sign
+    //   backward motion (cmd < 0) → com_direction_sign = -com_forward_sign
+    // instead of a blind toggle that ignores both motion direction and mounting side.
+    com_forward_sign_ = declare_parameter("com_forward_sign", 1.0);
+    com_forward_sign_ = (com_forward_sign_ >= 0.0) ? 1.0 : -1.0;  // snap to ±1
+
     cmd_sub_ = create_subscription<geometry_msgs::msg::TwistStamped>(
       cmd_topic_, 20,
       [this](const geometry_msgs::msg::TwistStamped::SharedPtr msg) { on_cmd(msg); });
@@ -526,7 +536,27 @@ private:
       }
     }
 
-    com_direction_sign_ = com_direction_sign_ < 0.0 ? 1.0 : -1.0;
+    // Direction-aware deterministic switch — replaces the old blind toggle.
+    // com_forward_sign_ encodes the physical motor mounting convention:
+    //   +1.0 → motor mounted on the "A" side (default)
+    //   -1.0 → motor mounted on the "B" side (inverted)
+    // Going forward → push COM to the position that helps forward traction.
+    // Going backward → push COM to the opposite position.
+    const double desired_sign =
+      (last_cmd_speed_ms_ >= 0.0) ? com_forward_sign_ : -com_forward_sign_;
+
+    if (std::abs(desired_sign - com_direction_sign_) < 0.5) {
+      // Already at the right position for the current motion direction.
+      // No physical switch needed — don't reset the cooldown.
+      RCLCPP_DEBUG(
+        get_logger(),
+        "Auto COM switch: already at desired sign=%.0f for cmd=%.2f m/s — skipping",
+        desired_sign, last_cmd_speed_ms_);
+      last_slipping_ = slipping;
+      return;
+    }
+
+    com_direction_sign_ = desired_sign;
     auto sign_msg = std_msgs::msg::Float64();
     sign_msg.data = com_direction_sign_;
     com_direction_pub_->publish(sign_msg);
@@ -534,7 +564,8 @@ private:
     has_last_auto_switch_time_ = true;
     RCLCPP_WARN(
       get_logger(),
-      "Auto COM direction switch on slip: sign=%.0f", com_direction_sign_);
+      "Auto COM direction switch on slip: cmd=%.2f m/s → sign=%.0f [com_forward_sign=%.0f]",
+      last_cmd_speed_ms_, com_direction_sign_, com_forward_sign_);
     last_slipping_ = slipping;
   }
 
@@ -615,6 +646,9 @@ private:
   double tacho_speed_variance_{1.00};
   bool auto_com_switch_enabled_{false};
   double auto_com_switch_cooldown_s_{2.0};
+  // +1.0 or -1.0 depending on which side the motor is physically mounted.
+  // Set via 'com_forward_sign' ROS parameter (runtime.env: COM_FORWARD_SIGN).
+  double com_forward_sign_{1.0};
 
   bool has_cmd_{false};
   double last_cmd_speed_ms_{0.0};

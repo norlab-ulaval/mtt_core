@@ -453,6 +453,17 @@ void MttOperatorInputNode::on_joy(const sensor_msgs::msg::Joy::SharedPtr msg)
     }
   }
 
+  // Track the side the operator has actually driven the COM motor to (right
+  // stick, COM mode ON, command actually going out). This is the real,
+  // physical "where I put the motor" signal — com_direction_sign_ is not,
+  // since the manual toggle button is disabled in this profile.
+  if (enable_com_mode_switch_ && com_mode_active_ &&
+      deadman_pressed && !estop_active && !movement_inhibited_ &&
+      std::abs(selected_actuator_axis) > 0.05F)
+  {
+    last_com_side_ = selected_actuator_axis >= 0.0F ? 1 : -1;
+  }
+
   update_ice_com_shift_experiment(
     linear_axis,
     deadman_pressed && !estop_active && !movement_inhibited_,
@@ -460,7 +471,7 @@ void MttOperatorInputNode::on_joy(const sensor_msgs::msg::Joy::SharedPtr msg)
   if (ice_com_shift_active_) {
     linear_axis = ice_com_shift_parking_home_
       ? 0.0F
-      : static_cast<float>(ice_com_shift_phase_sign_);
+      : static_cast<float>(ice_com_shift_drive_sign_);
     selected_actuator_axis = static_cast<float>(
       ice_com_shift_parking_home_ ? 0.0 : ice_com_shift_com_axis());
     angular_axis = 0.0F;
@@ -470,7 +481,7 @@ void MttOperatorInputNode::on_joy(const sensor_msgs::msg::Joy::SharedPtr msg)
   double angular_command = max_angular_command_ * angular_axis;
   last_angular_axis_ = angular_axis;
   if (ice_com_shift_active_ && !ice_com_shift_parking_home_) {
-    linear_command = static_cast<double>(ice_com_shift_phase_sign_) *
+    linear_command = static_cast<double>(ice_com_shift_drive_sign_) *
       std::clamp(ice_com_shift_speed_ms_, 0.0, max_linear_speed_);
   } else if (ice_com_shift_active_) {
     linear_command = 0.0;
@@ -763,26 +774,34 @@ void MttOperatorInputNode::update_ice_com_shift_experiment(
 
   const rclcpp::Time now_stamp = now();
   if (!ice_com_shift_active_) {
+    // last_com_side_ is kept live in on_joy() from the operator's actual COM
+    // stick input — nothing to derive here.
     if (std::abs(linear_axis) < ice_com_shift_start_axis_threshold_) {
       ice_com_shift_phase_ = "armed_push_stick_to_start";
       publish_ice_com_shift_state();
       return;
     }
     ice_com_shift_active_ = true;
-    ice_com_shift_phase_sign_ = linear_axis >= 0.0F ? 1 : -1;
+    // COM side respects wherever the operator physically left the motor.
+    ice_com_shift_phase_sign_ = last_com_side_;
+    // Driving direction respects what the operator actually pushed on the
+    // stick — must NOT depend on last_com_side_, or a forward push could
+    // drive the robot backward whenever the COM happens to be on the left.
+    ice_com_shift_drive_sign_ = linear_axis >= 0.0F ? 1 : -1;
     ice_com_shift_phase_start_time_ = now_stamp;
     ice_com_shift_below_since_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
-    ice_com_shift_phase_ = ice_com_shift_phase_sign_ > 0 ? "forward_limit_pos" : "reverse_limit_neg";
-    com_direction_sign_ = 1.0;
+    ice_com_shift_phase_ = ice_com_shift_drive_sign_ > 0 ? "forward_limit_pos" : "reverse_limit_neg";
+    com_direction_sign_ = static_cast<double>(ice_com_shift_phase_sign_);
     publish_com_direction_sign();
     if (ice_com_shift_park_home_on_start_) {
       request_ice_com_shift_park_home(
-        ice_com_shift_phase_sign_ > 0 ? "park_home_before_forward" : "park_home_before_reverse");
+        ice_com_shift_drive_sign_ > 0 ? "park_home_before_forward" : "park_home_before_reverse");
     }
     RCLCPP_WARN(
       get_logger(),
-      "Ice COM-shift experiment started: speed=%.2f m/s sign=%d slip=%.3f",
-      ice_com_shift_speed_ms_, ice_com_shift_phase_sign_, ice_com_shift_last_slip_ratio_);
+      "Ice COM-shift experiment started: speed=%.2f m/s drive_sign=%d com_sign=%d slip=%.3f",
+      ice_com_shift_speed_ms_, ice_com_shift_drive_sign_, ice_com_shift_phase_sign_,
+      ice_com_shift_last_slip_ratio_);
     publish_ice_com_shift_state();
     return;
   }
@@ -795,10 +814,11 @@ void MttOperatorInputNode::update_ice_com_shift_experiment(
     ice_com_shift_parking_home_ = false;
     ice_com_shift_phase_start_time_ = now_stamp;
     ice_com_shift_below_since_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
-    ice_com_shift_phase_ = ice_com_shift_phase_sign_ > 0 ? "forward_limit_pos" : "reverse_limit_neg";
+    ice_com_shift_phase_ = ice_com_shift_drive_sign_ > 0 ? "forward_limit_pos" : "reverse_limit_neg";
     RCLCPP_WARN(
       get_logger(),
-      "Ice COM-shift park-home window done: drive sign=%d", ice_com_shift_phase_sign_);
+      "Ice COM-shift park-home window done: drive_sign=%d com_sign=%d",
+      ice_com_shift_drive_sign_, ice_com_shift_phase_sign_);
   }
 
   const double phase_age_s = (now_stamp - ice_com_shift_phase_start_time_).seconds();
@@ -854,13 +874,14 @@ void MttOperatorInputNode::request_ice_com_shift_park_home(const std::string & p
 void MttOperatorInputNode::switch_ice_com_shift_phase(const std::string & reason)
 {
   ice_com_shift_phase_sign_ *= -1;
+  ice_com_shift_drive_sign_ *= -1;
   ice_com_shift_phase_start_time_ = now();
   ice_com_shift_below_since_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
-  ice_com_shift_phase_ = ice_com_shift_phase_sign_ > 0 ? "forward_limit_pos" : "reverse_limit_neg";
+  ice_com_shift_phase_ = ice_com_shift_drive_sign_ > 0 ? "forward_limit_pos" : "reverse_limit_neg";
   RCLCPP_WARN(
     get_logger(),
-    "Ice COM-shift switch: speed sign=%d com limit=%d slip=%.3f reason=%s",
-    ice_com_shift_phase_sign_, ice_com_shift_phase_sign_, ice_com_shift_last_slip_ratio_,
+    "Ice COM-shift switch: drive sign=%d com limit=%d slip=%.3f reason=%s",
+    ice_com_shift_drive_sign_, ice_com_shift_phase_sign_, ice_com_shift_last_slip_ratio_,
     reason.c_str());
 }
 
