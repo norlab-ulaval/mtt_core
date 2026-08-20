@@ -11,6 +11,7 @@
 #include <string>
 #include <thread>
 
+#include <rcl_interfaces/msg/set_parameters_result.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <geometry_msgs/msg/twist_stamped.hpp>
 #include <std_msgs/msg/bool.hpp>
@@ -141,6 +142,9 @@ private:
   rclcpp::TimerBase::SharedPtr can_send_timer_;
   std::string last_steering_source_;
 
+  // ── Dynamic parameter callback ──
+  rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr param_cb_handle_;
+
   // ── Methods ──
   void init_can_interface();
   void receiver_loop();
@@ -156,6 +160,10 @@ private:
   void publish_vehicle_data();
   void publish_can_debug_frame(const hardware::CanFrame& frame, bool is_tx, bool handled_by_driver);
   void refresh_command_frame();
+
+  // Dynamic parameter update — live-tunes max_linear_speed_ms at runtime.
+  rcl_interfaces::msg::SetParametersResult on_set_parameters(
+    const std::vector<rclcpp::Parameter> & params);
 
   void apply_command_timeout_if_needed();
   bool cmd_vel_is_fresh() const;

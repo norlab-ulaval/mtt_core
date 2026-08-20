@@ -190,6 +190,13 @@ MttCanNode::MttCanNode(const rclcpp::NodeOptions& options)
   receiver_running_ = true;
   receiver_thread_ = std::thread([this](){ receiver_loop(); });
 
+  // ── Dynamic parameter callback ──
+  // Enables live-tuning of max_linear_speed_ms during an active recording session
+  // without requiring a node restart. The new ceiling takes effect on the next
+  // iteration of refresh_command_frame() (control_freq_hz_, default 50 Hz).
+  param_cb_handle_ = add_on_set_parameters_callback(
+    std::bind(&MttCanNode::on_set_parameters, this, std::placeholders::_1));
+
   RCLCPP_INFO(
     get_logger(),
     "MttCanNode started on %s (id=0x%03X, steer_control_mode=%s, cmd_angular_mode=%s, tachometer_mode=%s, can_debug=%s)",
@@ -199,6 +206,45 @@ MttCanNode::MttCanNode(const rclcpp::NodeOptions& options)
     cmd_angular_mode_.c_str(),
     tachometer_mode_.c_str(),
     publish_can_debug_ ? can_debug_topic_.c_str() : "disabled");
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Dynamic parameter callback
+// ─────────────────────────────────────────────────────────────────
+rcl_interfaces::msg::SetParametersResult MttCanNode::on_set_parameters(
+  const std::vector<rclcpp::Parameter> & params)
+{
+  rcl_interfaces::msg::SetParametersResult result;
+  result.successful = true;
+
+  // ── Validation pass ──
+  // 5.56 m/s = 20 km/h is the physical top speed encoded in the CAN throttle
+  // mapping. A value above that cannot be honored by the hardware.
+  constexpr double kMaxSpeedCeiling = 5.56;
+  for (const auto & param : params) {
+    if (param.get_name() == "max_linear_speed_ms") {
+      const double v = param.as_double();
+      if (!std::isfinite(v) || v <= 0.0 || v > kMaxSpeedCeiling) {
+        result.successful = false;
+        result.reason = "max_linear_speed_ms must be finite and in (0, 5.56] m/s";
+        return result;
+      }
+    }
+  }
+
+  // ── Apply pass (atomic under frame_mutex_) ──
+  for (const auto & param : params) {
+    if (param.get_name() == "max_linear_speed_ms") {
+      std::lock_guard<std::mutex> lock(frame_mutex_);
+      max_linear_speed_ms_ = param.as_double();
+      RCLCPP_WARN(
+        get_logger(),
+        "[LIVE] max_linear_speed_ms -> %.3f m/s (%.1f km/h) "
+        "[effective next control tick]",
+        max_linear_speed_ms_, max_linear_speed_ms_ * 3.6);
+    }
+  }
+  return result;
 }
 
 MttCanNode::~MttCanNode()
