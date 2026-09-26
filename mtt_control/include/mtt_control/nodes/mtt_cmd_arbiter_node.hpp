@@ -37,7 +37,7 @@ private:
     const std::shared_ptr<mtt_interfaces::srv::SetSpeedLimit::Request> request,
     std::shared_ptr<mtt_interfaces::srv::SetSpeedLimit::Response> response);
   void on_timer();
-  bool cmd_is_fresh(const rclcpp::Time & stamp, double timeout_s) const;
+  bool cmd_is_fresh(const builtin_interfaces::msg::Time & stamp, double timeout_s) const;
   void publish_source(const std::string & source);
   void publish_cmd(const geometry_msgs::msg::TwistStamped & msg);
 

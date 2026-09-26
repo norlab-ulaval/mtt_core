@@ -1,13 +1,13 @@
-// mtt_trailer_estimator_test.cpp — Unit tests for TrailerEstimatorNode internals.
+// Algorithm regression tests for the trailer estimator's reference mathematics.
 //
-// Tests are pure algorithmic — no ROS 2 node needed.
-// We instantiate the EKF helpers directly via white-box access to the
-// relevant free functions (factored out below) without spinning up the node.
+// These helpers are copies, not calls into TrailerEstimatorNode. Passing these
+// tests does not validate the production node's callbacks, frames or timing.
+// Keep the copies aligned until the shared pure algorithms can be extracted.
 //
 // Build: ament_cmake adds this via ament_add_gtest() in CMakeLists.txt.
 //
 // Test cases:
-//   1. EKF cold-start convergence from perfect kinematic prior.
+//   1. EKF convergence from an offset prior, and noisy-prior consistency.
 //   2. Mahalanobis gating: corrupted measurement must not move state.
 //   3. Covariance remains positive-definite after 1000 Joseph-form updates.
 //   4. Hitch angle back-computation correctness vs known geometry.
@@ -22,7 +22,7 @@
 
 static constexpr double kPi = 3.141592653589793;
 
-// ── White-box helpers — replicate the EKF core without pulling in the full node. These mirror exactly the logic in mtt_trailer_estimator_node.cpp ──
+// Reference helpers copied from mtt_trailer_estimator_node.cpp.
 // State index constants (must match idx:: in the main header).
 namespace idx
 {
@@ -232,11 +232,38 @@ static RansacLine3d ransacLine3d(
   return result;
 }
 
-// Test 1 — EKF cold-start convergence.
-//
-// Given: perfect kinematic prior at the true trailer position.
-// Expect: after N updates, state converges within 1 cm of ground truth.
+// An offset initial state must converge to noise-free observations. Retain the
+// 1 cm / 0.01 rad accuracy target here, where it has a deterministic meaning.
 TEST(TrailerEkf, ColdStartConvergence)
+{
+  const Cov10d Q = makeDefaultQ();
+  const auto H = makeH4();
+  const Eigen::Vector4d truth(5.0, -3.0, 0.2, 0.75);
+  const Eigen::Vector4d offset(0.4, -0.3, 0.1, 0.15);
+  FilterState state;
+  state.x = H.transpose() * (truth + offset);
+  state.initialized = true;
+  Eigen::Matrix4d R = Eigen::Matrix4d::Identity() * (0.05 * 0.05);
+  R(3, 3) = 0.02 * 0.02;
+
+  for (int i = 0; i < 50; ++i) {
+    ekfPredict(state, 0.01, Q, 0.95);
+    ASSERT_TRUE(ekfUpdate<4>(state, truth, H, R, 13.28));
+  }
+
+  const Eigen::Vector4d error = H * state.x - truth;
+  for (int i = 0; i < 4; ++i) {
+    EXPECT_NEAR(error(i), 0.0, 0.01) << "component " << i;
+  }
+  EXPECT_LT(state.P(idx::kX, idx::kX), 0.01);
+  EXPECT_LT(state.P(idx::kY, idx::kY), 0.01);
+}
+
+// With process noise and 5 cm measurement noise, a single posterior estimate
+// need not be within 1 cm. Check normalized estimation error against the 99%
+// chi-square bound for four observed components (13.28), using a fixed seed.
+// This regression is one synthetic realization, not a sensor accuracy claim.
+TEST(TrailerEkf, NoisyPriorConsistency)
 {
   const Cov10d Q = makeDefaultQ();
   const Eigen::Matrix<double, 4, 10> H = makeH4();
@@ -277,11 +304,12 @@ TEST(TrailerEkf, ColdStartConvergence)
     ekfUpdate<4>(state, z, H, R, chi2);
   }
 
-  // Assert convergence within 1 cm.
-  EXPECT_NEAR(state.x(idx::kX),   x_true(0), 0.01) << "x not converged";
-  EXPECT_NEAR(state.x(idx::kY),   x_true(1), 0.01) << "y not converged";
-  EXPECT_NEAR(state.x(idx::kZ),   x_true(2), 0.01) << "z not converged";
-  EXPECT_NEAR(state.x(idx::kYaw), x_true(3), 0.01) << "yaw not converged";
+  Eigen::Vector4d error = H * state.x - x_true;
+  error(3) = normalizeAngle(error(3));
+  const Eigen::Matrix4d posterior = H * state.P * H.transpose();
+  const Eigen::LLT<Eigen::Matrix4d> llt(posterior);
+  ASSERT_EQ(llt.info(), Eigen::Success);
+  EXPECT_LE(error.dot(llt.solve(error)), chi2);
 
   // Assert covariance has shrunk significantly.
   EXPECT_LT(state.P(idx::kX, idx::kX), 0.01) << "P(x,x) did not shrink";

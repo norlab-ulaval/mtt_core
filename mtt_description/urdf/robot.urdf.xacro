@@ -1325,8 +1325,8 @@
 
 <!-- Runtime sensor mounts — all under hesai_lidar so they travel with the cage.
      xyz/rpy values come from calib_*.xacro properties so each calibration version
-     can express positions in its own frame convention (v1: X=LEFT/Y=BACKWARD,
-     v2: X=BACKWARD/Y=RIGHT). -->
+     can express positions in the Hesai frame (X=LEFT/Y=BACKWARD for both
+     v1 and the corrected v2 calibration). -->
 
 <link name="imu_link"/>
 
@@ -1466,7 +1466,7 @@
   <child link="rsairy"/>
   <!-- Calibrated 2026-04-21 (P2P→P2Pl→GICP on bag_0.mcap, RMSE=3.07cm at voxel=2cm).
        Values come from calib_*.xacro — expressed in the hesai_lidar frame convention
-       of the active calibration (v1: X=LEFT/Y=BACKWARD, v2: X=BACKWARD/Y=RIGHT). -->
+       of the active calibration (X=LEFT/Y=BACKWARD for v1 and corrected v2). -->
   <origin xyz="${rsairy_calib_xyz}" rpy="${rsairy_calib_rpy}"/>
 </joint>
 
