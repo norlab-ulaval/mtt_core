@@ -219,8 +219,10 @@ ament_export_dependencies(
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
+  find_package(ament_cmake_pytest REQUIRED)
   find_package(ament_lint_auto REQUIRED)
   ament_lint_auto_find_test_dependencies()
+  ament_add_pytest_test(test_cmd_arbiter test/test_cmd_arbiter.py TIMEOUT 120)
   ament_add_gtest(
     test_articulated_command_model
     test/test_articulated_command_model.cpp

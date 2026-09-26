@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <stdexcept>
 
 namespace mtt_control
 {
@@ -19,6 +20,21 @@ MttCmdArbiterNode::MttCmdArbiterNode(const rclcpp::NodeOptions & options)
   mode_switch_hold_s_ = declare_parameter("mode_switch_hold_s", 0.15);
   manual_requires_deadman_ = declare_parameter("manual_requires_deadman", true);
   max_auto_speed_ms_ = declare_parameter("max_auto_speed_ms", 4.2);
+
+  // Parameter callbacks only validate later changes, not startup overrides.
+  for (const auto & value : {
+      publish_rate_hz_, manual_timeout_s_, auto_timeout_s_}) {
+    if (!std::isfinite(value) || value <= 0.0) {
+      throw std::invalid_argument("Arbiter rate and timeouts must be finite and positive");
+    }
+  }
+  if (!std::isfinite(mode_switch_hold_s_) || mode_switch_hold_s_ < 0.0) {
+    throw std::invalid_argument("mode_switch_hold_s must be finite and nonnegative");
+  }
+  if (!std::isfinite(max_auto_speed_ms_) ||
+      max_auto_speed_ms_ <= 0.0 || max_auto_speed_ms_ > 5.56) {
+    throw std::invalid_argument("max_auto_speed_ms must be finite and in (0, 5.56] m/s");
+  }
 
   last_mode_change_time_ = now();
 
@@ -105,14 +121,16 @@ void MttCmdArbiterNode::on_manual_cmd(const geometry_msgs::msg::TwistStamped::Sh
 {
   std::lock_guard<std::mutex> lock(state_mutex_);
   last_manual_cmd_ = *msg;
-  has_manual_cmd_ = true;
+  // Reject future stamps on receipt too: otherwise a cached future command
+  // would become eligible later, after its publisher has disappeared.
+  has_manual_cmd_ = cmd_is_fresh(msg->header.stamp, manual_timeout_s_);
 }
 
 void MttCmdArbiterNode::on_auto_cmd(const geometry_msgs::msg::TwistStamped::SharedPtr msg)
 {
   std::lock_guard<std::mutex> lock(state_mutex_);
   last_auto_cmd_ = *msg;
-  has_auto_cmd_ = true;
+  has_auto_cmd_ = cmd_is_fresh(msg->header.stamp, auto_timeout_s_);
 }
 
 void MttCmdArbiterNode::on_mode(const std_msgs::msg::String::SharedPtr msg)
@@ -144,12 +162,17 @@ void MttCmdArbiterNode::on_estop(const std_msgs::msg::Bool::SharedPtr msg)
   estop_active_ = msg->data;
 }
 
-bool MttCmdArbiterNode::cmd_is_fresh(const rclcpp::Time & stamp, double timeout_s) const
+bool MttCmdArbiterNode::cmd_is_fresh(
+  const builtin_interfaces::msg::Time & stamp, double timeout_s) const
 {
-  if (stamp.nanoseconds() == 0) {
+  // Validate the wire representation before constructing rclcpp::Time, which
+  // throws on a negative stamp and would otherwise terminate this process.
+  if (stamp.sec < 0 || stamp.nanosec >= 1000000000u ||
+      (stamp.sec == 0 && stamp.nanosec == 0)) {
     return false;
   }
-  return (now() - stamp).seconds() <= timeout_s;
+  const double age_s = (now() - rclcpp::Time(stamp)).seconds();
+  return age_s >= 0.0 && age_s <= timeout_s;
 }
 
 void MttCmdArbiterNode::publish_source(const std::string & source)
@@ -165,6 +188,18 @@ void MttCmdArbiterNode::publish_source(const std::string & source)
 
 void MttCmdArbiterNode::publish_cmd(const geometry_msgs::msg::TwistStamped & msg)
 {
+  // An invalid replacement command must stop, not keep the previous motion.
+  // Check all Twist fields before forwarding to downstream consumers.
+  const auto & linear = msg.twist.linear;
+  const auto & angular = msg.twist.angular;
+  if (!std::isfinite(linear.x) || !std::isfinite(linear.y) || !std::isfinite(linear.z) ||
+      !std::isfinite(angular.x) || !std::isfinite(angular.y) || !std::isfinite(angular.z)) {
+    geometry_msgs::msg::TwistStamped stopped;
+    stopped.header = msg.header;
+    publish_source("INVALID_COMMAND");
+    output_pub_->publish(stopped);
+    return;
+  }
   output_pub_->publish(msg);
 }
 
@@ -208,8 +243,11 @@ void MttCmdArbiterNode::on_timer()
           has_auto_cmd_ && cmd_is_fresh(last_auto_cmd_.header.stamp, auto_timeout_s_)) {
         output = last_auto_cmd_;
         output.header.stamp = now();
-        output.twist.linear.x = std::clamp(
-          output.twist.linear.x, -max_auto_speed_ms_, max_auto_speed_ms_);
+        // Do not turn infinity into a valid saturated motion command.
+        if (std::isfinite(output.twist.linear.x)) {
+          output.twist.linear.x = std::clamp(
+            output.twist.linear.x, -max_auto_speed_ms_, max_auto_speed_ms_);
+        }
         source = "AUTO";
       } else {
         source = "AUTO_WAIT";
