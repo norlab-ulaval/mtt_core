@@ -77,7 +77,7 @@ public:
     articulation_state_output_topic_ = declare_parameter("articulation_state_output_topic", std::string("mtt/articulation_state"));
     articulation_state_timeout_s_ = declare_parameter("articulation_state_timeout_seconds", 0.5);
     // Default true: fall back to trailer_detector_node's LiDAR-detected angle
-    // (proven reliable — see CLAUDE.md: "authoritative phi source") when the
+    // (published on trailer/articulation_angle) when the
     // hardware potentiometer is stale/absent, instead of silently dropping
     // straight to the open-loop kinematic model estimate. Only engages when
     // hardware is NOT fresh, so this cannot degrade the hardware-available case.
