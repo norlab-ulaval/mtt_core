@@ -1,10 +1,8 @@
 cmake_minimum_required(VERSION 3.14)
 project(mtt_perception)
 
-# NOTE: C++20 is applied only to mtt_trailer_estimator_node (see target below).
-# Do NOT set CMAKE_CXX_STANDARD globally — PCL-based nodes (trailer_detector_node,
-# trailer_pose_node) use PCL headers that are not C++20-compatible and crash at
-# runtime if compiled with -ffinite-math-only (part of -ffast-math in C++20 builds).
+# C++20 is scoped to the estimator below. Preserve IEEE NaN/Inf behavior in
+# all point-cloud nodes; do not enable -ffast-math or -ffinite-math-only.
 
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
@@ -24,6 +22,17 @@ find_package(mtt_msgs REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(PCL REQUIRED COMPONENTS common filters)
 find_package(pcl_conversions REQUIRED)
+
+# PCL includes Eigen's legacy UseEigen3.cmake. The ortools_vendor copy exports
+# EIGEN_MPL2_ONLY without -D, so add_definitions treats it as an input filename.
+# Replace those bare directory flags with actual definitions; preserve all
+# other flags and the imported Eigen/PCL target properties.
+foreach(definition IN LISTS EIGEN3_DEFINITIONS)
+  if(definition MATCHES "^[A-Za-z_][A-Za-z0-9_]*(=.*)?$")
+    remove_definitions(${definition})
+    add_compile_definitions(${definition})
+  endif()
+endforeach()
 
 include_directories(include ${PCL_INCLUDE_DIRS})
 
