@@ -83,9 +83,9 @@ class DrivingModeIntegrationTest(Node):
             response = future.result()
             self.get_logger().info(f"New mode: {response.vehicule_type} ({response.type_name})")
             if response.vehicule_type == 1:
-                self.get_logger().info("✓ Mode change successful!")
+                self.get_logger().info("OK Mode change successful!")
             else:
-                self.get_logger().error("✗ Mode change failed!")
+                self.get_logger().error("FAIL Mode change failed!")
                 return False
         else:
             self.get_logger().error("Failed to verify mode change")
@@ -142,9 +142,9 @@ def main():
     
     # Run tests
     if test_node.test_mode_switching():
-        test_node.get_logger().info("✓ Integration test PASSED")
+        test_node.get_logger().info("OK Integration test PASSED")
     else:
-        test_node.get_logger().error("✗ Integration test FAILED")
+        test_node.get_logger().error("FAIL Integration test FAILED")
     
     test_node.destroy_node()
     rclpy.shutdown()
