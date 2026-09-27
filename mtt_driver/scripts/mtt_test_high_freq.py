@@ -100,7 +100,7 @@ class MTTUnifiedHighFreqTester:
     
     def _signal_handler(self, signum, frame):
         """Gestionnaire d'arrêt propre."""
-        print(f"\n🛑 Arrêt demandé (signal {signum})")
+        print(f"\nSTOP Arrêt demandé (signal {signum})")
         self.stop()
         sys.exit(0)
     
@@ -463,7 +463,7 @@ class MTTUnifiedHighFreqTester:
             return results
             
         except KeyboardInterrupt:
-            print(f"\\n🛑 Test interrompu par utilisateur")
+            print(f"\\nSTOP Test interrompu par utilisateur")
             raise
         except Exception as e:
             print(f"\nERROR: Erreur: {e}")
@@ -513,7 +513,7 @@ def main():
             return 2
             
     except KeyboardInterrupt:
-        print("\\n🛑 Test annulé")
+        print("\\nSTOP Test annulé")
         return 130
     except Exception as e:
         print(f"\nERROR: Échec du test: {e}")

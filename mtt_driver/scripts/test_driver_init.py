@@ -45,7 +45,7 @@ def test_driver_initialization(can_interface='vcan0'):
         from mtt_driver import DirectionState
         driver.set_direction(DirectionState.Reverse)  # To get byte 1 = 64 instead of 96
         driver._set_steer(128)  # Raw frame check: force byte 5 = 128 instead of 127
-        log.info("✓ Driver initialized successfully")
+        log.info("OK Driver initialized successfully")
         
         # Test 2: Check initial frame
         log.info("Test 2: Check initial CAN frame")
@@ -66,7 +66,7 @@ def test_driver_initialization(can_interface='vcan0'):
         
         # Test 4: Check that threads are running (they start automatically)
         log.info("Test 4: Verify threads are running (started automatically)")
-        log.info("✓ Threads started automatically in constructor")
+        log.info("OK Threads started automatically in constructor")
         
         # Test 5: Send a few frames
         log.info("Test 5: Monitor frames being sent (3 seconds)")
@@ -78,17 +78,17 @@ def test_driver_initialization(can_interface='vcan0'):
         # Test 6: Clean shutdown
         log.info("Test 6: Clean shutdown")
         driver.cleanup()
-        log.info("✓ Driver cleanup completed successfully")
+        log.info("OK Driver cleanup completed successfully")
         
         log.info("=" * 60)
-        log.info("ALL TESTS PASSED! ✓")
+        log.info("All initialization tests passed")
         log.info("=" * 60)
         return True
         
     except Exception as e:
         log.error(f"Driver initialization test failed: {e}")
         log.error("=" * 60)
-        log.error("TEST FAILED! ✗")
+        log.error("TEST FAILED! FAIL")
         log.error("=" * 60)
         return False
 
